@@ -1,17 +1,10 @@
 {
-  // List the repos to harvest. Each needs an adapter:
-  //   "pucks"     — native convention (roadmap/*.md). Full fidelity.
-  //   "checklist" — bullets under a "## <section>" heading (+ "section").
-  //   "prose"     — bullets under a future/"## Vidare" section (+ "section").
-  // See CONVENTION.md and README.md → "Deploy your own".
+  // Add the repos to harvest here. Each entry looks like:
+  //   { "repo": "owner/name", "name": "Label", "color": "#38bdf8",
+  //     "adapter": "pucks", "path": "roadmap" }
+  // "pucks" = the native convention (roadmap/*.md, full fidelity);
+  // "checklist" / "prose" (+ "section") adapt a repo that hasn't adopted it yet.
+  // See CONVENTION.md and README.md → "Deploy your own". Empty until you add one.
   "defaultBranch": "main",
-  "sources": [
-    {
-      "repo": "your-org/your-repo",
-      "name": "Your Repo",
-      "color": "#38bdf8",
-      "adapter": "pucks",
-      "path": "roadmap"
-    }
-  ]
+  "sources": []
 }
