@@ -1,0 +1,13 @@
+{
+  // Static-assets Worker — no build step: the board (index.html + app.js +
+  // styles.css + generated data/) is served straight from the repo root, and
+  // .assetsignore keeps the engine + config out of the served bundle.
+  //
+  // Set "name" to your Worker's name. For a custom domain, add a "routes" entry
+  // with custom_domain:true (it claims the hostname + DNS on first deploy).
+  "name": "etapp",
+  "compatibility_date": "2026-08-15",
+  "preview_urls": true,
+  "assets": { "directory": "." }
+  // "routes": [{ "pattern": "roadmap.example.com", "custom_domain": true }]
+}

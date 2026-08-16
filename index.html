@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Browser UI (status bar) color; app.js keeps it in sync with the active
+         theme, including the in-app light/dark toggle. -->
+    <meta name="theme-color" content="#f6f7f9" />
+    <!-- title / description are defaults; app.js overrides them from board.config.json -->
+    <title>Roadmap</title>
+    <meta
+      name="description"
+      content="An aggregated roadmap across repos — truth in git, one board."
+    />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🗺️%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <h1>Roadmap</h1>
+        <p class="sub" id="subtitle">Aggregated across repos · loading…</p>
+      </div>
+      <div class="controls">
+        <div class="search-wrap">
+          <input
+            id="search"
+            type="search"
+            placeholder="Search…"
+            autocomplete="off"
+            spellcheck="false"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls="searchSuggest"
+            aria-expanded="false"
+          />
+          <button id="searchClear" class="search-clear" type="button" aria-label="Clear search" hidden>✕</button>
+          <ul id="searchSuggest" class="suggest" role="listbox" aria-label="Search suggestions" hidden></ul>
+        </div>
+        <button id="filterToggle" class="ghost" aria-expanded="false" aria-controls="filterChips">Filter</button>
+        <button id="viewToggle" class="ghost" title="Switch to list view" aria-label="Switch to list view">☰</button>
+        <button id="theme" class="ghost" title="Toggle theme" aria-label="Toggle theme">◐</button>
+      </div>
+    </header>
+
+    <nav class="filters" id="filters" aria-label="Filters">
+      <div class="filter-chips" id="filterChips" hidden>
+        <div class="filter-sort">
+          <label for="sortSelect">Sort</label>
+          <select id="sortSelect">
+            <option value="default">Recently updated</option>
+            <option value="updated-asc">Oldest updated</option>
+            <option value="created-desc">Newest created</option>
+            <option value="created-asc">Oldest created</option>
+            <option value="title">Title A–Z</option>
+          </select>
+        </div>
+        <div class="filter-group" id="repoFilters" aria-label="Repositories"></div>
+        <div class="filter-group" id="tagFilters" aria-label="Tags"></div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="showDone" />
+        <span>Show done</span>
+      </label>
+    </nav>
+
+    <main id="board" class="board" aria-live="polite"></main>
+
+    <footer class="foot">
+      <span id="footmeta"></span>
+      <a href="ROADMAP.md">flat digest</a> ·
+      <a href="data/roadmap.json">roadmap.json</a> ·
+      <a id="sourceLink" href="#">source</a>
+    </footer>
+
+    <!-- Generated payload, loaded as a global so the page also works from file://. -->
+    <script src="data/roadmap.js" onerror="window.__ROADMAP_LOAD_ERROR__=true"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

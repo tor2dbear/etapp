@@ -1,0 +1,83 @@
+name: Sync roadmap
+
+# Harvests every source repo's roadmap into data/roadmap.json + the board and
+# commits the refreshed data back to main. Deployment is handled by Cloudflare
+# Workers Builds (connected to this repo, see wrangler.jsonc): every push to main
+# — including the data commit below — triggers a production deploy, so the board
+# stays fresh without a manual step.
+#
+# Runs on a schedule (keeps the board in sync without touching the source repos),
+# on manual dispatch, and when the aggregator's own code changes. The data commit
+# must NOT carry [skip ci]: Cloudflare Workers Builds skips those, which would
+# stop the hourly data from ever deploying. It can't retrigger this workflow
+# anyway — the push trigger below only watches code paths, not data/** — so the
+# paths filter is the real loop-guard, and the data commit deploys freely.
+
+on:
+  schedule:
+    - cron: "17 * * * *" # hourly, off the top of the hour
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "sources.json"
+      - "board.config.json"
+      - "scripts/**"
+      - "index.html"
+      - "app.js"
+      - "styles.css"
+      - ".github/workflows/sync.yml"
+
+permissions:
+  contents: write # commit refreshed data back to the repo
+
+concurrency:
+  group: roadmap-sync
+  cancel-in-progress: true
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout aggregator
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Clone source repos (treeless, read-only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sources"
+          repos=$(node -e "for (const s of require('./sources.json').sources) console.log(s.repo, s.branch || require('./sources.json').defaultBranch || 'main')")
+          while read -r repo branch; do
+            [ -z "$repo" ] && continue
+            echo "Cloning $repo@$branch"
+            # --filter=blob:none keeps full commit history (needed to derive each
+            # puck's creation date) while fetching file contents on demand, so it
+            # stays nearly as light as a shallow clone.
+            git clone --filter=blob:none --branch "$branch" \
+              "https://github.com/$repo" "$RUNNER_TEMP/sources/$repo" \
+              || git clone --filter=blob:none "https://github.com/$repo" "$RUNNER_TEMP/sources/$repo"
+          done <<< "$repos"
+
+      - name: Harvest
+        env:
+          ROADMAP_LOCAL_ROOT: ${{ runner.temp }}/sources
+        run: node scripts/harvest.mjs
+
+      - name: Commit refreshed data (if changed)
+        run: |
+          set -euo pipefail
+          git config user.name "roadmap-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/roadmap.json data/roadmap.js ROADMAP.md
+          if git diff --cached --quiet; then
+            echo "No roadmap changes — nothing to deploy."
+          else
+            git commit -m "chore: sync roadmap data"
+            git push
+          fi

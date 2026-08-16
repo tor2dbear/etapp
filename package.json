@@ -1,0 +1,23 @@
+{
+  "name": "etapp",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Roadmap-as-code — git-native, agent-readable roadmaps in one zero-backend board.",
+  "bin": {
+    "roadmap": "scripts/roadmap.mjs"
+  },
+  "scripts": {
+    "harvest": "node scripts/harvest.mjs",
+    "harvest:local": "ROADMAP_LOCAL_ROOT=../ node scripts/harvest.mjs",
+    "roadmap": "node scripts/roadmap.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "wrangler": "^4.30.0"
+  }
+}

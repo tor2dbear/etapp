@@ -1,0 +1,19 @@
+# Kept out of the served static bundle (assets.directory is the repo root).
+# Only the board itself ships: index.html, app.js, styles.css, data/, ROADMAP.md.
+.git
+.gitignore
+.assetsignore
+wrangler.jsonc
+package.json
+package-lock.json
+README.md
+CLAUDE.md
+CONVENTION.md
+AGENTS.md
+sources.json
+board.config.json
+roadmap
+scripts
+templates
+.github
+node_modules

@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Roadmap aggregator sources",
+  "type": "object",
+  "required": ["sources"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "generatedBy": { "type": "string" },
+    "defaultBranch": { "type": "string", "default": "main" },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repo", "adapter"],
+        "properties": {
+          "repo": { "type": "string", "description": "owner/name", "pattern": "^[^/]+/[^/]+$" },
+          "name": { "type": "string", "description": "Display name on the board." },
+          "blurb": { "type": "string", "description": "One-line description." },
+          "color": { "type": "string", "description": "Hex accent color for this repo's cards." },
+          "branch": { "type": "string", "description": "Overrides defaultBranch." },
+          "adapter": {
+            "type": "string",
+            "enum": ["pucks", "checklist", "prose"],
+            "description": "pucks = native convention; checklist/prose = best-effort adapters."
+          },
+          "path": {
+            "type": "string",
+            "description": "For pucks: the roadmap directory. For checklist/prose: the markdown file to read."
+          },
+          "section": {
+            "type": "string",
+            "description": "For checklist/prose: the '## <heading>' whose bullets to harvest."
+          }
+        }
+      }
+    }
+  }
+}
