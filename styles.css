@@ -514,13 +514,15 @@ body.modal-open { overflow: hidden; }
 /* token panel */
 .token-backdrop {
   position: fixed; inset: 0; background: rgba(10, 13, 18, .5);
-  display: flex; align-items: center; justify-content: center; padding: 16px;
-  z-index: 10001;
+  display: flex; padding: 16px; z-index: 10001;
+  /* Scroll the panel (not the board behind) — centered when it fits, scrollable
+     from the top when it's taller than the space above the keyboard. */
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
 }
 .token-panel {
   background: var(--panel); color: var(--ink); border: 1px solid var(--line);
   border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px;
-  width: 100%; max-width: 400px;
+  width: 100%; max-width: 400px; margin: auto;
 }
 .token-title { margin: 0 0 6px; font-size: 16px; }
 .token-note { margin: 0 0 8px; font-size: 13px; color: var(--ink-2); line-height: 1.45; }

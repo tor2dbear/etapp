@@ -1560,7 +1560,7 @@
     var actions = el("div", "token-actions");
     var create = el("button", "tbtn primary", "Create");
     var cancel = el("button", "tbtn", "Cancel");
-    function close() { if (back.parentNode) document.body.removeChild(back); }
+    function close() { if (back.parentNode) document.body.removeChild(back); document.body.classList.remove("modal-open"); }
     create.addEventListener("click", function () {
       var t = title.value.trim();
       if (!t) { title.focus(); return; }
@@ -1573,6 +1573,7 @@
     back.appendChild(p);
     back.addEventListener("click", function (e) { if (e.target === back) close(); });
     document.body.appendChild(back);
+    document.body.classList.add("modal-open");
     title.focus();
   }
 
@@ -1594,7 +1595,7 @@
     var save = el("button", "tbtn primary", "Save");
     var clear = el("button", "tbtn", "Clear");
     var cancel = el("button", "tbtn", "Cancel");
-    function close() { if (back.parentNode) document.body.removeChild(back); }
+    function close() { if (back.parentNode) document.body.removeChild(back); document.body.classList.remove("modal-open"); }
     save.addEventListener("click", function () {
       var v = inp.value.trim(); setGhToken(v); if (after) after(); close();
       toast(v ? "Token saved — open a puck to edit" : "Token cleared");
@@ -1606,6 +1607,7 @@
     back.appendChild(p);
     back.addEventListener("click", function (e) { if (e.target === back) close(); });
     document.body.appendChild(back);
+    document.body.classList.add("modal-open");
     inp.focus();
   }
 
