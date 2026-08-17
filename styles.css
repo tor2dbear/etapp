@@ -969,3 +969,20 @@ body.viewing-puck .vhead { display: none; }
 .side-repos .chip.agent { color: var(--ink-2); gap: 5px; }
 .side-repos .chip.agent .agent-arrow { flex: none; }
 .side-repos .chip.agent[aria-pressed="true"] { background: var(--panel-2); color: var(--ink); }
+
+/* ── mobile topbar goes contextual when a puck is open (Linear-style) ───────── */
+/* Board mode: puck-only chrome hidden. */
+.topbar .top-back, .topbar .top-crumb { display: none; }
+.top-crumb {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; color: var(--ink-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Puck mode: the back button + puck context replace the board title + actions. */
+body.viewing-puck .topbar .menu-toggle,
+body.viewing-puck .topbar .top-title,
+body.viewing-puck .topbar .top-new,
+body.viewing-puck .topbar .top-search { display: none; }
+body.viewing-puck .topbar .top-back { display: inline-flex; }
+body.viewing-puck .topbar .top-crumb { display: block; }
+/* The topbar now carries the breadcrumb → drop the duplicate in-content one on mobile. */
+@media (max-width: 899px) { body.viewing-puck .detail-crumb { display: none; } }

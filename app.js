@@ -729,6 +729,9 @@
     fillDetail(detailContent, item);
     detailPane.hidden = false;
     document.body.classList.add("viewing-puck");
+    // The mobile topbar becomes the puck's context (Linear-style) — set its crumb.
+    var tc = document.getElementById("topCrumb");
+    if (tc) { tc.textContent = item.repoName + " · " + item.slug; }
     detailContent.scrollTop = 0;
     window.scrollTo(0, 0);
     selectedId = item.id;
@@ -1842,6 +1845,8 @@
   // hash changing (pasted link in the same tab, or Back after opening a modal).
   var detailCloseBtn = document.getElementById("detailClose");
   if (detailCloseBtn) detailCloseBtn.addEventListener("click", closeModal);
+  var topBackBtn = document.getElementById("topBack");
+  if (topBackBtn) topBackBtn.addEventListener("click", closeModal);
 
   var deepItem = itemFromHash();
   if (deepItem) openModal(deepItem);
