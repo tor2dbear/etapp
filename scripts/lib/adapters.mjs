@@ -96,6 +96,9 @@ async function pucksAdapter(repo, branch, source) {
         : data.depends ? [String(data.depends)] : [],
       // GitHub handle of the owner (thin collaboration — a field, not a store).
       owner: data.owner ? String(data.owner).replace(/^@/, "") : null,
+      // Discipline the puck is routed to (backend/design/…) — the PO-layer's
+      // routing state. A handle, not an orchestrator: a runner reads it from git.
+      agent: data.agent ? String(data.agent).trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || null : null,
       body,
       sourcePath: relPath,
       sourceUrl: blobUrl(repo.repo, branch, relPath),
@@ -209,6 +212,7 @@ async function checklistAdapter(repo, branch, source) {
       created: null,
       depends: [],
       owner: null,
+      agent: null,
       issue: null,
       order: i * 10,
       body,
@@ -239,6 +243,7 @@ async function proseAdapter(repo, branch, source) {
       created: null,
       depends: [],
       owner: null,
+      agent: null,
       issue: null,
       order: i * 10,
       body,

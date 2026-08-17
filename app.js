@@ -33,9 +33,28 @@
     }
     return b;
   }
+  // PO-layer: a puck can be routed to a discipline agent (backend/design/…). The
+  // value is a free handle stored in git; these are the defaults the picker offers.
+  var AGENT_DISCIPLINES = ["backend", "frontend", "design", "research", "ops"];
+  function agentLabel(a) { return a ? a.charAt(0).toUpperCase() + a.slice(1) : a; }
+  // Picker options: the default disciplines ∪ any agent already in use in the data.
+  function agentOptions() {
+    var set = {};
+    AGENT_DISCIPLINES.forEach(function (a) { set[a] = true; });
+    (DATA.items || []).forEach(function (it) { if (it.agent) set[it.agent] = true; });
+    return Object.keys(set).sort();
+  }
+  function agentBadge(name) {
+    var b = el("span", "agent-badge");
+    b.title = "Routed to " + name;
+    b.appendChild(el("span", "agent-arrow", "→"));
+    b.appendChild(document.createTextNode(name));
+    return b;
+  }
   var state = {
     repos: new Set(), // empty = all
     tags: new Set(), // empty = all
+    agents: new Set(), // empty = all — PO-layer discipline queues
     query: "",
     showDone: false,
     priorityFilter: null, // null = any; else one of PRIORITIES
@@ -165,6 +184,7 @@
       if (!state.showDone && item.status === "done") return false;
     }
     if (state.priorityFilter && item.priority !== state.priorityFilter) return false;
+    if (state.agents.size && !state.agents.has(item.agent)) return false;
     if (state.repos.size && !state.repos.has(item.repo)) return false;
     if (state.tags.size) {
       var hit = item.tags.some(function (t) { return state.tags.has(t); });
@@ -280,6 +300,7 @@
       meta.appendChild(warn);
     }
     if (item.priority) meta.appendChild(priorityBadge(item.priority));
+    if (item.agent) meta.appendChild(agentBadge(item.agent));
     if ((item.blockedBy || []).length) meta.appendChild(blockBadge(item));
     if (item.owner) meta.appendChild(ownerEl(item.owner));
     if (item.updated) meta.appendChild(dateEl(item.updated));
@@ -515,6 +536,25 @@
       ? ownerEl(item.owner, { name: true, link: true })
       : el("span", "prop-muted", "—")));
 
+    // Agent: the PO-layer routing row — hand this puck to a discipline as easily
+    // as a status flip. Shown when editable or already routed.
+    if (editable || item.agent) {
+      props.appendChild(propRow("Agent", propPicker({
+        editable: editable,
+        current: item.agent || null,
+        placeholder: "Unassigned",
+        options: [{ value: null, label: "Unassigned" }].concat(
+          agentOptions().map(function (a) { return { value: a, label: agentLabel(a) }; })),
+        valueNode: function (o) {
+          if (!o.value) return el("span", "prop-muted", "Unassigned");
+          var v = el("span", "agent-inline");
+          v.appendChild(agentBadge(o.value));
+          return v;
+        },
+        onPick: function (v) { changeAgent(item, v); },
+      })));
+    }
+
     if (item.tags.length || !item.native) {
       var tags = el("div", "card-tags");
       item.tags.forEach(function (t) { tags.appendChild(el("span", "tagpill", "#" + t)); });
@@ -737,6 +777,7 @@
       warn.title = sig.join("\n");
       meta.appendChild(warn);
     }
+    if (item.agent) meta.appendChild(agentBadge(item.agent));
     if ((item.blockedBy || []).length) meta.appendChild(blockBadge(item));
     if (item.updated) meta.appendChild(dateEl(item.updated, "list-date"));
     body.appendChild(meta);
@@ -908,6 +949,31 @@
       });
       wrap.appendChild(more);
     }
+  }
+
+  // PO-console: discipline queues in the sidebar. Each routed discipline becomes a
+  // filter chip with a count. Rebuilt on every route so counts stay live; the whole
+  // section hides when nothing is routed yet. This IS the queue — pucks with an
+  // `agent:`, read from git — not a separate scheduler.
+  function buildAgentChips() {
+    var wrap = document.getElementById("agentFilters");
+    var section = document.getElementById("agentSection");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    var counts = {};
+    DATA.items.forEach(function (it) { if (it.agent) counts[it.agent] = (counts[it.agent] || 0) + 1; });
+    state.agents.forEach(function (a) { if (!counts[a]) state.agents.delete(a); }); // prune stale filters
+    var agents = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
+    if (section) section.hidden = agents.length === 0;
+    agents.forEach(function (a) {
+      var chip = el("button", "chip agent");
+      chip.setAttribute("aria-pressed", state.agents.has(a) ? "true" : "false");
+      chip.appendChild(el("span", "agent-arrow", "→"));
+      chip.appendChild(document.createTextNode(agentLabel(a)));
+      chip.appendChild(el("span", "n", String(counts[a])));
+      chip.addEventListener("click", function () { toggleSet(state.agents, a, chip); renderBoard(); });
+      wrap.appendChild(chip);
+    });
   }
 
   function toggleSet(set, key, chip) {
@@ -1287,6 +1353,7 @@
   buildModal();
   buildRepoChips();
   buildTagChips();
+  buildAgentChips();
   buildFocusControl();
   updateViewButton();
   renderBoard();
@@ -1424,6 +1491,43 @@
       .catch(function (err) {
         item.priority = prevP; item.updated = prevU;
         renderBoard(); openModal(item);
+        toast("✗ " + err.message, true);
+      });
+  }
+
+  // Route a puck to a discipline agent (PO-layer). Writes `agent:` to git — the
+  // runner reads it. A null value clears the field (unassign). Optimistic.
+  function commitAgent(item, agent) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { if (!r.ok) throw new Error("read failed (" + r.status + ")"); return r.json(); })
+      .then(function (info) {
+        var text = b64decode(info.content);
+        var out = agent ? editFrontmatter(text, "agent", agent) : removeFrontmatter(text, "agent");
+        if (out == null) throw new Error("no frontmatter");
+        out = editFrontmatter(out, "updated", today());
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: " + item.slug + " → agent " + (agent || "unassigned"), content: b64encode(out), sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { if (!r.ok) throw new Error("write failed (" + r.status + ")"); });
+  }
+  function changeAgent(item, agent) {
+    if (agent === (item.agent || null) || !ghToken()) return;
+    var prevA = item.agent, prevU = item.updated;
+    item.agent = agent; item.updated = today();
+    renderBoard(); buildAgentChips(); openModal(item);
+    toast("Saving…");
+    commitAgent(item, agent)
+      .then(function () { toast(agent ? "✓ Routed to " + agent + " — live in ~1 min" : "✓ Unassigned — live in ~1 min"); })
+      .catch(function (err) {
+        item.agent = prevA; item.updated = prevU;
+        renderBoard(); buildAgentChips(); openModal(item);
         toast("✗ " + err.message, true);
       });
   }

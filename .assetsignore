@@ -15,5 +15,6 @@ board.config.json
 roadmap
 scripts
 templates
+agents
 .github
 node_modules

@@ -957,3 +957,15 @@ body.viewing-puck .vhead { display: none; }
 .disc-body code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
 .disc-body pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .disc-body a { color: var(--accent); }
+
+/* ── PO-layer: agent routing (card badge + sidebar queues) ──────────────────── */
+.agent-badge {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  font-family: var(--mono); font-size: 10.5px; color: var(--ink-2);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px;
+}
+.agent-arrow { color: var(--accent); font-weight: 700; }
+.agent-inline { display: inline-flex; align-items: center; }
+.side-repos .chip.agent { color: var(--ink-2); gap: 5px; }
+.side-repos .chip.agent .agent-arrow { flex: none; }
+.side-repos .chip.agent[aria-pressed="true"] { background: var(--panel-2); color: var(--ink); }

@@ -14,6 +14,7 @@
 //   roadmap issue nano-multibuffer 42                     link a working issue
 //   roadmap owner nano-multibuffer torvalds               set owner (--clear to remove)
 //   roadmap priority nano-multibuffer high                set priority (--clear to remove)
+//   roadmap agent nano-multibuffer backend                route to a discipline (--clear to remove)
 //   roadmap touch nano-multibuffer                        just bump `updated`
 //   roadmap list [--status now]                           quick overview
 //   roadmap install-hook                                  auto-bump `updated` on commit
@@ -252,6 +253,30 @@ async function cmdPriority() {
   );
 }
 
+async function cmdAgent() {
+  const slug = pos.shift();
+  const name = pos.shift();
+  if (!slug) fail("usage: roadmap agent <slug> <discipline>   (--clear to remove)");
+  const { path: p, text } = await readPuckOrFail(slug);
+  const clearing = opts.clear || name === "none" || name === "-";
+  let out;
+  if (clearing) {
+    out = removeField(text, "agent");
+  } else {
+    if (!name) fail("usage: roadmap agent <slug> <discipline>   (--clear to remove)");
+    const a = name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!a) fail(`"${name}" isn't a valid agent handle`);
+    out = setField(text, "agent", a);
+  }
+  out = setField(out, "updated", TODAY);
+  await writeFile(p, out);
+  console.log(
+    clearing
+      ? `✓ ${slug} agent cleared  (updated ${TODAY})`
+      : `✓ ${slug} routed to ${name.trim().toLowerCase()}  (updated ${TODAY})`,
+  );
+}
+
 async function cmdTouch() {
   const slug = pos.shift();
   if (!slug) fail("usage: roadmap touch <slug>");
@@ -358,6 +383,7 @@ async function main() {
     case "issue": return cmdIssue();
     case "owner": return cmdOwner();
     case "priority": case "prio": return cmdPriority();
+    case "agent": case "route": return cmdAgent();
     case "touch": return cmdTouch();
     case "list": case "ls": return listPucks();
     case "install-hook": return cmdInstallHook();
@@ -380,6 +406,7 @@ function printHelp() {
   roadmap issue <slug> <number>                       link a working issue
   roadmap owner <slug> <handle>                       set owner (--clear to remove)
   roadmap priority <slug> <level>                     set priority (--clear to remove)
+  roadmap agent <slug> <discipline>                   route to an agent (--clear to remove)
   roadmap touch <slug>                                bump updated only
   roadmap list [--status now]                         overview
   roadmap install-hook                                auto-bump updated on commit

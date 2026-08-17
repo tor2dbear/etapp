@@ -50,6 +50,7 @@ roadmap tag <slug> +a -b            # edit tags
 roadmap issue <slug> 42             # link a working issue
 roadmap owner <slug> <handle>       # set owner (--clear to remove)
 roadmap priority <slug> <level>     # urgent|high|medium|low (--clear to remove)
+roadmap agent <slug> <discipline>   # route to a discipline agent (--clear to remove)
 roadmap list [--status now]         # overview
 ```
 
