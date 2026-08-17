@@ -898,3 +898,12 @@ body.modal-open { overflow: hidden; }
 .pick-mi:hover { background: var(--panel-2); }
 .pick-mi.on { background: var(--panel-2); }
 .pick-check { margin-left: auto; color: var(--accent); flex: none; }
+
+/* ── mobile: view title moves into the topbar (fills the ☰ … 🔍 dead band) ──── */
+.top-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
+.top-title .view-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 899px) {
+  /* the vhead keeps only the view-options; the title is up in the topbar now */
+  .vhead .view-title, .vhead .view-count { display: none; }
+  .vhead .vopts { margin-left: 0; }
+}

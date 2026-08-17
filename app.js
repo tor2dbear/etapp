@@ -725,10 +725,12 @@
   // The consistent view-header reflects the current focus + how many are shown.
   var VIEW_TITLES = { all: "All pucks", ready: "Ready to take", inbox: "Inbox", attention: "Needs attention" };
   function updateViewHeader(shown) {
-    var t = document.getElementById("viewTitle");
-    var c = document.getElementById("viewCount");
-    if (t) t.textContent = VIEW_TITLES[state.focus] || "All pucks";
-    if (c) c.textContent = shown != null ? String(shown) : "";
+    var title = VIEW_TITLES[state.focus] || "All pucks";
+    var count = shown != null ? String(shown) : "";
+    // Desktop: title lives in the view-header. Mobile: in the topbar (fills the
+    // otherwise-empty band between the menu and search). CSS shows one per width.
+    ["viewTitle", "topTitle"].forEach(function (id) { var e = document.getElementById(id); if (e) e.textContent = title; });
+    ["viewCount", "topCount"].forEach(function (id) { var e = document.getElementById(id); if (e) e.textContent = count; });
   }
 
   // ── filter chips ──
