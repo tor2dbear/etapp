@@ -917,3 +917,11 @@ body.modal-open { overflow: hidden; }
 .topbar .ghost { justify-content: center; }
 .top-new svg { width: 18px; height: 18px; }
 .top-new[hidden] { display: none; }
+
+/* ── mobile: keep the app header above the puck overlay ─────────────────────── */
+/* The overlay backdrop is z-index 50; the topbar sits just above it (but below the
+   menu drawer at 55/60) so the header stays visible and ☰ / search stay tappable
+   while a puck is open. openOverlay() offsets the backdrop below the topbar. */
+@media (max-width: 899px) {
+  .topbar { z-index: 51; }
+}

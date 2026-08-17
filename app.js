@@ -555,6 +555,11 @@
   function openOverlay(item) {
     modalPanel.style.setProperty("--repo", item.repoColor);
     fillDetail(modalContent, item);
+    // Keep the app header visible on mobile: the sheet starts just below the
+    // topbar (measured, so it's safe-area-proof) instead of covering it, and the
+    // topbar sits above the backdrop (z-index) so ☰ / search stay usable.
+    var tb = document.querySelector(".topbar");
+    modalBackdrop.style.top = tb && !isWide() ? Math.round(tb.getBoundingClientRect().bottom) + "px" : "";
     modalBackdrop.hidden = false;
     document.body.classList.add("modal-open");
     modalContent.scrollTop = 0;
@@ -579,6 +584,7 @@
     if (location.hash) setHash(null);
     if (modalBackdrop) {
       modalBackdrop.hidden = true;
+      modalBackdrop.style.top = "";
       document.body.classList.remove("modal-open");
     }
     closeDetail();
