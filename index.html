@@ -23,7 +23,22 @@
           <h1>Roadmap</h1>
           <p class="sub" id="subtitle">Aggregated across repos · loading…</p>
         </div>
-        <nav class="side-views" id="sideViews" aria-label="Views"></nav>
+        <!-- top actions: search opens the ⌘K palette; New creates a puck (token-gated) -->
+        <div class="side-actions" id="sideActions">
+          <button id="sideSearch" class="side-act side-search" type="button" aria-label="Search (Cmd/Ctrl+K)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <span>Search</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <button id="sideNew" class="side-act side-new" type="button" aria-label="New puck" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <span>New</span>
+          </button>
+        </div>
+        <div class="side-section">
+          <div class="side-eyebrow">Views</div>
+          <nav class="side-views" id="sideViews" aria-label="Views"></nav>
+        </div>
         <div class="side-section">
           <div class="side-eyebrow">Repos</div>
           <div class="side-repos" id="repoFilters" aria-label="Repositories"></div>
@@ -32,10 +47,6 @@
           <div class="side-eyebrow">Disciplines</div>
           <div class="side-repos" id="tagFilters" aria-label="Disciplines"></div>
         </div>
-        <label class="side-toggle">
-          <input type="checkbox" id="showDone" />
-          <span>Show done</span>
-        </label>
         <div class="side-foot">
           <button id="theme" class="ghost" title="Toggle theme" aria-label="Toggle theme">◐</button>
         </div>
@@ -43,12 +54,12 @@
 
       <!-- ── main column: topbar + work ── -->
       <div class="maincol">
+        <!-- mobile-only: sidebar (with search + New) is behind the menu, so mirror
+             the quick actions here; hidden on desktop where the sidebar is visible -->
         <header class="topbar">
           <button id="menuToggle" class="ghost menu-toggle" type="button" aria-label="Menu">☰</button>
-          <button id="cmdkTrigger" class="cmdk-trigger" type="button" aria-label="Search (Cmd/Ctrl+K)">
+          <button id="topSearch" class="ghost top-search" type="button" aria-label="Search (Cmd/Ctrl+K)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-            <span>Search…</span>
-            <kbd>⌘K</kbd>
           </button>
         </header>
 
@@ -57,6 +68,13 @@
           <h2 class="view-title" id="viewTitle">All pucks</h2>
           <span class="view-count" id="viewCount"></span>
           <div class="vopts" id="viewActions">
+            <div class="filter-wrap">
+              <button id="filterBtn" class="ghost filter-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Filter">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18M6 12h12M10 19h4"/></svg>
+                <span>Filter</span>
+                <span id="filterCount" class="filter-count" hidden></span>
+              </button>
+            </div>
             <div class="filter-sort">
               <label for="sortSelect">Sort</label>
               <select id="sortSelect">

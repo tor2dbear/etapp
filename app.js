@@ -38,7 +38,8 @@
     tags: new Set(), // empty = all
     query: "",
     showDone: false,
-    focus: "all", // "all" | "ready" (unblocked now/next) | "attention" (flagged)
+    priorityFilter: null, // null = any; else one of PRIORITIES
+    focus: "all", // "all" | "ready" (unblocked now/next) | "inbox" (triage) | "attention" (flagged)
     view: "board", // "board" (kanban columns) | "list" (one column, grouped by status)
     sort: "default", // see SORTS below
   };
@@ -149,15 +150,21 @@
   }
 
   function matches(item) {
-    // Cockpit focus: Ready = unblocked now/next; Attention = flagged (drift).
+    // Views: Ready = unblocked now/next; Inbox = triage (its own space); Attention
+    // = flagged (drift); All = the committed board (now/next/later/done), no inbox.
     if (state.focus === "ready") {
       if (item.status !== "now" && item.status !== "next") return false;
       if ((item.blockedBy || []).length) return false;
+    } else if (state.focus === "inbox") {
+      if (item.status !== "inbox") return false; // dedicated triage surface
     } else if (state.focus === "attention") {
       if (!isFlagged(item)) return false; // flagged done surfaces even if "show done" is off
-    } else if (!state.showDone && item.status === "done") {
-      return false;
+    } else {
+      // "all" = the board of committed work; inbox lives in its own view.
+      if (item.status === "inbox") return false;
+      if (!state.showDone && item.status === "done") return false;
     }
+    if (state.priorityFilter && item.priority !== state.priorityFilter) return false;
     if (state.repos.size && !state.repos.has(item.repo)) return false;
     if (state.tags.size) {
       var hit = item.tags.some(function (t) { return state.tags.has(t); });
@@ -379,10 +386,16 @@
     container.style.setProperty("--repo", item.repoColor);
 
     var crumb = el("div", "detail-crumb");
+    var home = el("button", "crumb-home", VIEW_TITLES[state.focus] || "Board");
+    home.type = "button";
+    home.title = "Back to the board";
+    home.addEventListener("click", function () { closeModal(); });
+    crumb.appendChild(home);
+    crumb.appendChild(el("span", "crumb-sep", "›"));
     var cdot = el("span", "repo-dot");
     cdot.style.background = item.repoColor;
     crumb.appendChild(cdot);
-    crumb.appendChild(document.createTextNode(item.repoName + " · " + item.slug));
+    crumb.appendChild(el("span", "crumb-cur", item.repoName + " · " + item.slug));
     container.appendChild(crumb);
 
     container.appendChild(el("h2", "modal-title", item.title));
@@ -653,13 +666,12 @@
 
   function renderBoard() {
     board.innerHTML = "";
-    // Ready is a focused work queue → always the grouped list, whatever the layout toggle says.
-    var layout = state.focus === "ready" ? "list" : state.view;
+    // Ready and Inbox are focused queues → always the grouped list, whatever the toggle says.
+    var queue = state.focus === "ready" || state.focus === "inbox";
+    var layout = queue ? "list" : state.view;
     board.classList.toggle("as-list", layout === "list");
     var visible = DATA.items.filter(matches).sort(sortComparator());
-    var statuses = DATA.statuses.filter(function (s) {
-      return s !== "done" || state.showDone || state.focus === "attention";
-    });
+    var statuses = columnsForFocus();
 
     if (layout === "list") renderList(visible, statuses);
     else renderColumns(visible, statuses);
@@ -670,8 +682,20 @@
       shown + " of " + DATA.total + " shown · generated " + DATA.generatedAt.slice(0, 16).replace("T", " ") + " UTC · ";
   }
 
+  // Which status groups the current view shows. Inbox is its own space, so it's
+  // absent from every board view except the Inbox view itself.
+  function columnsForFocus() {
+    if (state.focus === "inbox") return ["inbox"];
+    if (state.focus === "ready") return ["now", "next"];
+    if (state.focus === "attention") return DATA.statuses; // flagged can be any status
+    // "all" = the committed board: now/next/later (+done when shown), never inbox.
+    return DATA.statuses.filter(function (s) {
+      return s !== "inbox" && (s !== "done" || state.showDone);
+    });
+  }
+
   // The consistent view-header reflects the current focus + how many are shown.
-  var VIEW_TITLES = { all: "All pucks", ready: "Ready to take", attention: "Needs attention" };
+  var VIEW_TITLES = { all: "All pucks", ready: "Ready to take", inbox: "Inbox", attention: "Needs attention" };
   function updateViewHeader(shown) {
     var t = document.getElementById("viewTitle");
     var c = document.getElementById("viewCount");
@@ -735,24 +759,38 @@
     else { set.add(key); chip.setAttribute("aria-pressed", "true"); }
   }
 
-  // Cockpit focus — Ready (unblocked now/next) · All · ⚠ (flagged). The primary
-  // way to steer the board: Ready is the actionable work queue, ⚠ is drift.
+  // Views — the primary navigation: All pucks (the committed board) · Ready (the
+  // actionable queue) · Inbox (triage of raw ideas, its own space) · ⚠ Needs
+  // attention (drift). Each is a nav row with a live count and a clear active state.
+  function viewCounts() {
+    var c = { all: 0, ready: 0, inbox: 0, attention: 0 };
+    DATA.items.forEach(function (it) {
+      if (it.status === "inbox") c.inbox++;
+      else if (it.status !== "done") c.all++;
+      if ((it.status === "now" || it.status === "next") && !(it.blockedBy || []).length) c.ready++;
+      if (isFlagged(it)) c.attention++;
+    });
+    return c;
+  }
   function buildFocusControl() {
-    var flaggedCount = DATA.items.filter(isFlagged).length;
+    var counts = viewCounts();
     var seg = el("div", "focusseg");
     seg.setAttribute("role", "group");
-    seg.setAttribute("aria-label", "Focus");
+    seg.setAttribute("aria-label", "Views");
     var defs = [
+      { key: "all", label: "All pucks", title: "The committed board — now/next/later" },
       { key: "ready", label: "Ready", title: "Unblocked now/next — pick one up or hand it to an agent" },
-      { key: "all", label: "All", title: "Every puck" },
+      { key: "inbox", label: "Inbox", title: "Raw ideas to triage — nothing here is a promise yet" },
     ];
-    if (flaggedCount) defs.push({ key: "attention", label: "⚠ " + flaggedCount, title: "Pucks whose declared status disagrees with reality" });
+    if (counts.attention) defs.push({ key: "attention", label: "Needs attention", title: "Pucks whose declared status disagrees with reality" });
     var btns = {};
     defs.forEach(function (d) {
-      var b = el("button", "focusbtn focus-" + d.key + (state.focus === d.key ? " on" : ""), d.label);
+      var b = el("button", "focusbtn focus-" + d.key + (state.focus === d.key ? " on" : ""));
       b.type = "button";
       b.title = d.title;
       b.setAttribute("aria-pressed", state.focus === d.key ? "true" : "false");
+      b.appendChild(el("span", "focus-label", d.label));
+      if (counts[d.key]) b.appendChild(el("span", "focus-n", String(counts[d.key])));
       b.addEventListener("click", function () {
         state.focus = d.key;
         Object.keys(btns).forEach(function (k) {
@@ -913,8 +951,10 @@
   }
 
   // ── ⌘K command palette (holds the search input) ──
+  // Opened from the sidebar Search button (desktop) or the topbar icon (mobile,
+  // where the sidebar is behind the menu) — both are plain buttons, not fake inputs.
   var cmdkOverlay = document.getElementById("cmdkOverlay");
-  var cmdkTrigger = document.getElementById("cmdkTrigger");
+  var cmdkTriggers = [document.getElementById("sideSearch"), document.getElementById("topSearch")];
   function openCmdk() {
     if (!cmdkOverlay) return;
     cmdkOverlay.hidden = false;
@@ -931,7 +971,7 @@
     if (searchInput.value) { searchInput.value = ""; state.query = ""; updateSearchClear(); renderBoard(); }
     hideSuggestions();
   }
-  if (cmdkTrigger) cmdkTrigger.addEventListener("click", openCmdk);
+  cmdkTriggers.forEach(function (t) { if (t) t.addEventListener("click", function () { openCmdk(); maybeCloseMenu(); }); });
   if (cmdkOverlay) cmdkOverlay.addEventListener("mousedown", function (e) { if (e.target === cmdkOverlay) closeCmdk(); });
   document.addEventListener("keydown", function (e) {
     var k = e.key.toLowerCase();
@@ -1008,10 +1048,61 @@
   document.addEventListener("click", function (e) {
     if (swallowClick) { swallowClick = false; e.preventDefault(); e.stopPropagation(); }
   }, true);
-  document.getElementById("showDone").addEventListener("change", function (e) {
-    state.showDone = e.target.checked;
-    renderBoard();
-  });
+  // ── Filter popover (view-header) — view-scoped filters: Show done + Priority.
+  // Sidebar = scope (repos/disciplines); this = what the current view shows.
+  function activeFilterCount() {
+    return (state.showDone ? 1 : 0) + (state.priorityFilter ? 1 : 0);
+  }
+  function refreshFilterBadge() {
+    var badge = document.getElementById("filterCount");
+    var btn = document.getElementById("filterBtn");
+    if (!badge || !btn) return;
+    var n = activeFilterCount();
+    badge.hidden = !n;
+    badge.textContent = n ? String(n) : "";
+    btn.classList.toggle("on", !!n);
+  }
+  var filterBtn = document.getElementById("filterBtn");
+  function toggleFilterMenu() {
+    var wrap = filterBtn && filterBtn.parentNode;
+    if (!wrap) return;
+    var open = wrap.querySelector(".filter-pop");
+    if (open) { open.remove(); filterBtn.setAttribute("aria-expanded", "false"); return; }
+    var pop = el("div", "filter-pop");
+
+    // Show done
+    var doneRow = el("label", "fp-toggle");
+    var cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = state.showDone;
+    cb.addEventListener("change", function () { state.showDone = cb.checked; renderBoard(); refreshFilterBadge(); });
+    doneRow.appendChild(cb); doneRow.appendChild(el("span", null, "Show done"));
+    pop.appendChild(doneRow);
+
+    // Priority
+    pop.appendChild(el("div", "fp-label", "Priority"));
+    var prow = el("div", "fp-chips");
+    var opts = [{ v: null, l: "Any" }].concat(PRIORITIES.map(function (p) { return { v: p, l: PRIORITY_LABEL[p] }; }));
+    opts.forEach(function (o) {
+      var chip = el("button", "fp-chip" + (state.priorityFilter === o.v ? " on" : "") + (o.v ? " pri-" + o.v : ""), o.l);
+      chip.type = "button";
+      chip.addEventListener("click", function () {
+        state.priorityFilter = o.v;
+        prow.querySelectorAll(".fp-chip").forEach(function (c) { c.classList.remove("on"); });
+        chip.classList.add("on");
+        renderBoard(); refreshFilterBadge();
+      });
+      prow.appendChild(chip);
+    });
+    pop.appendChild(prow);
+
+    wrap.appendChild(pop);
+    filterBtn.setAttribute("aria-expanded", "true");
+    setTimeout(function () {
+      document.addEventListener("click", function closer(e) {
+        if (!wrap.contains(e.target)) { pop.remove(); filterBtn.setAttribute("aria-expanded", "false"); document.removeEventListener("click", closer); }
+      });
+    }, 0);
+  }
+  if (filterBtn) filterBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleFilterMenu(); });
 
 
   // ── boot ──
@@ -1339,12 +1430,11 @@
   }
   function afterAuth() { refreshEditControls(); refreshUser(); }
   function buildEditControls() {
-    var host = document.getElementById("viewActions");
-    if (!host) return;
-    newBtn = el("button", "newbtn", "＋ New");
-    newBtn.type = "button"; newBtn.title = "New puck"; newBtn.hidden = !ghToken();
+    // New lives at the top of the sidebar (a primary create action), token-gated.
+    newBtn = document.getElementById("sideNew");
+    if (!newBtn) return;
+    newBtn.hidden = !ghToken();
     newBtn.addEventListener("click", openNewPuckPanel);
-    host.appendChild(newBtn);
   }
 
   // A user chip at the top of the sidebar: your GitHub identity (derived from the
