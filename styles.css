@@ -710,7 +710,7 @@ body.modal-open { overflow: hidden; }
 .sect-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 16px 0 6px; }
 
 /* ── user chip at the top of the sidebar (identity + sign out) ─────────────── */
-.side-user { padding: 0 4px; }
+.side-user { padding: 0 4px; position: relative; }
 .user-signin {
   display: flex; align-items: center; gap: 8px; width: 100%;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
@@ -730,7 +730,8 @@ body.modal-open { overflow: hidden; }
 .user-caret { margin-left: auto; color: var(--ink-3); font-size: 10px; }
 .user-chip.bad .user-name { color: #cc6149; }
 .user-menu {
-  margin: 4px 0 0; background: var(--panel); border: 1px solid var(--line);
+  position: absolute; top: calc(100% + 4px); left: 4px; right: 4px; z-index: 50;
+  background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; box-shadow: var(--shadow); padding: 4px; display: flex; flex-direction: column;
 }
 .user-mi { text-align: left; background: none; border: 0; padding: 7px 9px; border-radius: 6px; color: var(--ink); font-size: 13px; cursor: pointer; }
@@ -873,3 +874,27 @@ body.modal-open { overflow: hidden; }
 .crumb-home { font: inherit; font-family: var(--mono); font-size: 11px; color: var(--ink-2); background: none; border: 0; padding: 0; cursor: pointer; }
 .crumb-home:hover { color: var(--accent); }
 .crumb-sep, .crumb-cur { color: var(--ink-3); }
+
+/* ── properties rail: value-chip + picker popover (Linear-style) ────────────── */
+.prop-pick { position: relative; display: inline-flex; }
+.pick-chip {
+  display: inline-flex; align-items: center; gap: 6px; font: inherit;
+  background: none; border: 1px solid transparent; border-radius: 7px;
+  padding: 3px 7px; margin: -3px -7px; color: var(--ink); cursor: pointer; text-align: left;
+}
+.pick-chip.editable:hover { background: var(--panel-2); border-color: var(--line); }
+.pick-chip.static { cursor: default; padding: 0; margin: 0; }
+.pick-caret { color: var(--ink-3); font-size: 10px; flex: none; }
+.pick-menu {
+  position: absolute; top: calc(100% + 5px); left: -1px; z-index: 45; min-width: 190px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 4px; display: flex; flex-direction: column; gap: 1px;
+}
+.pick-mi {
+  display: flex; align-items: center; gap: 8px; font: inherit; font-size: 13px;
+  background: none; border: 0; border-radius: 6px; padding: 7px 9px; color: var(--ink);
+  cursor: pointer; text-align: left; width: 100%;
+}
+.pick-mi:hover { background: var(--panel-2); }
+.pick-mi.on { background: var(--panel-2); }
+.pick-check { margin-left: auto; color: var(--accent); flex: none; }

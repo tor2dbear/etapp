@@ -379,6 +379,45 @@
     return row;
   }
 
+  // A Linear-style editable property: a single chip showing the *current* value;
+  // click opens a picker popover to change it. Static chip when not editable. This
+  // is the growable pattern — a new field is one more propPicker, not a button row.
+  //   opts: { editable, current, options:[{value,label}], valueNode(o), onPick(v) }
+  function propPicker(opts) {
+    var cur = null;
+    for (var i = 0; i < opts.options.length; i++) if (opts.options[i].value === opts.current) cur = opts.options[i];
+    var chip = el("button", "pick-chip");
+    chip.type = "button";
+    function paint(node) { chip.innerHTML = ""; chip.appendChild(node); }
+    paint(cur ? opts.valueNode(cur) : el("span", "prop-muted", opts.placeholder || "—"));
+    if (!opts.editable) { chip.classList.add("static"); chip.disabled = true; return chip; }
+    chip.classList.add("editable");
+    chip.appendChild(el("span", "pick-caret", "▾"));
+    var wrap = el("div", "prop-pick");
+    chip.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (wrap.querySelector(".pick-menu")) { closeMenu(); return; }
+      var menu = el("div", "pick-menu");
+      opts.options.forEach(function (o) {
+        var mi = el("button", "pick-mi" + (o.value === opts.current ? " on" : ""));
+        mi.type = "button";
+        mi.appendChild(opts.valueNode(o));
+        if (o.value === opts.current) mi.appendChild(el("span", "pick-check", "✓"));
+        mi.addEventListener("click", function () { closeMenu(); if (o.value !== opts.current) opts.onPick(o.value); });
+        menu.appendChild(mi);
+      });
+      wrap.appendChild(menu);
+      setTimeout(function () {
+        document.addEventListener("click", function closer(ev) {
+          if (!wrap.contains(ev.target)) { closeMenu(); document.removeEventListener("click", closer); }
+        });
+      }, 0);
+    });
+    function closeMenu() { var m = wrap.querySelector(".pick-menu"); if (m) m.remove(); }
+    wrap.appendChild(chip);
+    return wrap;
+  }
+
   // Build the full puck detail into `container` — shared by both surfaces.
   // Structure: breadcrumb → title → properties rail → details (body) → links.
   function fillDetail(container, item) {
@@ -403,46 +442,35 @@
     // ── properties rail — discrete rows, Linear-style ──
     var props = el("div", "props");
 
-    // Status: editable buttons (token + native) or a static pill.
-    var statusVal;
-    if (ghToken() && item.native) {
-      statusVal = el("div", "prop-status-edit");
-      DATA.statuses.forEach(function (s) {
-        var b = el("button", "edit-btn status-" + s + (s === item.status ? " active" : ""), STATUS_LABEL[s] || s);
-        b.type = "button";
-        if (s === item.status) b.disabled = true;
-        else b.addEventListener("click", function () { changeStatus(item, s); });
-        statusVal.appendChild(b);
-      });
-    } else {
-      statusVal = el("span", "status-pill status-" + item.status, STATUS_LABEL[item.status] || item.status);
-    }
-    props.appendChild(propRow("Status", statusVal));
+    var editable = ghToken() && item.native;
 
-    // Priority: editable chips (token + native) or a static badge / dash.
-    var prioVal;
-    if (ghToken() && item.native) {
-      prioVal = el("div", "prop-status-edit");
-      PRIORITIES.forEach(function (pr) {
-        var b = el("button", "edit-btn pri-btn pri-" + pr + (pr === item.priority ? " active" : ""), PRIORITY_LABEL[pr]);
-        b.type = "button";
-        if (pr === item.priority) b.disabled = true;
-        else b.addEventListener("click", function () { changePriority(item, pr); });
-        prioVal.appendChild(b);
-      });
-      var none = el("button", "edit-btn pri-btn pri-none" + (item.priority ? "" : " active"), "None");
-      none.type = "button";
-      if (!item.priority) none.disabled = true;
-      else none.addEventListener("click", function () { changePriority(item, null); });
-      prioVal.appendChild(none);
-    } else if (item.priority) {
-      prioVal = el("span", "pri-inline");
-      prioVal.appendChild(priorityBadge(item.priority));
-      prioVal.appendChild(document.createTextNode(" " + (PRIORITY_LABEL[item.priority] || item.priority)));
-    } else {
-      prioVal = el("span", "prop-muted", "—");
+    // Status: current value as a chip; click to pick (editable) — Linear-style.
+    props.appendChild(propRow("Status", propPicker({
+      editable: editable,
+      current: item.status,
+      options: DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; }),
+      valueNode: function (o) { return el("span", "status-pill status-" + o.value, o.label); },
+      onPick: function (v) { changeStatus(item, v); },
+    })));
+
+    // Priority: same pattern. Shown when editable or when the puck has one set.
+    if (editable || item.priority) {
+      props.appendChild(propRow("Priority", propPicker({
+        editable: editable,
+        current: item.priority || null,
+        placeholder: "No priority",
+        options: [{ value: null, label: "No priority" }].concat(
+          PRIORITIES.map(function (p) { return { value: p, label: PRIORITY_LABEL[p] }; })),
+        valueNode: function (o) {
+          if (!o.value) return el("span", "prop-muted", "No priority");
+          var v = el("span", "pri-inline");
+          v.appendChild(priorityBadge(o.value));
+          v.appendChild(document.createTextNode(" " + (PRIORITY_LABEL[o.value] || o.value)));
+          return v;
+        },
+        onPick: function (v) { changePriority(item, v); },
+      })));
     }
-    props.appendChild(propRow("Priority", prioVal));
 
     props.appendChild(propRow("Assignee", item.owner
       ? ownerEl(item.owner, { name: true, link: true })
@@ -1333,20 +1361,6 @@
     });
   }
 
-  // Status editor inside the modal — native pucks only, token set.
-  function buildStatusEditor(item, container) {
-    if (!ghToken() || !item.native) return;
-    var row = el("div", "edit-status");
-    row.appendChild(el("span", "edit-label", "Set status"));
-    DATA.statuses.forEach(function (s) {
-      var b = el("button", "edit-btn status-" + s + (s === item.status ? " active" : ""), STATUS_LABEL[s] || s);
-      b.type = "button";
-      if (s === item.status) b.disabled = true;
-      else b.addEventListener("click", function () { changeStatus(item, s); });
-      row.appendChild(b);
-    });
-    (container || modalContent).appendChild(row);
-  }
 
   // Toast
   var toastEl, toastTimer;
