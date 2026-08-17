@@ -989,5 +989,6 @@ body.viewing-puck .topbar .top-crumb { display: flex; }
 body.viewing-puck .topbar .top-share-btn { display: inline-flex; }
 .top-share-btn { margin-left: auto; }
 .top-share-btn svg { width: 17px; height: 17px; }
+.menu-toggle svg { width: 17px; height: 17px; }
 /* The topbar now carries the breadcrumb → drop the duplicate in-content one on mobile. */
 @media (max-width: 899px) { body.viewing-puck .detail-crumb { display: none; } }
