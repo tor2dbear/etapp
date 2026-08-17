@@ -587,3 +587,18 @@ body.modal-open { overflow: hidden; }
 .card-date, .chip .n, #footmeta { font-family: var(--mono); }
 .brand .sub { font-size: 12px; letter-spacing: .015em; }
 .col-head h2 { letter-spacing: .11em; }
+
+/* ── cockpit focus switcher (Ready · All · ⚠) ─────────────────────────────── */
+.focusseg {
+  display: inline-flex; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 9px; padding: 2px; gap: 2px; flex: none;
+}
+.focusbtn {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .02em; color: var(--ink-2);
+  background: none; border: 0; padding: 5px 13px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+}
+@media (hover: hover) { .focusbtn:hover { color: var(--ink); } }
+.focusbtn.on { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
+.focusbtn.focus-ready.on { color: var(--next); }
+.focusbtn.focus-attention.on { color: var(--later); }
+.focusbtn:focus:not(:focus-visible) { outline: none; }

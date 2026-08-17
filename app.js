@@ -20,7 +20,7 @@
     tags: new Set(), // empty = all
     query: "",
     showDone: false,
-    attention: false,
+    focus: "all", // "all" | "ready" (unblocked now/next) | "attention" (flagged)
     view: "board", // "board" (kanban columns) | "list" (one column, grouped by status)
     sort: "default", // see SORTS below
   };
@@ -130,9 +130,15 @@
   }
 
   function matches(item) {
-    if (state.attention && !isFlagged(item)) return false;
-    // In attention mode, flagged done items should surface even if "show done" is off.
-    if (!state.attention && !state.showDone && item.status === "done") return false;
+    // Cockpit focus: Ready = unblocked now/next; Attention = flagged (drift).
+    if (state.focus === "ready") {
+      if (item.status !== "now" && item.status !== "next") return false;
+      if ((item.blockedBy || []).length) return false;
+    } else if (state.focus === "attention") {
+      if (!isFlagged(item)) return false; // flagged done surfaces even if "show done" is off
+    } else if (!state.showDone && item.status === "done") {
+      return false;
+    }
     if (state.repos.size && !state.repos.has(item.repo)) return false;
     if (state.tags.size) {
       var hit = item.tags.some(function (t) { return state.tags.has(t); });
@@ -538,13 +544,15 @@
 
   function renderBoard() {
     board.innerHTML = "";
-    board.classList.toggle("as-list", state.view === "list");
+    // Ready is a focused work queue → always the grouped list, whatever the layout toggle says.
+    var layout = state.focus === "ready" ? "list" : state.view;
+    board.classList.toggle("as-list", layout === "list");
     var visible = DATA.items.filter(matches).sort(sortComparator());
     var statuses = DATA.statuses.filter(function (s) {
-      return s !== "done" || state.showDone || state.attention;
+      return s !== "done" || state.showDone || state.focus === "attention";
     });
 
-    if (state.view === "list") renderList(visible, statuses);
+    if (layout === "list") renderList(visible, statuses);
     else renderColumns(visible, statuses);
 
     updateFilterButton();
@@ -599,21 +607,37 @@
     else { set.add(key); chip.setAttribute("aria-pressed", "true"); }
   }
 
-  // "Needs attention" filter — only shown when something is actually flagged.
-  function buildAttentionChip() {
-    var flagged = DATA.items.filter(function (it) { return isFlagged(it); }).length;
-    if (!flagged) return;
-    var chip = el("button", "chip attention");
-    chip.setAttribute("aria-pressed", "false");
-    chip.appendChild(document.createTextNode("⚠ Needs attention"));
-    chip.appendChild(el("span", "n", String(flagged)));
-    chip.title = "Pucks whose declared status disagrees with reality — a linked issue's state, or a now/next puck gone quiet.";
-    chip.addEventListener("click", function () {
-      state.attention = !state.attention;
-      chip.setAttribute("aria-pressed", state.attention ? "true" : "false");
-      renderBoard();
+  // Cockpit focus — Ready (unblocked now/next) · All · ⚠ (flagged). The primary
+  // way to steer the board: Ready is the actionable work queue, ⚠ is drift.
+  function buildFocusControl() {
+    var flaggedCount = DATA.items.filter(isFlagged).length;
+    var seg = el("div", "focusseg");
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "Focus");
+    var defs = [
+      { key: "ready", label: "Ready", title: "Unblocked now/next — pick one up or hand it to an agent" },
+      { key: "all", label: "All", title: "Every puck" },
+    ];
+    if (flaggedCount) defs.push({ key: "attention", label: "⚠ " + flaggedCount, title: "Pucks whose declared status disagrees with reality" });
+    var btns = {};
+    defs.forEach(function (d) {
+      var b = el("button", "focusbtn focus-" + d.key + (state.focus === d.key ? " on" : ""), d.label);
+      b.type = "button";
+      b.title = d.title;
+      b.setAttribute("aria-pressed", state.focus === d.key ? "true" : "false");
+      b.addEventListener("click", function () {
+        state.focus = d.key;
+        Object.keys(btns).forEach(function (k) {
+          btns[k].classList.toggle("on", k === d.key);
+          btns[k].setAttribute("aria-pressed", k === d.key ? "true" : "false");
+        });
+        renderBoard();
+      });
+      btns[d.key] = b;
+      seg.appendChild(b);
     });
-    document.getElementById("filters").insertBefore(chip, document.querySelector("#filters .toggle"));
+    var filters = document.getElementById("filters");
+    filters.insertBefore(seg, filters.firstChild);
   }
 
   // ── theme ──
@@ -866,7 +890,7 @@
   buildModal();
   buildRepoChips();
   buildTagChips();
-  buildAttentionChip();
+  buildFocusControl();
   updateViewButton();
   setFilters(window.matchMedia("(min-width: 601px)").matches);
   renderBoard();
