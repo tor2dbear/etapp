@@ -241,6 +241,10 @@
     slash: ["M1.25 7.5a6.25 6.25 0 1 0 12.5 0 6.25 6.25 0 1 0 -12.5 0", "m3.08125 3.08125 8.8375 8.8375"],
     share: ["M2.5 7.5v5a1.25 1.25 0 0 0 1.25 1.25h7.5a1.25 1.25 0 0 0 1.25 -1.25v-5", "m10 3.75 -2.5 -2.5 -2.5 2.5", "m7.5 1.25 0 8.125"],
     sidebar: ["M3.125 1.875h8.75s1.25 0 1.25 1.25v8.75s0 1.25 -1.25 1.25H3.125s-1.25 0 -1.25 -1.25V3.125s0 -1.25 1.25 -1.25", "m5.625 1.875 0 11.25"],
+    search: ["M1.875 6.875a5 5 0 1 0 10 0 5 5 0 1 0 -10 0", "m13.125 13.125 -2.71875 -2.71875"],
+    plus: ["m7.5 3.125 0 8.75", "m3.125 7.5 8.75 0"],
+    filter: ["M13.75 1.875 1.25 1.875l5 5.9125000000000005L6.25 11.875l2.5 1.25 0 -5.3374999999999995L13.75 1.875z"],
+    edit: ["M6.875 2.5H2.5a1.25 1.25 0 0 0 -1.25 1.25v8.75a1.25 1.25 0 0 0 1.25 1.25h8.75a1.25 1.25 0 0 0 1.25 -1.25v-4.375", "M11.5625 1.5625a1.325625 1.325625 0 0 1 1.875 1.875L7.5 9.375l-2.5 0.625 0.625 -2.5 5.9375 -5.9375z"],
     list: ["m5 3.75 8.125 0", "m5 7.5 8.125 0", "m5 11.25 8.125 0", "m1.875 3.75 0.00625 0", "m1.875 7.5 0.00625 0", "m1.875 11.25 0.00625 0"],
     grid: ["M1.875 1.875h4.375v4.375H1.875Z", "M8.75 1.875h4.375v4.375h-4.375Z", "M8.75 8.75h4.375v4.375h-4.375Z", "M1.875 8.75h4.375v4.375H1.875Z"],
     key: ["m13.125 1.25 -1.25 1.25m-4.7562500000000005 4.7562500000000005a3.4375 3.4375 0 1 1 -4.86125 4.86125 3.4375 3.4375 0 0 1 4.860625 -4.860625zm0 0L9.6875 4.6875m0 0 1.875 1.875L13.75 4.375l-1.875 -1.875m-2.1875 2.1875L11.875 2.5"],
@@ -597,7 +601,8 @@
     overview.appendChild(body);
 
     if (ghToken() && item.native) {
-      var editBtn = el("button", "linklike body-edit", "✎ Edit body");
+      var editBtn = el("button", "linklike body-edit", "Edit body");
+      editBtn.insertBefore(icon("edit", "inline"), editBtn.firstChild);
       editBtn.type = "button";
       editBtn.addEventListener("click", function () { startBodyEdit(item, body, editBtn); });
       overview.appendChild(editBtn);
@@ -1377,6 +1382,15 @@
   var scrimEl = document.getElementById("scrim");
   var menuBtn = document.getElementById("menuToggle");
   if (menuBtn) menuBtn.appendChild(icon("sidebar"));
+  // Inject the Feather glyphs into the chrome buttons (label buttons get the icon
+  // first, icon-only buttons just get it). Kept in JS so all icons share ICONS.
+  [["sideSearch", "search", true], ["sideNew", "plus", true], ["filterBtn", "filter", true],
+   ["topSearch", "search", false], ["topNew", "plus", false]].forEach(function (spec) {
+    var elm = document.getElementById(spec[0]);
+    if (!elm) return;
+    var ic = icon(spec[1]);
+    if (spec[2]) elm.insertBefore(ic, elm.firstChild); else elm.appendChild(ic);
+  });
   function setMenu(open) {
     if (!appEl) return;
     appEl.classList.toggle("menu-open", open);
