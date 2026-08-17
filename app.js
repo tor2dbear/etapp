@@ -741,7 +741,7 @@
     var tc = document.getElementById("topCrumb");
     if (tc) {
       tc.innerHTML = "";
-      var back = el("button", "crumb-back", "Pucks");
+      var back = el("button", "crumb-back", VIEW_TITLES[state.focus] || "Pucks");
       back.type = "button";
       back.addEventListener("click", function () { closeModal(); });
       tc.appendChild(back);
@@ -768,6 +768,9 @@
     }
     closeDetail();
   }
+  // Navigating the sidebar (a view/repo/tag/agent) while a puck is open should
+  // return to the board — otherwise the board changes behind the still-open puck.
+  function exitPuckView() { if (document.body.classList.contains("viewing-puck")) closeModal(); }
   function closeDetail() {
     paneRefs();
     selectedId = null;
@@ -933,8 +936,10 @@
       chip.appendChild(n);
       chip.title = s.blurb + (s.native ? "" : " — adapted from " + s.adapter);
       chip.addEventListener("click", function () {
+        exitPuckView();
         toggleSet(state.repos, s.repo, chip);
         renderBoard();
+        maybeCloseMenu();
       });
       wrap.appendChild(chip);
     });
@@ -955,7 +960,7 @@
       chip.setAttribute("aria-pressed", "false");
       chip.appendChild(document.createTextNode("#" + t));
       chip.appendChild(el("span", "n", String(counts[t])));
-      chip.addEventListener("click", function () { toggleSet(state.tags, t, chip); renderBoard(); });
+      chip.addEventListener("click", function () { exitPuckView(); toggleSet(state.tags, t, chip); renderBoard(); maybeCloseMenu(); });
       return chip;
     }
     tags.slice(0, CAP).forEach(function (t) { wrap.appendChild(chipFor(t)); });
@@ -990,7 +995,7 @@
       chip.appendChild(el("span", "agent-arrow", "→"));
       chip.appendChild(document.createTextNode(agentLabel(a)));
       chip.appendChild(el("span", "n", String(counts[a])));
-      chip.addEventListener("click", function () { toggleSet(state.agents, a, chip); renderBoard(); });
+      chip.addEventListener("click", function () { exitPuckView(); toggleSet(state.agents, a, chip); renderBoard(); maybeCloseMenu(); });
       wrap.appendChild(chip);
     });
   }
@@ -1033,6 +1038,7 @@
       b.appendChild(el("span", "focus-label", d.label));
       if (counts[d.key]) b.appendChild(el("span", "focus-n", String(counts[d.key])));
       b.addEventListener("click", function () {
+        exitPuckView();
         state.focus = d.key;
         Object.keys(btns).forEach(function (k) {
           btns[k].classList.toggle("on", k === d.key);
