@@ -874,9 +874,16 @@ body.viewing-puck .vhead { display: none; }
 .fp-chip.tag.on .fp-n { color: rgba(255, 255, 255, 0.8); }
 .fp-empty { color: var(--ink-3); font-size: 12px; padding: 4px 0; }
 
-/* puck glyph on the detail page — git-commit tinted with the repo colour */
-.detail-icon { margin: 2px 0 8px; line-height: 0; }
+/* puck glyph on the detail page — neutral git-commit mark (repo colour is the dot) */
+.detail-icon { margin: 2px 0 8px; line-height: 0; color: var(--ink-2); }
 .detail-icon svg { width: 26px; height: 26px; }
+
+/* puck glyph on cards — a neutral leading mark before the title */
+.card-head { display: flex; align-items: flex-start; gap: 7px; }
+.card-head .card-title { flex: 1; min-width: 0; margin: 0; }
+.puck-glyph { display: inline-flex; flex: none; line-height: 0; color: var(--ink-3); }
+.card-head .puck-glyph { margin-top: 2px; }
+.puck-glyph svg { width: 15px; height: 15px; }
 
 /* discipline shortcuts in the ⌘K palette */
 .suggest-tagmark { width: 16px; text-align: center; flex: none; color: var(--accent); font-family: var(--mono); font-weight: 700; }

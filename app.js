@@ -282,6 +282,15 @@
     return b;
   }
 
+  // The puck's structural mark: a neutral git-commit glyph (Linear shows the
+  // project icon in the view too). Deliberately NOT repo-tinted — repo colour
+  // stays on the compact dot, status stays on the column, so nothing doubles up.
+  function puckGlyph() {
+    var g = el("span", "puck-glyph");
+    g.appendChild(icon("commit"));
+    return g;
+  }
+
   // A card is a compact summary; tapping it opens the full detail in a modal
   // (fullscreen on mobile) so long bodies don't blow up the column height.
   function card(item) {
@@ -290,8 +299,11 @@
     c.setAttribute("data-id", item.id);
     c.style.setProperty("--repo", item.repoColor);
 
-    // Row 1: title.
-    c.appendChild(el("h3", "card-title", item.title));
+    // Row 1: puck glyph + title.
+    var head = el("div", "card-head");
+    head.appendChild(puckGlyph());
+    head.appendChild(el("h3", "card-title", item.title));
+    c.appendChild(head);
 
     // Row 2: repo (colored dot + name) on the left, ⚠ and date on the right.
     var meta = el("div", "card-meta");
@@ -465,10 +477,9 @@
     crumb.appendChild(el("span", "crumb-cur", item.repoName + " · " + item.slug));
     container.appendChild(crumb);
 
-    // Puck glyph (git-commit) tinted with the repo colour — Etapp's answer to
-    // Linear's project icon: a puck is a commit-like unit in git.
+    // Puck glyph (git-commit) — Etapp's answer to Linear's project icon: a puck is
+    // a commit-like unit in git. Neutral; repo colour lives on the breadcrumb dot.
     var pic = el("div", "detail-icon");
-    pic.style.color = item.repoColor;
     pic.appendChild(icon("commit"));
     container.appendChild(pic);
 
