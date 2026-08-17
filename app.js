@@ -439,7 +439,39 @@
 
     container.appendChild(el("h2", "modal-title", item.title));
 
-    // ── properties rail — discrete rows, Linear-style ──
+    // ── tabs: Overview (the puck) · Activity (git history of the puck's file).
+    //    Native pucks only — an adapted source has no per-puck file to log. ──
+    var overview = el("div", "tab-panel");
+    var activity = el("div", "tab-panel");
+    activity.hidden = true;
+    if (item.native) {
+      var tabs = el("div", "detail-tabs");
+      tabs.setAttribute("role", "tablist");
+      var tabBtns = {};
+      var activityLoaded = false;
+      var pick = function (name) {
+        overview.hidden = name !== "overview";
+        activity.hidden = name !== "activity";
+        Object.keys(tabBtns).forEach(function (k) {
+          tabBtns[k].classList.toggle("on", k === name);
+          tabBtns[k].setAttribute("aria-selected", k === name ? "true" : "false");
+        });
+        if (name === "activity" && !activityLoaded) { activityLoaded = true; loadActivity(item, activity); }
+      };
+      [["overview", "Overview"], ["activity", "Activity"]].forEach(function (t) {
+        var b = el("button", "tab-btn" + (t[0] === "overview" ? " on" : ""), t[1]);
+        b.type = "button"; b.setAttribute("role", "tab");
+        b.setAttribute("aria-selected", t[0] === "overview" ? "true" : "false");
+        b.addEventListener("click", function () { pick(t[0]); });
+        tabBtns[t[0]] = b;
+        tabs.appendChild(b);
+      });
+      container.appendChild(tabs);
+    }
+    container.appendChild(overview);
+    container.appendChild(activity);
+
+    // ── Overview: properties rail — discrete rows, Linear-style ──
     var props = el("div", "props");
 
     var editable = ghToken() && item.native;
@@ -502,25 +534,25 @@
 
     if (item.created) props.appendChild(propRow("Created", el("span", "prop-date", item.created)));
     if (item.updated) props.appendChild(propRow("Updated", el("span", "prop-date", item.updated)));
-    container.appendChild(props);
+    overview.appendChild(props);
 
     var sig = signalMessages(item);
     if (sig.length) {
       var flags = el("div", "card-flags");
       sig.forEach(function (m) { flags.appendChild(el("div", "flag", "⚠ " + m)); });
-      container.appendChild(flags);
+      overview.appendChild(flags);
     }
 
-    container.appendChild(el("div", "sect-label", "Details"));
+    overview.appendChild(el("div", "sect-label", "Details"));
     var body = el("div", "modal-body");
     body.innerHTML = renderMd(item.body || "(no details)");
-    container.appendChild(body);
+    overview.appendChild(body);
 
     if (ghToken() && item.native) {
       var editBtn = el("button", "linklike body-edit", "✎ Edit body");
       editBtn.type = "button";
       editBtn.addEventListener("click", function () { startBodyEdit(item, body, editBtn); });
-      container.appendChild(editBtn);
+      overview.appendChild(editBtn);
     }
 
     var links = el("div", "card-links");
@@ -543,7 +575,50 @@
       });
     });
     links.appendChild(copyBtn);
-    container.appendChild(links);
+    overview.appendChild(links);
+  }
+
+  // Activity tab: the git history of this puck's file, read live from GitHub's
+  // commits API (no second store — the markdown file's history IS the log). Lazy:
+  // fetched only when the tab is first opened. Native pucks only.
+  function loadActivity(item, panel) {
+    panel.innerHTML = "";
+    panel.appendChild(el("div", "activity-loading", "Loading history…"));
+    var branch = branchOf(item);
+    var url = "https://api.github.com/repos/" + item.repo + "/commits?path=" +
+      encodeURIComponent(item.sourcePath) + "&sha=" + encodeURIComponent(branch) + "&per_page=30";
+    var headers = { Accept: "application/vnd.github+json" };
+    var tok = ghToken();
+    if (tok) headers.Authorization = "Bearer " + tok;
+    fetch(url, { headers: headers })
+      .then(function (r) { if (!r.ok) throw new Error("History unavailable (" + r.status + ")"); return r.json(); })
+      .then(function (commits) {
+        panel.innerHTML = "";
+        if (!commits.length) { panel.appendChild(el("div", "activity-empty", "No history for this puck yet.")); return; }
+        var list = el("ol", "activity-list");
+        commits.forEach(function (c) {
+          var li = el("li", "activity-item");
+          li.appendChild(el("span", "activity-dot"));
+          var bodyEl = el("div", "activity-body");
+          var date = ((c.commit && c.commit.author && c.commit.author.date) || "").slice(0, 10);
+          var who = (c.author && c.author.login) ? "@" + c.author.login
+            : (c.commit && c.commit.author && c.commit.author.name) || "unknown";
+          var msg = ((c.commit && c.commit.message) || "").split("\n")[0];
+          var a = el("a", "activity-msg", msg);
+          a.href = c.html_url; a.target = "_blank"; a.rel = "noopener";
+          bodyEl.appendChild(a);
+          bodyEl.appendChild(el("div", "activity-meta", who + " · " + date));
+          li.appendChild(bodyEl);
+          list.appendChild(li);
+        });
+        panel.appendChild(list);
+      })
+      .catch(function () {
+        panel.innerHTML = "";
+        panel.appendChild(el("div", "activity-empty", "Couldn’t load the history here (private repo or rate limit)."));
+        var hist = linkEl("View history on GitHub ↗", (item.sourceUrl || "").replace("/blob/", "/commits/"));
+        panel.appendChild(hist);
+      });
   }
 
   // Router: side pane on desktop, modal on mobile. Both reflect the URL hash.

@@ -919,3 +919,24 @@ body.viewing-puck .vhead { display: none; }
 @media (max-width: 899px) {
   .topbar { z-index: 51; }
 }
+
+/* ── puck page: Overview / Activity tabs + git-history list ─────────────────── */
+.detail-tabs { display: flex; gap: 2px; margin: 10px 0 14px; border-bottom: 1px solid var(--line); }
+.tab-btn {
+  font: inherit; font-size: 13px; background: none; border: 0;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 8px 10px;
+  color: var(--ink-3); cursor: pointer;
+}
+.tab-btn:hover { color: var(--ink-2); }
+.tab-btn.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-panel[hidden] { display: none; }
+
+.activity-loading, .activity-empty { color: var(--ink-3); font-size: 13px; padding: 12px 0; }
+.activity-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.activity-item { display: flex; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+.activity-item:first-child { border-top: 0; }
+.activity-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); margin-top: 6px; flex: none; }
+.activity-body { min-width: 0; }
+.activity-msg { color: var(--ink); text-decoration: none; font-size: 13.5px; display: block; overflow-wrap: anywhere; }
+.activity-msg:hover { color: var(--accent); }
+.activity-meta { color: var(--ink-3); font-size: 12px; font-family: var(--mono); margin-top: 2px; }
