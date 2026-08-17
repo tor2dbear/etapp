@@ -855,8 +855,42 @@
   function chooseSuggestion(it) {
     hideSuggestions();
     searchInput.blur();
+    closeCmdk();
     openModal(it);
   }
+
+  // ── ⌘K command palette (holds the search input) ──
+  var cmdkOverlay = document.getElementById("cmdkOverlay");
+  var cmdkTrigger = document.getElementById("cmdkTrigger");
+  function openCmdk() {
+    if (!cmdkOverlay) return;
+    cmdkOverlay.hidden = false;
+    document.body.classList.add("cmdk-open");
+    searchInput.focus();
+    searchInput.select();
+    updateSuggestions();
+  }
+  function closeCmdk() {
+    if (!cmdkOverlay || cmdkOverlay.hidden) return;
+    cmdkOverlay.hidden = true;
+    document.body.classList.remove("cmdk-open");
+    // Palette is navigation, not a lingering board filter — reset the query on close.
+    if (searchInput.value) { searchInput.value = ""; state.query = ""; updateSearchClear(); renderBoard(); }
+    hideSuggestions();
+  }
+  if (cmdkTrigger) cmdkTrigger.addEventListener("click", openCmdk);
+  if (cmdkOverlay) cmdkOverlay.addEventListener("mousedown", function (e) { if (e.target === cmdkOverlay) closeCmdk(); });
+  document.addEventListener("keydown", function (e) {
+    var k = e.key.toLowerCase();
+    if ((e.metaKey || e.ctrlKey) && k === "k") { e.preventDefault(); cmdkOverlay && cmdkOverlay.hidden ? openCmdk() : closeCmdk(); return; }
+    // "/" opens search when not already typing in a field
+    if (k === "/" && !e.metaKey && !e.ctrlKey) {
+      var t = e.target;
+      var typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      if (!typing) { e.preventDefault(); openCmdk(); return; }
+    }
+    if (k === "escape" && cmdkOverlay && !cmdkOverlay.hidden) { closeCmdk(); }
+  });
 
   var searchClear = document.getElementById("searchClear");
   function updateSearchClear() { searchClear.hidden = !searchInput.value; }
