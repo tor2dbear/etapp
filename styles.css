@@ -601,30 +601,22 @@ body.modal-open { overflow: hidden; }
 
 /* ── Pass 3: work area = board + optional detail pane (desktop) ──────────── */
 .work { display: grid; grid-template-columns: 1fr; align-items: start; }
-.work.has-detail { grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); }
+/* A puck opens as a full-width page (same on desktop + mobile): the board and the
+   view-header hide, and the detail fills the content area as a centered,
+   document-width column. The breadcrumb "← All pucks" is the back action. */
+body.viewing-puck #board,
+body.viewing-puck .vhead { display: none; }
 .detail-pane {
-  position: sticky; top: 0; height: 100vh; overflow-y: auto;
-  background: var(--panel); border-left: 1px solid var(--line);
-  padding: 16px 22px 32px; display: flex; flex-direction: column;
-  -webkit-overflow-scrolling: touch;
+  background: var(--bg);
+  padding: 16px 22px 56px; display: flex; flex-direction: column;
 }
 .detail-pane[hidden] { display: none; }
-.detail-close {
-  align-self: flex-end; flex: none; margin-bottom: 2px;
-  width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-3);
-  font-size: 12px; line-height: 1;
-}
-@media (hover: hover) { .detail-close:hover { color: var(--ink); border-color: var(--accent); } }
+.detail-close { display: none; }
+.detail-content { max-width: 760px; width: 100%; margin: 0 auto; }
 .detail-content .card-links { padding-top: 4px; }
 
-/* selected card/row highlight (desktop pane) */
+/* selected card/row highlight */
 .card.sel, .list-row.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-
-@media (max-width: 899px) {
-  .detail-pane { display: none !important; } /* mobile uses the modal overlay */
-  .work.has-detail { grid-template-columns: 1fr; }
-}
 
 /* ── Pass 4: app shell — left sidebar + thin topbar ───────────────────────── */
 .app { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; }

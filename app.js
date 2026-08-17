@@ -425,7 +425,7 @@
     container.style.setProperty("--repo", item.repoColor);
 
     var crumb = el("div", "detail-crumb");
-    var home = el("button", "crumb-home", VIEW_TITLES[state.focus] || "Board");
+    var home = el("button", "crumb-home", "← " + (VIEW_TITLES[state.focus] || "Board"));
     home.type = "button";
     home.title = "Back to the board";
     home.addEventListener("click", function () { closeModal(); });
@@ -548,30 +548,19 @@
 
   // Router: side pane on desktop, modal on mobile. Both reflect the URL hash.
   function openModal(item) {
-    if (isWide()) openDetail(item);
-    else openOverlay(item);
+    openDetail(item);
     setHash(item.id);
   }
-  function openOverlay(item) {
-    modalPanel.style.setProperty("--repo", item.repoColor);
-    fillDetail(modalContent, item);
-    // Keep the app header visible on mobile: the sheet starts just below the
-    // topbar (measured, so it's safe-area-proof) instead of covering it, and the
-    // topbar sits above the backdrop (z-index) so ☰ / search stay usable.
-    var tb = document.querySelector(".topbar");
-    modalBackdrop.style.top = tb && !isWide() ? Math.round(tb.getBoundingClientRect().bottom) + "px" : "";
-    modalBackdrop.hidden = false;
-    document.body.classList.add("modal-open");
-    modalContent.scrollTop = 0;
-  }
+  // A puck opens as a full-width page: the board + view-header hide and the detail
+  // fills the content area (same on desktop and mobile). The breadcrumb is "back".
   function openDetail(item) {
     paneRefs();
     fillDetail(detailContent, item);
     detailPane.hidden = false;
-    workEl.classList.add("has-detail");
+    document.body.classList.add("viewing-puck");
     detailContent.scrollTop = 0;
+    window.scrollTo(0, 0);
     selectedId = item.id;
-    highlightSelected();
   }
   function highlightSelected() {
     var nodes = document.querySelectorAll("#board .card, #board .list-row");
@@ -592,7 +581,7 @@
   function closeDetail() {
     paneRefs();
     selectedId = null;
-    if (workEl) workEl.classList.remove("has-detail");
+    document.body.classList.remove("viewing-puck");
     if (detailPane) detailPane.hidden = true;
     highlightSelected();
   }
@@ -1618,20 +1607,6 @@
   // hash changing (pasted link in the same tab, or Back after opening a modal).
   var detailCloseBtn = document.getElementById("detailClose");
   if (detailCloseBtn) detailCloseBtn.addEventListener("click", closeModal);
-
-  // If the viewport crosses the desktop/mobile line while a puck is open, move
-  // it to the right surface (pane ⇄ overlay) so it never ends up in a dead one.
-  window.addEventListener("resize", function () {
-    var it = itemFromHash();
-    if (!it) return;
-    if (isWide()) {
-      if (modalBackdrop) { modalBackdrop.hidden = true; document.body.classList.remove("modal-open"); }
-      openDetail(it);
-    } else {
-      closeDetail();
-      openOverlay(it);
-    }
-  });
 
   var deepItem = itemFromHash();
   if (deepItem) openModal(deepItem);
