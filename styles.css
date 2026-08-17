@@ -831,7 +831,7 @@ body.viewing-puck .vhead { display: none; }
 
 /* filter popover in the view-header */
 .filter-wrap { position: relative; display: inline-flex; }
-.filter-btn { display: inline-flex; align-items: center; gap: 6px; }
+.filter-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .filter-btn svg { width: 15px; height: 15px; }
 .filter-btn.on { border-color: var(--accent); color: var(--accent); }
 .filter-count {
@@ -845,6 +845,9 @@ body.viewing-puck .vhead { display: none; }
   box-shadow: var(--shadow); padding: 10px; min-width: 210px;
   display: flex; flex-direction: column; gap: 8px;
 }
+/* On mobile the Filter button sits on the left → open the popover rightward so it
+   doesn't run off the left edge. */
+@media (max-width: 899px) { .filter-pop { left: 0; right: auto; } }
 .fp-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; }
 .fp-toggle input { accent-color: var(--accent); cursor: pointer; }
 .fp-label { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin-top: 2px; }
