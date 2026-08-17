@@ -674,12 +674,13 @@
           btns[k].setAttribute("aria-pressed", k === d.key ? "true" : "false");
         });
         renderBoard();
+        maybeCloseMenu();
       });
       btns[d.key] = b;
       seg.appendChild(b);
     });
-    var filters = document.getElementById("filters");
-    filters.insertBefore(seg, filters.firstChild);
+    var host = document.getElementById("sideViews") || document.getElementById("filters");
+    host.appendChild(seg);
   }
 
   // ── theme ──
@@ -934,8 +935,23 @@
   buildTagChips();
   buildFocusControl();
   updateViewButton();
-  setFilters(window.matchMedia("(min-width: 601px)").matches);
+  setFilters(false); // tags/sort live behind the Filter button now (repos are in the sidebar)
   renderBoard();
+
+  // ── mobile drawer: the sidebar slides in over a scrim ──
+  var appEl = document.getElementById("app");
+  var scrimEl = document.getElementById("scrim");
+  var menuBtn = document.getElementById("menuToggle");
+  function setMenu(open) {
+    if (!appEl) return;
+    appEl.classList.toggle("menu-open", open);
+    if (scrimEl) scrimEl.hidden = !open;
+  }
+  function maybeCloseMenu() {
+    if (window.matchMedia("(max-width: 899px)").matches) setMenu(false);
+  }
+  if (menuBtn) menuBtn.addEventListener("click", function () { setMenu(!appEl.classList.contains("menu-open")); });
+  if (scrimEl) scrimEl.addEventListener("click", function () { setMenu(false); });
 
   // ── GUI editing: write pucks back to git from the browser ────────────────
   // Zero-backend. With a fine-grained GitHub token (kept only in this browser's

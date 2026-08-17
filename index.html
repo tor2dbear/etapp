@@ -16,68 +16,85 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <h1>Roadmap</h1>
-        <p class="sub" id="subtitle">Aggregated across repos · loading…</p>
-      </div>
-      <div class="controls">
-        <div class="search-wrap">
-          <input
-            id="search"
-            type="search"
-            placeholder="Search…"
-            autocomplete="off"
-            spellcheck="false"
-            role="combobox"
-            aria-autocomplete="list"
-            aria-controls="searchSuggest"
-            aria-expanded="false"
-          />
-          <button id="searchClear" class="search-clear" type="button" aria-label="Clear search" hidden>✕</button>
-          <ul id="searchSuggest" class="suggest" role="listbox" aria-label="Search suggestions" hidden></ul>
+    <div class="app" id="app">
+      <!-- ── left sidebar: identity + navigation ── -->
+      <aside class="sidebar" id="sidebar" aria-label="Navigation">
+        <div class="side-brand brand">
+          <h1>Roadmap</h1>
+          <p class="sub" id="subtitle">Aggregated across repos · loading…</p>
         </div>
-        <button id="filterToggle" class="ghost" aria-expanded="false" aria-controls="filterChips">Filter</button>
-        <button id="viewToggle" class="ghost" title="Switch to list view" aria-label="Switch to list view">☰</button>
-        <button id="theme" class="ghost" title="Toggle theme" aria-label="Toggle theme">◐</button>
-      </div>
-    </header>
-
-    <nav class="filters" id="filters" aria-label="Filters">
-      <div class="filter-chips" id="filterChips" hidden>
-        <div class="filter-sort">
-          <label for="sortSelect">Sort</label>
-          <select id="sortSelect">
-            <option value="default">Recently updated</option>
-            <option value="updated-asc">Oldest updated</option>
-            <option value="created-desc">Newest created</option>
-            <option value="created-asc">Oldest created</option>
-            <option value="title">Title A–Z</option>
-          </select>
+        <nav class="side-views" id="sideViews" aria-label="Views"></nav>
+        <div class="side-section">
+          <div class="side-eyebrow">Repos</div>
+          <div class="side-repos" id="repoFilters" aria-label="Repositories"></div>
         </div>
-        <div class="filter-group" id="repoFilters" aria-label="Repositories"></div>
-        <div class="filter-group" id="tagFilters" aria-label="Tags"></div>
-      </div>
-      <label class="toggle">
-        <input type="checkbox" id="showDone" />
-        <span>Show done</span>
-      </label>
-    </nav>
-
-    <div class="work" id="work">
-      <main id="board" class="board" aria-live="polite"></main>
-      <aside class="detail-pane" id="detailPane" hidden aria-label="Puck detail">
-        <button class="detail-close" id="detailClose" type="button" aria-label="Close">✕</button>
-        <div class="detail-content" id="detailContent"></div>
+        <div class="side-foot">
+          <button id="theme" class="ghost" title="Toggle theme" aria-label="Toggle theme">◐</button>
+        </div>
       </aside>
-    </div>
 
-    <footer class="foot">
-      <span id="footmeta"></span>
-      <a href="ROADMAP.md">flat digest</a> ·
-      <a href="data/roadmap.json">roadmap.json</a> ·
-      <a id="sourceLink" href="#">source</a>
-    </footer>
+      <!-- ── main column: topbar + work ── -->
+      <div class="maincol">
+        <header class="topbar">
+          <button id="menuToggle" class="ghost menu-toggle" type="button" aria-label="Menu">☰</button>
+          <div class="search-wrap">
+            <input
+              id="search"
+              type="search"
+              placeholder="Search…"
+              autocomplete="off"
+              spellcheck="false"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls="searchSuggest"
+              aria-expanded="false"
+            />
+            <button id="searchClear" class="search-clear" type="button" aria-label="Clear search" hidden>✕</button>
+            <ul id="searchSuggest" class="suggest" role="listbox" aria-label="Search suggestions" hidden></ul>
+          </div>
+          <div class="controls">
+            <button id="filterToggle" class="ghost" aria-expanded="false" aria-controls="filterChips">Filter</button>
+            <button id="viewToggle" class="ghost" title="Switch to list view" aria-label="Switch to list view">☰</button>
+          </div>
+        </header>
+
+        <nav class="filters" id="filters" aria-label="Filters">
+          <div class="filter-chips" id="filterChips" hidden>
+            <div class="filter-sort">
+              <label for="sortSelect">Sort</label>
+              <select id="sortSelect">
+                <option value="default">Recently updated</option>
+                <option value="updated-asc">Oldest updated</option>
+                <option value="created-desc">Newest created</option>
+                <option value="created-asc">Oldest created</option>
+                <option value="title">Title A–Z</option>
+              </select>
+            </div>
+            <div class="filter-group" id="tagFilters" aria-label="Tags"></div>
+            <label class="toggle">
+              <input type="checkbox" id="showDone" />
+              <span>Show done</span>
+            </label>
+          </div>
+        </nav>
+
+        <div class="work" id="work">
+          <main id="board" class="board" aria-live="polite"></main>
+          <aside class="detail-pane" id="detailPane" hidden aria-label="Puck detail">
+            <button class="detail-close" id="detailClose" type="button" aria-label="Close">✕</button>
+            <div class="detail-content" id="detailContent"></div>
+          </aside>
+        </div>
+
+        <footer class="foot">
+          <span id="footmeta"></span>
+          <a href="ROADMAP.md">flat digest</a> ·
+          <a href="data/roadmap.json">roadmap.json</a> ·
+          <a id="sourceLink" href="#">source</a>
+        </footer>
+      </div>
+    </div>
+    <div class="scrim" id="scrim" hidden></div>
 
     <!-- Generated payload, loaded as a global so the page also works from file://. -->
     <script src="data/roadmap.js" onerror="window.__ROADMAP_LOAD_ERROR__=true"></script>
