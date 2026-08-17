@@ -694,3 +694,17 @@ body.modal-open { overflow: hidden; }
 }
 @media (min-width: 900px) { .scrim { display: none; } }
 @media (prefers-reduced-motion: reduce) { .sidebar { transition: none; } }
+
+/* ── v2 detail: breadcrumb header + properties rail (growable) ─────────────── */
+.detail-crumb { font-family: var(--mono); font-size: 11px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.detail-crumb .repo-dot { width: 7px; height: 7px; }
+.props { display: flex; flex-direction: column; margin: 12px 0 4px; }
+.prop { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 10px; min-height: 34px; padding: 6px 0; border-top: 1px solid var(--line); }
+.prop:first-child { border-top: 0; }
+.prop-k { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.prop-v { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--ink); }
+.prop-muted { color: var(--ink-3); }
+.prop-date { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+.prop-v .card-tags { margin: 0; gap: 5px; }
+.prop-status-edit { display: flex; gap: 5px; flex-wrap: wrap; }
+.sect-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 16px 0 6px; }

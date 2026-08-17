@@ -342,49 +342,81 @@
     }
   }
 
+  // A property row: mono key + value node. Add a field = add a row (growable).
+  function propRow(k, valNode, cls) {
+    var row = el("div", "prop" + (cls ? " prop-" + cls : ""));
+    row.appendChild(el("span", "prop-k", k));
+    var v = el("div", "prop-v");
+    if (valNode != null) v.appendChild(valNode);
+    row.appendChild(v);
+    return row;
+  }
+
   // Build the full puck detail into `container` — shared by both surfaces.
+  // Structure: breadcrumb → title → properties rail → details (body) → links.
   function fillDetail(container, item) {
     container.innerHTML = "";
     container.style.setProperty("--repo", item.repoColor);
+
+    var crumb = el("div", "detail-crumb");
+    var cdot = el("span", "repo-dot");
+    cdot.style.background = item.repoColor;
+    crumb.appendChild(cdot);
+    crumb.appendChild(document.createTextNode(item.repoName + " · " + item.slug));
+    container.appendChild(crumb);
+
     container.appendChild(el("h2", "modal-title", item.title));
 
-    var meta = el("div", "modal-meta");
-    var idrow = el("div", "modal-idrow");
-    var repo = el("span", "card-repo");
-    var dot = el("span", "repo-dot");
-    dot.style.background = item.repoColor;
-    repo.appendChild(dot);
-    repo.appendChild(document.createTextNode(item.repoName));
-    idrow.appendChild(repo);
-    idrow.appendChild(el("span", "status-pill status-" + item.status, STATUS_LABEL[item.status] || item.status));
-    if (item.owner) idrow.appendChild(ownerEl(item.owner, { name: true, link: true }));
-    meta.appendChild(idrow);
+    // ── properties rail — discrete rows, Linear-style ──
+    var props = el("div", "props");
 
-    if (item.created || item.updated) {
-      var dates = el("div", "modal-dates");
-      if (item.created) {
-        var cs = el("span", null, "Created " + item.created);
-        cs.title = "Created (first commit)";
-        dates.appendChild(cs);
-      }
-      if (item.created && item.updated) dates.appendChild(el("span", "modal-dates-sep", "·"));
-      if (item.updated) {
-        var us = el("span", null, "Updated " + item.updated);
-        us.title = "Last updated";
-        dates.appendChild(us);
-      }
-      meta.appendChild(dates);
+    // Status: editable buttons (token + native) or a static pill.
+    var statusVal;
+    if (ghToken() && item.native) {
+      statusVal = el("div", "prop-status-edit");
+      DATA.statuses.forEach(function (s) {
+        var b = el("button", "edit-btn status-" + s + (s === item.status ? " active" : ""), STATUS_LABEL[s] || s);
+        b.type = "button";
+        if (s === item.status) b.disabled = true;
+        else b.addEventListener("click", function () { changeStatus(item, s); });
+        statusVal.appendChild(b);
+      });
+    } else {
+      statusVal = el("span", "status-pill status-" + item.status, STATUS_LABEL[item.status] || item.status);
     }
-    container.appendChild(meta);
+    props.appendChild(propRow("Status", statusVal));
 
-    buildStatusEditor(item, container); // status buttons (token + native puck only)
+    props.appendChild(propRow("Assignee", item.owner
+      ? ownerEl(item.owner, { name: true, link: true })
+      : el("span", "prop-muted", "—")));
 
     if (item.tags.length || !item.native) {
       var tags = el("div", "card-tags");
       item.tags.forEach(function (t) { tags.appendChild(el("span", "tagpill", "#" + t)); });
       if (!item.native) tags.appendChild(el("span", "adapted-badge", "adapted"));
-      container.appendChild(tags);
+      props.appendChild(propRow("Labels", tags));
     }
+
+    if ((item.blockedBy || []).length) {
+      var blkV = el("div", "prop-blockers");
+      var blockers = blockerItems(item);
+      if (blockers.length) {
+        blockers.forEach(function (b, i) {
+          var a = el("a", "blocker-link", b.title);
+          a.href = "#" + b.id;
+          a.addEventListener("click", function (e) { e.preventDefault(); openModal(b); });
+          blkV.appendChild(a);
+          if (i < blockers.length - 1) blkV.appendChild(document.createTextNode(", "));
+        });
+      } else {
+        blkV.appendChild(document.createTextNode(item.blockedBy.join(", ")));
+      }
+      props.appendChild(propRow("Blocked by", blkV, "blocked"));
+    }
+
+    if (item.created) props.appendChild(propRow("Created", el("span", "prop-date", item.created)));
+    if (item.updated) props.appendChild(propRow("Updated", el("span", "prop-date", item.updated)));
+    container.appendChild(props);
 
     var sig = signalMessages(item);
     if (sig.length) {
@@ -393,25 +425,7 @@
       container.appendChild(flags);
     }
 
-    if ((item.blockedBy || []).length) {
-      var blk = el("div", "modal-blocked");
-      blk.appendChild(icon("slash", "inline"));
-      blk.appendChild(document.createTextNode("Blocked by: "));
-      var blockers = blockerItems(item);
-      if (blockers.length) {
-        blockers.forEach(function (b, i) {
-          var a = el("a", "blocker-link", b.title);
-          a.href = "#" + b.id;
-          a.addEventListener("click", function (e) { e.preventDefault(); openModal(b); });
-          blk.appendChild(a);
-          if (i < blockers.length - 1) blk.appendChild(document.createTextNode(", "));
-        });
-      } else {
-        blk.appendChild(document.createTextNode(item.blockedBy.join(", ")));
-      }
-      container.appendChild(blk);
-    }
-
+    container.appendChild(el("div", "sect-label", "Details"));
     var body = el("div", "modal-body");
     body.innerHTML = renderMd(item.body || "(no details)");
     container.appendChild(body);
