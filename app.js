@@ -1856,6 +1856,7 @@
   var detailCloseBtn = document.getElementById("detailClose");
   if (detailCloseBtn) detailCloseBtn.addEventListener("click", closeModal);
   var topShareBtn = document.getElementById("topShare");
+  if (topShareBtn) topShareBtn.appendChild(icon("share"));
   if (topShareBtn) topShareBtn.addEventListener("click", function () {
     if (!currentDetailItem) return;
     var url = location.origin + location.pathname + "#" + currentDetailItem.id;
