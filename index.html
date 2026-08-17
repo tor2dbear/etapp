@@ -28,6 +28,14 @@
           <div class="side-eyebrow">Repos</div>
           <div class="side-repos" id="repoFilters" aria-label="Repositories"></div>
         </div>
+        <div class="side-section">
+          <div class="side-eyebrow">Disciplines</div>
+          <div class="side-repos" id="tagFilters" aria-label="Disciplines"></div>
+        </div>
+        <label class="side-toggle">
+          <input type="checkbox" id="showDone" />
+          <span>Show done</span>
+        </label>
         <div class="side-foot">
           <button id="theme" class="ghost" title="Toggle theme" aria-label="Toggle theme">◐</button>
         </div>
@@ -52,20 +60,7 @@
             <button id="searchClear" class="search-clear" type="button" aria-label="Clear search" hidden>✕</button>
             <ul id="searchSuggest" class="suggest" role="listbox" aria-label="Search suggestions" hidden></ul>
           </div>
-          <div class="controls">
-            <button id="filterToggle" class="ghost" aria-expanded="false" aria-controls="filterChips">Filter</button>
-          </div>
         </header>
-
-        <nav class="filters" id="filters" aria-label="Filters">
-          <div class="filter-chips" id="filterChips" hidden>
-            <div class="filter-group" id="tagFilters" aria-label="Tags"></div>
-            <label class="toggle">
-              <input type="checkbox" id="showDone" />
-              <span>Show done</span>
-            </label>
-          </div>
-        </nav>
 
         <!-- consistent view-header: current view + view-options (stays as you navigate/open pucks) -->
         <header class="vhead">

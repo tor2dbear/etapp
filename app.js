@@ -611,7 +611,6 @@
     if (layout === "list") renderList(visible, statuses);
     else renderColumns(visible, statuses);
 
-    updateFilterButton();
     var shown = visible.length;
     updateViewHeader(shown);
     document.getElementById("footmeta").textContent =
@@ -648,6 +647,7 @@
     });
   }
 
+  // Disciplines (tags) as a sidebar section — top N by count + a "more" expander.
   function buildTagChips() {
     var counts = {};
     DATA.items.forEach(function (it) {
@@ -655,17 +655,26 @@
     });
     var tags = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
     var wrap = document.getElementById("tagFilters");
-    tags.slice(0, 24).forEach(function (t) {
+    if (!wrap) return;
+    var CAP = 10;
+    function chipFor(t) {
       var chip = el("button", "chip tag");
       chip.setAttribute("aria-pressed", "false");
       chip.appendChild(document.createTextNode("#" + t));
       chip.appendChild(el("span", "n", String(counts[t])));
-      chip.addEventListener("click", function () {
-        toggleSet(state.tags, t, chip);
-        renderBoard();
+      chip.addEventListener("click", function () { toggleSet(state.tags, t, chip); renderBoard(); });
+      return chip;
+    }
+    tags.slice(0, CAP).forEach(function (t) { wrap.appendChild(chipFor(t)); });
+    if (tags.length > CAP) {
+      var more = el("button", "side-more", "＋ " + (tags.length - CAP) + " more");
+      more.type = "button";
+      more.addEventListener("click", function () {
+        tags.slice(CAP).forEach(function (t) { wrap.insertBefore(chipFor(t), more); });
+        more.remove();
       });
-      wrap.appendChild(chip);
-    });
+      wrap.appendChild(more);
+    }
   }
 
   function toggleSet(set, key, chip) {
@@ -917,19 +926,6 @@
     renderBoard();
   });
 
-  // ── collapsible filters (collapsed by default on narrow screens) ──
-  var filterChips = document.getElementById("filterChips");
-  var filterToggle = document.getElementById("filterToggle");
-  function setFilters(open) {
-    filterChips.hidden = !open;
-    filterToggle.setAttribute("aria-expanded", open ? "true" : "false");
-    filterToggle.classList.toggle("active", open);
-  }
-  filterToggle.addEventListener("click", function () { setFilters(filterChips.hidden); });
-  function updateFilterButton() {
-    var n = state.repos.size + state.tags.size;
-    filterToggle.textContent = n ? "Filter (" + n + ")" : "Filter";
-  }
 
   // ── boot ──
   // Deploy-your-own config: title/description/source link come from
@@ -959,7 +955,6 @@
   buildTagChips();
   buildFocusControl();
   updateViewButton();
-  setFilters(false); // tags/sort live behind the Filter button now (repos are in the sidebar)
   renderBoard();
 
   // ── mobile drawer: the sidebar slides in over a scrim ──
