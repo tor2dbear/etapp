@@ -1186,12 +1186,12 @@
       });
   }
 
-  // 🔑 edit-access + ＋ new-puck controls in the header.
-  var tokenBtn, newBtn;
+  // ＋ new-puck control (sidebar foot).
+  var newBtn, userEl;
   function refreshEditControls() {
-    if (tokenBtn) tokenBtn.classList.toggle("on", !!ghToken());
     if (newBtn) newBtn.hidden = !ghToken();
   }
+  function afterAuth() { refreshEditControls(); refreshUser(); }
   function buildEditControls() {
     var host = document.getElementById("theme");
     if (!host || !host.parentNode) return;
@@ -1199,13 +1199,70 @@
     newBtn.type = "button"; newBtn.title = "New puck"; newBtn.hidden = !ghToken();
     newBtn.addEventListener("click", openNewPuckPanel);
     host.parentNode.insertBefore(newBtn, host);
-    tokenBtn = el("button", "iconbtn tokenbtn");
-    tokenBtn.type = "button";
-    tokenBtn.appendChild(icon("key"));
-    tokenBtn.title = "Edit access — set a GitHub token to edit pucks from the board";
-    tokenBtn.classList.toggle("on", !!ghToken());
-    tokenBtn.addEventListener("click", function () { openTokenPanel(refreshEditControls); });
-    host.parentNode.insertBefore(tokenBtn, host);
+  }
+
+  // A user chip at the top of the sidebar: your GitHub identity (derived from the
+  // token via api.github.com) with a Sign out menu; or a "Sign in to edit" button
+  // when no token is set. Replaces the key-in-the-foot.
+  function buildUserControl() {
+    var sb = document.getElementById("sidebar");
+    var brand = sb && sb.querySelector(".side-brand");
+    if (!brand) return;
+    userEl = el("div", "side-user");
+    brand.parentNode.insertBefore(userEl, brand.nextSibling);
+    refreshUser();
+  }
+  function refreshUser() {
+    if (!userEl) return;
+    userEl.innerHTML = "";
+    if (!ghToken()) {
+      var signin = el("button", "user-signin");
+      signin.type = "button";
+      signin.appendChild(icon("key"));
+      signin.appendChild(el("span", null, "Sign in to edit"));
+      signin.addEventListener("click", function () { openTokenPanel(afterAuth); });
+      userEl.appendChild(signin);
+      return;
+    }
+    var chip = el("button", "user-chip");
+    chip.type = "button";
+    var av = el("span", "user-av");
+    var name = el("span", "user-name", "…");
+    chip.appendChild(av);
+    chip.appendChild(name);
+    chip.appendChild(el("span", "user-caret", "▾"));
+    chip.addEventListener("click", function (e) { e.stopPropagation(); toggleUserMenu(); });
+    userEl.appendChild(chip);
+    fetch("https://api.github.com/user", { headers: { Authorization: "Bearer " + ghToken(), Accept: "application/vnd.github+json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (u) {
+        if (u && u.login) {
+          name.textContent = "@" + u.login;
+          var img = document.createElement("img");
+          img.className = "user-av-img"; img.alt = ""; img.src = u.avatar_url;
+          av.appendChild(img);
+        } else { name.textContent = "token invalid"; chip.classList.add("bad"); }
+      })
+      .catch(function () { name.textContent = "signed in"; });
+  }
+  function toggleUserMenu() {
+    var open = userEl.querySelector(".user-menu");
+    if (open) { open.remove(); return; }
+    var menu = el("div", "user-menu");
+    var change = el("button", "user-mi", "Change token");
+    change.type = "button";
+    change.addEventListener("click", function () { menu.remove(); openTokenPanel(afterAuth); });
+    var out = el("button", "user-mi danger", "Sign out");
+    out.type = "button";
+    out.addEventListener("click", function () { menu.remove(); setGhToken(""); afterAuth(); });
+    menu.appendChild(change);
+    menu.appendChild(out);
+    userEl.appendChild(menu);
+    setTimeout(function () {
+      document.addEventListener("click", function closer(e) {
+        if (!userEl.contains(e.target)) { menu.remove(); document.removeEventListener("click", closer); }
+      });
+    }, 0);
   }
 
   function field(labelText, control) {
@@ -1293,6 +1350,7 @@
   }
 
   buildEditControls();
+  buildUserControl();
 
   // Deep link: open the puck named in the URL hash on load, and react to the
   // hash changing (pasted link in the same tab, or Back after opening a modal).

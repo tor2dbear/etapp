@@ -708,3 +708,31 @@ body.modal-open { overflow: hidden; }
 .prop-v .card-tags { margin: 0; gap: 5px; }
 .prop-status-edit { display: flex; gap: 5px; flex-wrap: wrap; }
 .sect-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 16px 0 6px; }
+
+/* ── user chip at the top of the sidebar (identity + sign out) ─────────────── */
+.side-user { padding: 0 4px; }
+.user-signin {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 10px; color: var(--ink-2); cursor: pointer; font-size: 12.5px;
+}
+.user-signin:hover { color: var(--ink); border-color: var(--ink-3); }
+.user-signin .icn { width: 14px; height: 14px; }
+.user-chip {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: 1px solid transparent; border-radius: 8px;
+  padding: 5px 8px; color: var(--ink); cursor: pointer;
+}
+.user-chip:hover { background: var(--panel-2); }
+.user-av { width: 20px; height: 20px; border-radius: 50%; background: var(--panel-2); overflow: hidden; flex: none; }
+.user-av-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.user-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.user-caret { margin-left: auto; color: var(--ink-3); font-size: 10px; }
+.user-chip.bad .user-name { color: #cc6149; }
+.user-menu {
+  margin: 4px 0 0; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: var(--shadow); padding: 4px; display: flex; flex-direction: column;
+}
+.user-mi { text-align: left; background: none; border: 0; padding: 7px 9px; border-radius: 6px; color: var(--ink); font-size: 13px; cursor: pointer; }
+.user-mi:hover { background: var(--panel-2); }
+.user-mi.danger { color: #cc6149; }
