@@ -15,6 +15,24 @@
   }
 
   var STATUS_LABEL = { now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done" };
+  // Priority is an optional, ordered field (highest → lowest). Absence = none.
+  var PRIORITIES = ["urgent", "high", "medium", "low"];
+  var PRIORITY_LABEL = { urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
+  // A small priority badge: filled signal bars, Linear-style. Level → filled bars.
+  var PRIORITY_BARS = { urgent: 3, high: 3, medium: 2, low: 1 };
+  function priorityBadge(level) {
+    var b = el("span", "pri pri-" + level);
+    b.title = "Priority: " + (PRIORITY_LABEL[level] || level);
+    if (level === "urgent") {
+      b.appendChild(document.createTextNode("!"));
+    } else {
+      var filled = PRIORITY_BARS[level] || 0;
+      for (var i = 0; i < 3; i++) {
+        b.appendChild(el("i", "pri-bar" + (i < filled ? " on" : "")));
+      }
+    }
+    return b;
+  }
   var state = {
     repos: new Set(), // empty = all
     tags: new Set(), // empty = all
@@ -24,7 +42,8 @@
     view: "board", // "board" (kanban columns) | "list" (one column, grouped by status)
     sort: "default", // see SORTS below
   };
-  var SORTS = ["default", "updated-asc", "created-desc", "created-asc", "title"];
+  var SORTS = ["default", "priority", "updated-asc", "created-desc", "created-asc", "title"];
+  var PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
   try {
     var savedView = localStorage.getItem("roadmap-view");
     if (savedView === "list" || savedView === "board") state.view = savedView;
@@ -253,6 +272,7 @@
       warn.title = sig.join("\n");
       meta.appendChild(warn);
     }
+    if (item.priority) meta.appendChild(priorityBadge(item.priority));
     if ((item.blockedBy || []).length) meta.appendChild(blockBadge(item));
     if (item.owner) meta.appendChild(ownerEl(item.owner));
     if (item.updated) meta.appendChild(dateEl(item.updated));
@@ -385,6 +405,31 @@
       statusVal = el("span", "status-pill status-" + item.status, STATUS_LABEL[item.status] || item.status);
     }
     props.appendChild(propRow("Status", statusVal));
+
+    // Priority: editable chips (token + native) or a static badge / dash.
+    var prioVal;
+    if (ghToken() && item.native) {
+      prioVal = el("div", "prop-status-edit");
+      PRIORITIES.forEach(function (pr) {
+        var b = el("button", "edit-btn pri-btn pri-" + pr + (pr === item.priority ? " active" : ""), PRIORITY_LABEL[pr]);
+        b.type = "button";
+        if (pr === item.priority) b.disabled = true;
+        else b.addEventListener("click", function () { changePriority(item, pr); });
+        prioVal.appendChild(b);
+      });
+      var none = el("button", "edit-btn pri-btn pri-none" + (item.priority ? "" : " active"), "None");
+      none.type = "button";
+      if (!item.priority) none.disabled = true;
+      else none.addEventListener("click", function () { changePriority(item, null); });
+      prioVal.appendChild(none);
+    } else if (item.priority) {
+      prioVal = el("span", "pri-inline");
+      prioVal.appendChild(priorityBadge(item.priority));
+      prioVal.appendChild(document.createTextNode(" " + (PRIORITY_LABEL[item.priority] || item.priority)));
+    } else {
+      prioVal = el("span", "prop-muted", "—");
+    }
+    props.appendChild(propRow("Priority", prioVal));
 
     props.appendChild(propRow("Assignee", item.owner
       ? ownerEl(item.owner, { name: true, link: true })
@@ -584,6 +629,14 @@
   }
 
   function sortComparator() {
+    if (state.sort === "priority") {
+      return function (a, b) {
+        var ar = a.priority ? PRIORITY_RANK[a.priority] : 9;
+        var br = b.priority ? PRIORITY_RANK[b.priority] : 9;
+        if (ar !== br) return ar - br;
+        return (b.updated || "").localeCompare(a.updated || "") || a.title.localeCompare(b.title);
+      };
+    }
     if (state.sort === "updated-asc") return byDate("updated", 1);
     if (state.sort === "created-desc") return byDate("created", -1);
     if (state.sort === "created-asc") return byDate("created", 1);
@@ -1069,6 +1122,60 @@
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
         item.status = prevS; item.updated = prevU;
+        renderBoard(); openModal(item);
+        toast("✗ " + err.message, true);
+      });
+  }
+
+  // Remove a frontmatter field line (no-op if absent) — mirrors roadmap.mjs
+  // removeField. Used to clear priority (absence of the field = no priority).
+  function removeFrontmatter(text, key) {
+    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
+    var lines = text.replace(/\r\n/g, "\n").split("\n");
+    if (lines[0] !== "---") return null;
+    var end = -1;
+    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
+    if (end < 0) return null;
+    for (var j = 1; j < end; j++) {
+      if (new RegExp("^" + key + ":").test(lines[j])) { lines.splice(j, 1); break; }
+    }
+    return lines.join(nl);
+  }
+
+  // Commit a priority change via the Contents API. A null level clears the field.
+  function commitPriority(item, priority) {
+    var token = ghToken();
+    var apiPath = item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + apiPath;
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { if (!r.ok) throw new Error("read failed (" + r.status + ")"); return r.json(); })
+      .then(function (info) {
+        var text = b64decode(info.content);
+        var out = priority ? editFrontmatter(text, "priority", priority) : removeFrontmatter(text, "priority");
+        if (out == null) throw new Error("no frontmatter");
+        out = editFrontmatter(out, "updated", today());
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: " + item.slug + " priority " + (priority || "cleared"), content: b64encode(out), sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { if (!r.ok) throw new Error("write failed (" + r.status + ")"); });
+  }
+
+  // Optimistic: flip in-memory + re-render, commit in the background, revert on failure.
+  function changePriority(item, priority) {
+    if (priority === (item.priority || null) || !ghToken()) return;
+    var prevP = item.priority, prevU = item.updated;
+    item.priority = priority; item.updated = today();
+    renderBoard(); openModal(item);
+    toast("Saving…");
+    commitPriority(item, priority)
+      .then(function () { toast("✓ Saved — live in ~1 min"); })
+      .catch(function (err) {
+        item.priority = prevP; item.updated = prevU;
         renderBoard(); openModal(item);
         toast("✗ " + err.message, true);
       });

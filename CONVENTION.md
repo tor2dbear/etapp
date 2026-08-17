@@ -69,6 +69,7 @@ order: 10
 |-----------|----------|---------|
 | `title`   | yes      | Short heading for the board. Quote it if it contains a `:`. |
 | `status`  | yes      | One of `inbox`, `now`, `next`, `later`, `done`. See lifecycle. |
+| `priority`| no       | One of `urgent`, `high`, `medium`, `low`. Omit for "no priority". Orthogonal to `status` — *when* vs *how much it matters*. Renders as a signal badge; the board can sort by it. |
 | `updated` | yes      | `YYYY-MM-DD`, last touched. The aggregator sorts and shows freshness on it. |
 | `created` | no       | `YYYY-MM-DD`. Usually omit — the aggregator derives it from the file's first commit. `roadmap new` stamps it for you. Set it by hand only to override that. |
 | `tags`    | no       | Areas, e.g. `[editor]`, `[auth]`. Inline array. Used for filtering. |
@@ -123,6 +124,13 @@ A puck usually starts in `inbox`, is promoted to `now/next/later` once it is an
 actual decision, and lands in `done`. Update `updated` every time you touch the
 status or the content.
 
+### Priority (`priority`)
+
+Optional and orthogonal to `status`: `status` says *when* (now/next/later),
+`priority` says *how much it matters* (`urgent` › `high` › `medium` › `low`).
+Omit the field entirely for "no priority" — most pucks won't need one. Set it
+with `roadmap priority <slug> <level>` (`--clear` to remove).
+
 ---
 
 ## Authoring helper
@@ -133,6 +141,7 @@ You never have to write frontmatter by hand. From a project repo:
 roadmap new "Title" --tags area   # create a puck in inbox
 roadmap start|next|later|done <slug>
 roadmap tag <slug> +add -remove
+roadmap priority <slug> <level>    # urgent|high|medium|low (--clear to remove)
 roadmap list                       # overview
 roadmap install-hook               # auto-bump `updated` on every commit
 ```

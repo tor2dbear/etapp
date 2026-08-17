@@ -13,6 +13,7 @@
 //   roadmap tag   nano-multibuffer +editor -ui           add/remove tags
 //   roadmap issue nano-multibuffer 42                     link a working issue
 //   roadmap owner nano-multibuffer torvalds               set owner (--clear to remove)
+//   roadmap priority nano-multibuffer high                set priority (--clear to remove)
 //   roadmap touch nano-multibuffer                        just bump `updated`
 //   roadmap list [--status now]                           quick overview
 //   roadmap install-hook                                  auto-bump `updated` on commit
@@ -23,7 +24,7 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { STATUSES, slugify } from "./lib/adapters.mjs";
+import { STATUSES, PRIORITIES, slugify } from "./lib/adapters.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -228,6 +229,29 @@ async function cmdOwner() {
   );
 }
 
+async function cmdPriority() {
+  const slug = pos.shift();
+  const level = pos.shift();
+  if (!slug) fail(`usage: roadmap priority <slug> <${PRIORITIES.join("|")}>   (--clear to remove)`);
+  const { path: p, text } = await readPuckOrFail(slug);
+  const clearing = opts.clear || level === "none" || level === "-";
+  let out;
+  if (clearing) {
+    out = removeField(text, "priority");
+  } else {
+    const v = String(level || "").trim().toLowerCase();
+    if (!PRIORITIES.includes(v)) fail(`priority must be one of: ${PRIORITIES.join(", ")}  (or --clear)`);
+    out = setField(text, "priority", v);
+  }
+  out = setField(out, "updated", TODAY);
+  await writeFile(p, out);
+  console.log(
+    clearing
+      ? `✓ ${slug} priority cleared  (updated ${TODAY})`
+      : `✓ ${slug} priority ${String(level).toLowerCase()}  (updated ${TODAY})`,
+  );
+}
+
 async function cmdTouch() {
   const slug = pos.shift();
   if (!slug) fail("usage: roadmap touch <slug>");
@@ -333,6 +357,7 @@ async function main() {
     case "tag": return cmdTag();
     case "issue": return cmdIssue();
     case "owner": return cmdOwner();
+    case "priority": case "prio": return cmdPriority();
     case "touch": return cmdTouch();
     case "list": case "ls": return listPucks();
     case "install-hook": return cmdInstallHook();
@@ -354,12 +379,14 @@ function printHelp() {
   roadmap tag <slug> +add -remove …                   edit tags
   roadmap issue <slug> <number>                       link a working issue
   roadmap owner <slug> <handle>                       set owner (--clear to remove)
+  roadmap priority <slug> <level>                     set priority (--clear to remove)
   roadmap touch <slug>                                bump updated only
   roadmap list [--status now]                         overview
   roadmap install-hook                                auto-bump updated on commit
 
   --dir <path>   roadmap directory (default: roadmap)
-  statuses: ${STATUSES.join(", ")}`);
+  statuses: ${STATUSES.join(", ")}
+  priorities: ${PRIORITIES.join(", ")}`);
 }
 
 main().catch((e) => fail(e.message));

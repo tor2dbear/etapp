@@ -13,6 +13,17 @@ import { blobUrl } from "./repo.mjs";
 export const STATUSES = ["now", "next", "later", "inbox", "done"];
 const VALID = new Set(STATUSES);
 
+// Priority is an optional, ordered interface field (highest → lowest). Absence
+// of the field means "no priority" (null), never a value — so the payload only
+// carries a priority when a puck actually declares one.
+export const PRIORITIES = ["urgent", "high", "medium", "low"];
+const VALID_PRIORITY = new Set(PRIORITIES);
+
+function normalizePriority(raw) {
+  const v = String(raw || "").trim().toLowerCase();
+  return VALID_PRIORITY.has(v) ? v : null;
+}
+
 export function slugify(s) {
   return s
     .normalize("NFKD")
@@ -72,6 +83,8 @@ async function pucksAdapter(repo, branch, source) {
       slug,
       title: data.title ? String(data.title) : slug,
       status: normalizeStatus(data.status, "inbox"),
+      // Optional priority (urgent/high/medium/low) or null when unset.
+      priority: normalizePriority(data.priority),
       tags: Array.isArray(data.tags) ? data.tags : data.tags ? [String(data.tags)] : [],
       updated: data.updated ? String(data.updated) : "",
       created: created || null,
@@ -190,6 +203,7 @@ async function checklistAdapter(repo, branch, source) {
       slug: slugify(title),
       title,
       status: done ? "done" : "later",
+      priority: null,
       tags,
       updated: "",
       created: null,
@@ -219,6 +233,7 @@ async function proseAdapter(repo, branch, source) {
       slug: slugify(title),
       title,
       status: "later", // future/"sharp version" ideas — explicitly not committed
+      priority: null,
       tags: [],
       updated: "",
       created: null,

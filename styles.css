@@ -782,3 +782,27 @@ body.modal-open { overflow: hidden; }
 .cmdk-box #search:focus { outline: none; }
 .cmdk-box .search-clear { top: 25px; right: 12px; }
 .cmdk-box .suggest { position: static; border: 0; border-radius: 0; box-shadow: none; max-height: 52vh; margin: 0; padding: 6px; background: var(--panel); }
+
+/* ── priority: an optional ordered field (urgent/high/medium/low) ── */
+/* Card badge: ascending signal bars, urgent = a red "!" chip. */
+.pri { display: inline-flex; align-items: flex-end; gap: 2px; height: 11px; flex: none; line-height: 1; }
+.pri .pri-bar { width: 3px; background: var(--ink-3); border-radius: 1px; opacity: 0.3; }
+.pri .pri-bar:nth-child(1) { height: 5px; }
+.pri .pri-bar:nth-child(2) { height: 8px; }
+.pri .pri-bar:nth-child(3) { height: 11px; }
+.pri .pri-bar.on { opacity: 1; }
+.pri.pri-low .pri-bar.on { background: var(--ink-2); }
+.pri.pri-medium .pri-bar.on { background: var(--later); }
+.pri.pri-high .pri-bar.on { background: var(--now); }
+.pri.pri-urgent {
+  width: 13px; height: 13px; border-radius: 3px; background: #d64545; color: #fff;
+  font-size: 10px; font-weight: 700; align-items: center; justify-content: center;
+}
+/* detail rail: static badge + label */
+.pri-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+/* detail rail: editable priority chips share .edit-btn; active gets a filled color */
+.edit-btn.active.pri-urgent { background: #d64545; }
+.edit-btn.active.pri-high { background: var(--now); }
+.edit-btn.active.pri-medium { background: var(--later); }
+.edit-btn.active.pri-low { background: var(--ink-3); }
+.edit-btn.active.pri-none { background: var(--ink-3); }

@@ -49,6 +49,7 @@ roadmap start|next|later|done <slug> # move status
 roadmap tag <slug> +a -b            # edit tags
 roadmap issue <slug> 42             # link a working issue
 roadmap owner <slug> <handle>       # set owner (--clear to remove)
+roadmap priority <slug> <level>     # urgent|high|medium|low (--clear to remove)
 roadmap list [--status now]         # overview
 ```
 
@@ -71,5 +72,6 @@ what's ready. Use it to sequence work.
 
 - Never hand-edit `data/roadmap.json`, `data/roadmap.js`, `ROADMAP.md`.
 - Never add a second source of truth.
-- `status` is the priority ladder (`inbox → now/next/later → done`); `order`
-  fine-tunes within a column.
+- `status` is the *when* ladder (`inbox → now/next/later → done`); `order`
+  fine-tunes within a column; the optional `priority` field is *how much it
+  matters* (`urgent`/`high`/`medium`/`low`), orthogonal to status.
