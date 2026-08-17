@@ -33,15 +33,19 @@ each repo (roadmap/*.md)  ──harvest──▶  data/roadmap.json · ROADMAP.m
                           index.html + app.js + styles.css  → the board
 ```
 
-## Deploy your own
+## Deploy your own — only GitHub needed
 
-1. **Fork / use this template.**
-2. `sources.json` — list your repos. Private repos work with a `GITHUB_TOKEN`.
+1. **Use this template** (or fork).
+2. `sources.json` — list your repos.
 3. `board.config.json` — title, description, source link.
-4. `wrangler.jsonc` — Worker name and (optional) custom domain.
-5. Cloudflare → *Workers & Pages → Import a repository* → deploy `npx wrangler deploy`.
+4. **Settings → Pages → Source: "GitHub Actions".**
 
-The hourly Sync Action harvests your repos and redeploys. Nothing to run.
+That's it. The included workflow harvests your repos hourly (and on every push) and
+publishes to GitHub Pages — no other account, no secrets, nothing to run. A
+**custom domain** (optional, free) goes under Settings → Pages.
+
+**Prefer Cloudflare Workers?** Deploy with `npx wrangler deploy` (`wrangler.jsonc`)
+and disable the Pages workflow — the board is the same static bundle either way.
 
 ## The convention & the agents
 

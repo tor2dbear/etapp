@@ -48,6 +48,7 @@ roadmap new "Title" --tags area     # new puck (inbox)
 roadmap start|next|later|done <slug> # move status
 roadmap tag <slug> +a -b            # edit tags
 roadmap issue <slug> 42             # link a working issue
+roadmap owner <slug> <handle>       # set owner (--clear to remove)
 roadmap list [--status now]         # overview
 ```
 

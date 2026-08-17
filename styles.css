@@ -470,3 +470,110 @@ body.modal-open { overflow: hidden; }
   color: var(--ink-2);
 }
 .banner code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+/* ── GUI editing: token control, status editor, toast ─────────────────────
+   All of this is inert until a token is set; the read-only board is unchanged. */
+.iconbtn {
+  background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+  border-radius: 8px; cursor: pointer; font-size: 15px; line-height: 1;
+  padding: 6px 8px; display: inline-flex; align-items: center;
+}
+.iconbtn:hover { border-color: var(--ink-3); }
+.tokenbtn.on { border-color: var(--now); box-shadow: 0 0 0 1px var(--now) inset; }
+
+/* status editor inside the modal */
+.edit-status {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  margin: 10px 0 2px; padding: 10px; border: 1px dashed var(--line);
+  border-radius: 10px; background: var(--panel-2);
+}
+.edit-label { font-size: 12px; color: var(--ink-2); margin-right: 2px; }
+.edit-btn {
+  font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink-2);
+  cursor: pointer;
+}
+.edit-btn:hover:not(:disabled) { color: var(--ink); border-color: currentColor; }
+.edit-btn.active {
+  color: #fff; cursor: default; font-weight: 600;
+  border-color: transparent;
+}
+.edit-btn.active.status-now { background: var(--now); }
+.edit-btn.active.status-next { background: var(--next); }
+.edit-btn.active.status-later { background: var(--later); }
+.edit-btn.active.status-inbox { background: var(--inbox); }
+.edit-btn.active.status-done { background: var(--done); }
+
+/* toast */
+.toast {
+  position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 20px);
+  background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 999px;
+  font-size: 13px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease; z-index: 10000; max-width: 90vw;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast.err { background: #b91c1c; color: #fff; }
+
+/* token panel */
+.token-backdrop {
+  position: fixed; inset: 0; background: rgba(10, 13, 18, .5);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  z-index: 10001;
+}
+.token-panel {
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px;
+  width: 100%; max-width: 400px;
+}
+.token-title { margin: 0 0 6px; font-size: 16px; }
+.token-note { margin: 0 0 8px; font-size: 13px; color: var(--ink-2); line-height: 1.45; }
+.token-help { font-size: 13px; color: var(--accent); text-decoration: none; }
+.token-help:hover { text-decoration: underline; }
+.token-input {
+  width: 100%; box-sizing: border-box; margin: 12px 0; padding: 9px 11px;
+  font-size: 16px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink);
+}
+.token-input:focus { outline: none; border-color: var(--accent); }
+.token-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.tbtn {
+  font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
+}
+.tbtn:hover { border-color: var(--ink-3); }
+.tbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tbtn.primary:hover { filter: brightness(1.05); }
+
+/* ── inline SVG icons (Feather-style, inherit currentColor) ──────────────── */
+.icn { width: 16px; height: 16px; display: inline-block; vertical-align: middle; flex: none; }
+.icn.inline { width: 13px; height: 13px; vertical-align: -2px; margin-right: 4px; }
+/* icon-only ghost buttons: center the glyph */
+#viewToggle, #theme { display: inline-flex; align-items: center; justify-content: center; }
+/* blocked badge: amber caution tint, slightly smaller in the dense meta row */
+.block-badge { color: var(--later); }
+.block-badge .icn { width: 14px; height: 14px; }
+
+/* ── new-puck form ─────────────────────────────────────────────────────── */
+.iconbtn.newpuckbtn { font-size: 18px; line-height: 1; font-weight: 500; }
+.np-field { margin: 10px 0; }
+.np-field label { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+.np-select {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 16px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink);
+}
+.np-select:focus { outline: none; border-color: var(--accent); }
+.np-preview { font-family: ui-monospace, monospace; font-size: 12px; color: var(--ink-3); min-height: 14px; margin: -4px 0 2px; }
+
+/* fix: the `hidden` attribute must win over .iconbtn's display */
+.iconbtn[hidden] { display: none !important; }
+
+/* body editing */
+.body-edit { margin-top: 8px; }
+.body-editor {
+  width: 100%; box-sizing: border-box; min-height: 220px; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink);
+}
+.body-editor:focus { outline: none; border-color: var(--accent); }
+.body-edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }

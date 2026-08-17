@@ -12,6 +12,7 @@
 //   roadmap status nano-multibuffer inbox                 → any status
 //   roadmap tag   nano-multibuffer +editor -ui           add/remove tags
 //   roadmap issue nano-multibuffer 42                     link a working issue
+//   roadmap owner nano-multibuffer torvalds               set owner (--clear to remove)
 //   roadmap touch nano-multibuffer                        just bump `updated`
 //   roadmap list [--status now]                           quick overview
 //   roadmap install-hook                                  auto-bump `updated` on commit
@@ -95,6 +96,19 @@ function getField(text, key) {
     if (m) return m[1].trim();
   }
   return null;
+}
+
+// Delete a frontmatter field line (no-op if absent). Keeps everything else
+// byte-identical, same as setField.
+function removeField(text, key) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const range = frontmatterRange(lines);
+  if (!range) fail("no YAML frontmatter found — is this a puck?");
+  for (let i = range[0]; i < range[1]; i++) {
+    if (new RegExp(`^${key}:`).test(lines[i])) { lines.splice(i, 1); break; }
+  }
+  return lines.join(nl);
 }
 
 // ── locate a puck file by slug: roadmap/<slug>.md | roadmap/<slug>/README.md ──
@@ -186,6 +200,32 @@ async function cmdIssue() {
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
   console.log(`✓ ${slug} issue #${num}  (updated ${TODAY})`);
+}
+
+async function cmdOwner() {
+  const slug = pos.shift();
+  const handle = pos.shift();
+  if (!slug) fail("usage: roadmap owner <slug> <handle>   (--clear to remove)");
+  const { path: p, text } = await readPuckOrFail(slug);
+  const clearing = opts.clear || handle === "none" || handle === "-";
+  let out;
+  if (clearing) {
+    out = removeField(text, "owner");
+  } else {
+    if (!handle) fail("usage: roadmap owner <slug> <handle>   (--clear to remove)");
+    const h = handle.replace(/^@/, "").trim();
+    // GitHub handle: alphanumerics + single (non-leading/trailing) hyphens, ≤39.
+    if (!/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(h))
+      fail(`"${h}" doesn't look like a GitHub handle`);
+    out = setField(text, "owner", h);
+  }
+  out = setField(out, "updated", TODAY);
+  await writeFile(p, out);
+  console.log(
+    clearing
+      ? `✓ ${slug} owner cleared  (updated ${TODAY})`
+      : `✓ ${slug} owner @${handle.replace(/^@/, "")}  (updated ${TODAY})`,
+  );
 }
 
 async function cmdTouch() {
@@ -292,6 +332,7 @@ async function main() {
     case "status": { const s = pos.shift(); const st = pos.shift(); return setStatus(s, st); }
     case "tag": return cmdTag();
     case "issue": return cmdIssue();
+    case "owner": return cmdOwner();
     case "touch": return cmdTouch();
     case "list": case "ls": return listPucks();
     case "install-hook": return cmdInstallHook();
@@ -312,6 +353,7 @@ function printHelp() {
   roadmap status <slug> <status>                      set any status
   roadmap tag <slug> +add -remove …                   edit tags
   roadmap issue <slug> <number>                       link a working issue
+  roadmap owner <slug> <handle>                       set owner (--clear to remove)
   roadmap touch <slug>                                bump updated only
   roadmap list [--status now]                         overview
   roadmap install-hook                                auto-bump updated on commit

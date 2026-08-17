@@ -181,9 +181,42 @@
     return wrap;
   }
 
-  // ⛔ badge for a puck waiting on unfinished dependencies (tooltip lists them).
+  // ── inline icons — Streamline "Feather" set (streamlinehq.com), stroke
+  // inherits currentColor so they track light/dark + the repo accent. To add
+  // one: drop its path 'd' string(s) into ICONS and reference by name. ──
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var ICONS = {
+    slash: ["M1.25 7.5a6.25 6.25 0 1 0 12.5 0 6.25 6.25 0 1 0 -12.5 0", "m3.08125 3.08125 8.8375 8.8375"],
+    share: ["M2.5 7.5v5a1.25 1.25 0 0 0 1.25 1.25h7.5a1.25 1.25 0 0 0 1.25 -1.25v-5", "m10 3.75 -2.5 -2.5 -2.5 2.5", "m7.5 1.25 0 8.125"],
+    list: ["m5 3.75 8.125 0", "m5 7.5 8.125 0", "m5 11.25 8.125 0", "m1.875 3.75 0.00625 0", "m1.875 7.5 0.00625 0", "m1.875 11.25 0.00625 0"],
+    grid: ["M1.875 1.875h4.375v4.375H1.875Z", "M8.75 1.875h4.375v4.375h-4.375Z", "M8.75 8.75h4.375v4.375h-4.375Z", "M1.875 8.75h4.375v4.375H1.875Z"],
+    key: ["m13.125 1.25 -1.25 1.25m-4.7562500000000005 4.7562500000000005a3.4375 3.4375 0 1 1 -4.86125 4.86125 3.4375 3.4375 0 0 1 4.860625 -4.860625zm0 0L9.6875 4.6875m0 0 1.875 1.875L13.75 4.375l-1.875 -1.875m-2.1875 2.1875L11.875 2.5"],
+    external: ["M11.25 8.125v3.75a1.25 1.25 0 0 1 -1.25 1.25H3.125a1.25 1.25 0 0 1 -1.25 -1.25V5a1.25 1.25 0 0 1 1.25 -1.25h3.75", "m9.375 1.875 3.75 0 0 3.75", "M6.25 8.75 13.125 1.875"],
+    sun: ["M4.375 7.5a3.125 3.125 0 1 0 6.25 0 3.125 3.125 0 1 0 -6.25 0", "m7.5 0.625 0 1.25", "m7.5 13.125 0 1.25", "m2.6374999999999997 2.6374999999999997 0.8875 0.8875", "m11.475 11.475 0.8875 0.8875", "m0.625 7.5 1.25 0", "m13.125 7.5 1.25 0", "m2.6374999999999997 12.3625 0.8875 -0.8875", "m11.475 3.525 0.8875 -0.8875"],
+    moon: ["M13.125 7.9937499999999995A5.625 5.625 0 1 1 7.0062500000000005 1.875 4.375 4.375 0 0 0 13.125 7.9937499999999995z"],
+  };
+  function icon(name, cls) {
+    var svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("viewBox", "-0.5 -0.5 16 16");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("class", "icn" + (cls ? " " + cls : ""));
+    svg.setAttribute("aria-hidden", "true");
+    (ICONS[name] || []).forEach(function (d) {
+      var p = document.createElementNS(SVGNS, "path");
+      p.setAttribute("d", d);
+      svg.appendChild(p);
+    });
+    return svg;
+  }
+
+  // Blocked badge for a puck waiting on unfinished dependencies (tooltip lists them).
   function blockBadge(item) {
-    var b = el("span", "block-badge", "⛔");
+    var b = el("span", "block-badge");
+    b.appendChild(icon("slash"));
     var names = blockerItems(item).map(function (x) { return x.title; });
     b.title = "Blocked by: " + (names.join(", ") || item.blockedBy.join(", "));
     b.setAttribute("aria-label", b.title);
@@ -328,6 +361,8 @@
     }
     modalContent.appendChild(meta);
 
+    buildStatusEditor(item); // status buttons (only when a token is set + native puck)
+
     // Tags on their own row (static badges).
     if (item.tags.length || !item.native) {
       var tags = el("div", "card-tags");
@@ -346,7 +381,8 @@
     // Blocked-by: list the unfinished dependencies; each opens that puck.
     if ((item.blockedBy || []).length) {
       var blk = el("div", "modal-blocked");
-      blk.appendChild(document.createTextNode("⛔ Blocked by: "));
+      blk.appendChild(icon("slash", "inline"));
+      blk.appendChild(document.createTextNode("Blocked by: "));
       var blockers = blockerItems(item);
       if (blockers.length) {
         blockers.forEach(function (b, i) {
@@ -366,18 +402,30 @@
     body.innerHTML = renderMd(item.body || "(no details)");
     modalContent.appendChild(body);
 
+    if (ghToken() && item.native) {
+      var editBtn = el("button", "linklike body-edit", "✎ Edit body");
+      editBtn.type = "button";
+      editBtn.addEventListener("click", function () { startBodyEdit(item, body, editBtn); });
+      modalContent.appendChild(editBtn);
+    }
+
     var links = el("div", "card-links");
-    links.appendChild(linkEl("source ↗", item.sourceUrl));
+    var srcLink = linkEl("source", item.sourceUrl);
+    srcLink.insertBefore(icon("external", "inline"), srcLink.firstChild);
+    links.appendChild(srcLink);
     if (item.issue) {
       links.appendChild(linkEl("issue #" + item.issue, "https://github.com/" + item.repo + "/issues/" + item.issue));
     }
-    var copyBtn = el("button", "linklike", "🔗 Copy link");
+    var copyBtn = el("button", "linklike");
     copyBtn.type = "button";
+    copyBtn.appendChild(icon("share", "inline"));
+    var copyLabel = el("span", null, "Copy link");
+    copyBtn.appendChild(copyLabel);
     copyBtn.addEventListener("click", function () {
       var url = location.origin + location.pathname + "#" + item.id;
       copyText(url, function () {
-        copyBtn.textContent = "✓ Copied";
-        setTimeout(function () { copyBtn.textContent = "🔗 Copy link"; }, 1500);
+        copyLabel.textContent = "Copied";
+        setTimeout(function () { copyLabel.textContent = "Copy link"; }, 1500);
       });
     });
     links.appendChild(copyBtn);
@@ -592,18 +640,28 @@
     if (t === "light") return false;
     return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
   }
+  function updateThemeButton() {
+    themeBtn.innerHTML = "";
+    // Show the icon of the mode a tap switches TO (dark now → sun to go light).
+    themeBtn.appendChild(icon(effectiveIsDark() ? "sun" : "moon"));
+  }
   themeBtn.addEventListener("click", function () {
     var next = effectiveIsDark() ? "light" : "dark";
     root.setAttribute("data-theme", next);
     try { localStorage.setItem("roadmap-theme", next); } catch (e) {}
     applyThemeColor();
+    updateThemeButton();
     themeBtn.blur();
   });
   // Follow the system scheme while on "auto" (no explicit toggle yet).
   if (window.matchMedia) {
-    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyThemeColor);
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+      applyThemeColor();
+      updateThemeButton();
+    });
   }
   applyThemeColor();
+  updateThemeButton();
 
   // ── view toggle (board ⇄ list, remembered) ──
   var viewBtn = document.getElementById("viewToggle");
@@ -611,7 +669,8 @@
     var isList = state.view === "list";
     // Icon = the current view (no persistent .active highlight — it read as a
     // stuck focus ring); the title says what a tap does.
-    viewBtn.textContent = isList ? "☰" : "▦";
+    viewBtn.innerHTML = "";
+    viewBtn.appendChild(icon(isList ? "grid" : "list"));
     viewBtn.title = isList ? "Switch to board view" : "Switch to list view";
     viewBtn.setAttribute("aria-label", viewBtn.title);
   }
@@ -811,6 +870,333 @@
   updateViewButton();
   setFilters(window.matchMedia("(min-width: 601px)").matches);
   renderBoard();
+
+  // ── GUI editing: write pucks back to git from the browser ────────────────
+  // Zero-backend. With a fine-grained GitHub token (kept only in this browser's
+  // localStorage) the board commits roadmap/<slug>.md straight to api.github.com
+  // — the same edit the CLI makes, from the web. Edit controls appear only when a
+  // token is set, so the public board is identical for everyone else.
+  var TOKEN_KEY = "roadmap-gh-token";
+  function ghToken() { try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; } }
+  function setGhToken(v) { try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
+  function b64encode(s) { return btoa(unescape(encodeURIComponent(s))); }
+  function b64decode(b) { return decodeURIComponent(escape(atob(String(b).replace(/\s/g, "")))); }
+  function today() { return new Date().toISOString().slice(0, 10); }
+  function branchOf(item) { var m = /\/blob\/([^/]+)\//.exec(item.sourceUrl || ""); return m ? m[1] : "main"; }
+
+  // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
+  function editFrontmatter(text, key, value) {
+    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
+    var lines = text.replace(/\r\n/g, "\n").split("\n");
+    if (lines[0] !== "---") return null;
+    var end = -1;
+    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
+    if (end < 0) return null;
+    var out = key + ": " + value, done = false;
+    for (var j = 1; j < end; j++) {
+      if (new RegExp("^" + key + ":").test(lines[j])) { lines[j] = out; done = true; break; }
+    }
+    if (!done) lines.splice(end, 0, out);
+    return lines.join(nl);
+  }
+
+  // Commit a status change via the GitHub Contents API (read sha → PUT commit).
+  function commitStatus(item, status) {
+    var token = ghToken();
+    var apiPath = item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + apiPath;
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { if (!r.ok) throw new Error("read failed (" + r.status + ")"); return r.json(); })
+      .then(function (info) {
+        var text = b64decode(info.content);
+        var out = editFrontmatter(text, "status", status);
+        if (out == null) throw new Error("no frontmatter");
+        out = editFrontmatter(out, "updated", today());
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: " + item.slug + " → " + status, content: b64encode(out), sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { if (!r.ok) throw new Error("write failed (" + r.status + ")"); });
+  }
+
+  // Optimistic: flip in-memory + re-render now, commit in the background, revert on failure.
+  function changeStatus(item, status) {
+    if (status === item.status || !ghToken()) return;
+    var prevS = item.status, prevU = item.updated;
+    item.status = status; item.updated = today();
+    renderBoard(); openModal(item);
+    toast("Saving…");
+    commitStatus(item, status)
+      .then(function () { toast("✓ Saved — live in ~1 min"); })
+      .catch(function (err) {
+        item.status = prevS; item.updated = prevU;
+        renderBoard(); openModal(item);
+        toast("✗ " + err.message, true);
+      });
+  }
+
+  // Replace the body (everything after the frontmatter fence), keeping the
+  // frontmatter byte-identical.
+  function replaceBody(text, newBody) {
+    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
+    var lines = text.replace(/\r\n/g, "\n").split("\n");
+    if (lines[0] !== "---") return null;
+    var end = -1;
+    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
+    if (end < 0) return null;
+    var fm = lines.slice(0, end + 1);
+    var b = newBody.replace(/\r\n/g, "\n").replace(/\s+$/, "").split("\n");
+    return fm.concat([""], b, [""]).join(nl);
+  }
+
+  // Commit an edited body via the Contents API (read sha → PUT), bumping updated.
+  function commitBody(item, newBody) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { if (!r.ok) throw new Error("read failed (" + r.status + ")"); return r.json(); })
+      .then(function (info) {
+        var out = replaceBody(b64decode(info.content), newBody);
+        if (out == null) throw new Error("no frontmatter");
+        out = editFrontmatter(out, "updated", today());
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: " + item.slug + " edit body", content: b64encode(out), sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { if (!r.ok) throw new Error("write failed (" + r.status + ")"); });
+  }
+
+  // Swap the rendered body for a textarea; Save commits, Cancel restores.
+  function startBodyEdit(item, bodyEl, editBtn) {
+    editBtn.style.display = "none";
+    var ta = document.createElement("textarea");
+    ta.className = "body-editor";
+    ta.value = item.body || "";
+    var actions = el("div", "body-edit-actions");
+    var save = el("button", "tbtn primary", "Save");
+    var cancel = el("button", "tbtn", "Cancel");
+    save.type = "button"; cancel.type = "button";
+    actions.appendChild(save); actions.appendChild(cancel);
+    bodyEl.innerHTML = ""; bodyEl.appendChild(ta); bodyEl.appendChild(actions);
+    ta.focus();
+    function restore(md) { bodyEl.innerHTML = renderMd(md || "(no details)"); editBtn.style.display = ""; }
+    cancel.addEventListener("click", function () { restore(item.body); });
+    save.addEventListener("click", function () {
+      var newBody = ta.value, prev = item.body;
+      item.body = newBody; item.updated = today();
+      restore(newBody);
+      toast("Saving…");
+      commitBody(item, newBody)
+        .then(function () { toast("✓ Saved — live in ~1 min"); })
+        .catch(function (err) { item.body = prev; restore(prev); toast("✗ " + err.message, true); });
+    });
+  }
+
+  // Status editor inside the modal — native pucks only, token set.
+  function buildStatusEditor(item) {
+    if (!ghToken() || !item.native) return;
+    var row = el("div", "edit-status");
+    row.appendChild(el("span", "edit-label", "Set status"));
+    DATA.statuses.forEach(function (s) {
+      var b = el("button", "edit-btn status-" + s + (s === item.status ? " active" : ""), STATUS_LABEL[s] || s);
+      b.type = "button";
+      if (s === item.status) b.disabled = true;
+      else b.addEventListener("click", function () { changeStatus(item, s); });
+      row.appendChild(b);
+    });
+    modalContent.appendChild(row);
+  }
+
+  // Toast
+  var toastEl, toastTimer;
+  function toast(msg, isErr) {
+    if (!toastEl) { toastEl = el("div", "toast"); document.body.appendChild(toastEl); }
+    toastEl.textContent = msg;
+    toastEl.className = "toast show" + (isErr ? " err" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.className = "toast"; }, isErr ? 6000 : 2600);
+  }
+
+  // slugify — a byte-for-byte copy of scripts/lib/adapters.mjs so a GUI-created
+  // puck lands at the same path the harvester derives from the title.
+  function slugify(s) {
+    return s.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "item";
+  }
+
+  // The new-puck file body — mirrors `roadmap new` in scripts/roadmap.mjs.
+  function puckTemplate(title, status, tags) {
+    var t = /[:#]/.test(title) ? JSON.stringify(title) : title;
+    var lines = ["---", "title: " + t, "status: " + status];
+    if (tags.length) lines.push("tags: [" + tags.join(", ") + "]");
+    lines.push("updated: " + today(), "created: " + today(), "---", "", "## Mål", "", "", "## Research", "", "", "## Öppna frågor", "- ", "");
+    return lines.join("\n");
+  }
+
+  // Where a repo keeps its pucks + which branch — derived from an existing item
+  // of that repo (falls back to the convention default).
+  function sourceMeta(repo) {
+    var it = DATA.items.filter(function (x) { return x.repo === repo; })[0];
+    var dir = "roadmap", branch = "main";
+    if (it) { var p = it.sourcePath.split("/"); p.pop(); dir = p.join("/") || "roadmap"; branch = branchOf(it); }
+    return { dir: dir, branch: branch };
+  }
+
+  // Create a new file via the Contents API (no sha = create; 422 = already exists).
+  function commitCreate(repo, path, branch, content, message) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + repo + "/contents/" + path.split("/").map(encodeURIComponent).join("/");
+    return fetch(api, {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+      body: JSON.stringify({ message: message, content: b64encode(content), branch: branch }),
+    }).then(function (r) { if (!r.ok) throw new Error(r.status === 422 ? "already exists" : "create failed (" + r.status + ")"); });
+  }
+
+  // Optimistic create: add to the board now, commit in the background, revert on failure.
+  function createPuck(repo, title, status, tags) {
+    var slug = slugify(title);
+    var short = repo.split("/").pop();
+    var id = short + "/" + slug;
+    if (DATA.items.some(function (x) { return x.id === id; })) { toast('✗ A puck "' + slug + '" already exists here', true); return; }
+    var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0] || {};
+    var meta = sourceMeta(repo);
+    var path = meta.dir + "/" + slug + ".md";
+    var body = "## Mål\n\n\n## Research\n\n\n## Öppna frågor\n- ";
+    var item = {
+      id: id, repo: repo, repoName: src.name || short, repoColor: src.color || "#888888",
+      issueState: null, slug: slug, title: title, status: status, tags: tags, updated: today(),
+      created: today(), issue: null, order: 0, depends: [], owner: null, body: body,
+      sourcePath: path, sourceUrl: "https://github.com/" + repo + "/blob/" + meta.branch + "/" + path,
+      adapter: "pucks", native: true, blockedBy: [], signals: [],
+    };
+    DATA.items.push(item); DATA.total += 1;
+    renderBoard(); openModal(item);
+    toast("Creating…");
+    commitCreate(repo, path, meta.branch, puckTemplate(title, status, tags), "roadmap: add " + slug)
+      .then(function () { toast("✓ Created — live in ~1 min"); })
+      .catch(function (err) {
+        var i = DATA.items.indexOf(item); if (i >= 0) DATA.items.splice(i, 1);
+        DATA.total -= 1; renderBoard(); closeModal();
+        toast("✗ " + err.message, true);
+      });
+  }
+
+  // 🔑 edit-access + ＋ new-puck controls in the header.
+  var tokenBtn, newBtn;
+  function refreshEditControls() {
+    if (tokenBtn) tokenBtn.classList.toggle("on", !!ghToken());
+    if (newBtn) newBtn.hidden = !ghToken();
+  }
+  function buildEditControls() {
+    var host = document.getElementById("theme");
+    if (!host || !host.parentNode) return;
+    newBtn = el("button", "iconbtn newpuckbtn", "＋");
+    newBtn.type = "button"; newBtn.title = "New puck"; newBtn.hidden = !ghToken();
+    newBtn.addEventListener("click", openNewPuckPanel);
+    host.parentNode.insertBefore(newBtn, host);
+    tokenBtn = el("button", "iconbtn tokenbtn");
+    tokenBtn.type = "button";
+    tokenBtn.appendChild(icon("key"));
+    tokenBtn.title = "Edit access — set a GitHub token to edit pucks from the board";
+    tokenBtn.classList.toggle("on", !!ghToken());
+    tokenBtn.addEventListener("click", function () { openTokenPanel(refreshEditControls); });
+    host.parentNode.insertBefore(tokenBtn, host);
+  }
+
+  function field(labelText, control) {
+    var d = el("div", "np-field");
+    var l = el("label", null, labelText); d.appendChild(l); d.appendChild(control);
+    return d;
+  }
+  function selectEl(cls, opts, value) {
+    var s = document.createElement("select"); s.className = cls;
+    opts.forEach(function (o) { var e = document.createElement("option"); e.value = o.value; e.textContent = o.label; s.appendChild(e); });
+    if (value != null) s.value = value;
+    return s;
+  }
+  function openNewPuckPanel() {
+    if (!ghToken()) return;
+    var back = el("div", "token-backdrop");
+    var p = el("div", "token-panel");
+    p.appendChild(el("h3", "token-title", "New puck"));
+    var proj = selectEl("np-select", DATA.sources.map(function (s) { return { value: s.repo, label: s.name }; }),
+      DATA.sources.some(function (s) { return s.repo === "tor2dbear/roadmap"; }) ? "tor2dbear/roadmap" : null);
+    var title = el("input", "token-input"); title.type = "text"; title.placeholder = "Title"; title.autocomplete = "off";
+    var st = selectEl("np-select", DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; }), "inbox");
+    var tg = el("input", "token-input"); tg.type = "text"; tg.placeholder = "tags (comma-separated)"; tg.autocomplete = "off";
+    var preview = el("div", "np-preview", "");
+    function updatePreview() {
+      var m = sourceMeta(proj.value);
+      preview.textContent = title.value.trim() ? "→ " + m.dir + "/" + slugify(title.value) + ".md" : "";
+    }
+    title.addEventListener("input", updatePreview); proj.addEventListener("change", updatePreview);
+    p.appendChild(field("Project", proj));
+    p.appendChild(field("Title", title));
+    p.appendChild(preview);
+    p.appendChild(field("Status", st));
+    p.appendChild(field("Tags", tg));
+    var actions = el("div", "token-actions");
+    var create = el("button", "tbtn primary", "Create");
+    var cancel = el("button", "tbtn", "Cancel");
+    function close() { if (back.parentNode) document.body.removeChild(back); }
+    create.addEventListener("click", function () {
+      var t = title.value.trim();
+      if (!t) { title.focus(); return; }
+      var tags = tg.value.split(",").map(function (x) { return slugify(x); }).filter(Boolean);
+      close(); createPuck(proj.value, t, st.value, tags);
+    });
+    cancel.addEventListener("click", close);
+    actions.appendChild(create); actions.appendChild(cancel);
+    p.appendChild(actions);
+    back.appendChild(p);
+    back.addEventListener("click", function (e) { if (e.target === back) close(); });
+    document.body.appendChild(back);
+    title.focus();
+  }
+
+  function openTokenPanel(after) {
+    var back = el("div", "token-backdrop");
+    var p = el("div", "token-panel");
+    p.appendChild(el("h3", "token-title", "Edit access"));
+    p.appendChild(el("p", "token-note",
+      "Paste a GitHub fine-grained token with Contents: write on your roadmap repo(s). It’s stored only in this browser and used to commit edits straight to GitHub."));
+    var help = el("a", "token-help", "Create a fine-grained token ↗");
+    help.href = "https://github.com/settings/personal-access-tokens/new";
+    help.target = "_blank"; help.rel = "noopener";
+    p.appendChild(help);
+    var inp = el("input", "token-input");
+    inp.type = "password"; inp.placeholder = "github_pat_…"; inp.value = ghToken();
+    inp.autocomplete = "off"; inp.spellcheck = false;
+    p.appendChild(inp);
+    var actions = el("div", "token-actions");
+    var save = el("button", "tbtn primary", "Save");
+    var clear = el("button", "tbtn", "Clear");
+    var cancel = el("button", "tbtn", "Cancel");
+    function close() { if (back.parentNode) document.body.removeChild(back); }
+    save.addEventListener("click", function () {
+      var v = inp.value.trim(); setGhToken(v); if (after) after(); close();
+      toast(v ? "Token saved — open a puck to edit" : "Token cleared");
+    });
+    clear.addEventListener("click", function () { setGhToken(""); inp.value = ""; if (after) after(); close(); toast("Token cleared"); });
+    cancel.addEventListener("click", close);
+    actions.appendChild(save); actions.appendChild(clear); actions.appendChild(cancel);
+    p.appendChild(actions);
+    back.appendChild(p);
+    back.addEventListener("click", function (e) { if (e.target === back) close(); });
+    document.body.appendChild(back);
+    inp.focus();
+  }
+
+  buildEditControls();
 
   // Deep link: open the puck named in the URL hash on load, and react to the
   // hash changing (pasted link in the same tab, or Back after opening a modal).
