@@ -233,7 +233,8 @@
   // (fullscreen on mobile) so long bodies don't blow up the column height.
   function card(item) {
     var sig = signalMessages(item);
-    var c = el("div", "card" + (item.native ? "" : " adapted") + (sig.length ? " flagged" : ""));
+    var c = el("div", "card" + (item.native ? "" : " adapted") + (sig.length ? " flagged" : "") + (item.id === selectedId ? " sel" : ""));
+    c.setAttribute("data-id", item.id);
     c.style.setProperty("--repo", item.repoColor);
 
     // Row 1: title.
@@ -330,14 +331,23 @@
     });
   }
 
-  function openModal(item) {
-    modalContent.innerHTML = "";
-    modalPanel.style.setProperty("--repo", item.repoColor);
+  // ── detail: a side pane on desktop, a modal overlay on mobile ──
+  var detailPane, detailContent, workEl, selectedId = null;
+  function isWide() { return window.matchMedia("(min-width: 900px)").matches; }
+  function paneRefs() {
+    if (!detailPane) {
+      detailPane = document.getElementById("detailPane");
+      detailContent = document.getElementById("detailContent");
+      workEl = document.getElementById("work");
+    }
+  }
 
-    modalContent.appendChild(el("h2", "modal-title", item.title));
+  // Build the full puck detail into `container` — shared by both surfaces.
+  function fillDetail(container, item) {
+    container.innerHTML = "";
+    container.style.setProperty("--repo", item.repoColor);
+    container.appendChild(el("h2", "modal-title", item.title));
 
-    // Metadata section: an identity line (repo + status), then both dates
-    // together on one muted line so the section reads as a tidy block.
     var meta = el("div", "modal-meta");
     var idrow = el("div", "modal-idrow");
     var repo = el("span", "card-repo");
@@ -365,26 +375,24 @@
       }
       meta.appendChild(dates);
     }
-    modalContent.appendChild(meta);
+    container.appendChild(meta);
 
-    buildStatusEditor(item); // status buttons (only when a token is set + native puck)
+    buildStatusEditor(item, container); // status buttons (token + native puck only)
 
-    // Tags on their own row (static badges).
     if (item.tags.length || !item.native) {
       var tags = el("div", "card-tags");
       item.tags.forEach(function (t) { tags.appendChild(el("span", "tagpill", "#" + t)); });
       if (!item.native) tags.appendChild(el("span", "adapted-badge", "adapted"));
-      modalContent.appendChild(tags);
+      container.appendChild(tags);
     }
 
     var sig = signalMessages(item);
     if (sig.length) {
       var flags = el("div", "card-flags");
       sig.forEach(function (m) { flags.appendChild(el("div", "flag", "⚠ " + m)); });
-      modalContent.appendChild(flags);
+      container.appendChild(flags);
     }
 
-    // Blocked-by: list the unfinished dependencies; each opens that puck.
     if ((item.blockedBy || []).length) {
       var blk = el("div", "modal-blocked");
       blk.appendChild(icon("slash", "inline"));
@@ -401,18 +409,18 @@
       } else {
         blk.appendChild(document.createTextNode(item.blockedBy.join(", ")));
       }
-      modalContent.appendChild(blk);
+      container.appendChild(blk);
     }
 
     var body = el("div", "modal-body");
     body.innerHTML = renderMd(item.body || "(no details)");
-    modalContent.appendChild(body);
+    container.appendChild(body);
 
     if (ghToken() && item.native) {
       var editBtn = el("button", "linklike body-edit", "✎ Edit body");
       editBtn.type = "button";
       editBtn.addEventListener("click", function () { startBodyEdit(item, body, editBtn); });
-      modalContent.appendChild(editBtn);
+      container.appendChild(editBtn);
     }
 
     var links = el("div", "card-links");
@@ -435,25 +443,59 @@
       });
     });
     links.appendChild(copyBtn);
-    modalContent.appendChild(links);
+    container.appendChild(links);
+  }
 
+  // Router: side pane on desktop, modal on mobile. Both reflect the URL hash.
+  function openModal(item) {
+    if (isWide()) openDetail(item);
+    else openOverlay(item);
+    setHash(item.id);
+  }
+  function openOverlay(item) {
+    modalPanel.style.setProperty("--repo", item.repoColor);
+    fillDetail(modalContent, item);
     modalBackdrop.hidden = false;
     document.body.classList.add("modal-open");
     modalContent.scrollTop = 0;
-    setHash(item.id); // reflect the open puck in the URL so it can be copied/shared
+  }
+  function openDetail(item) {
+    paneRefs();
+    fillDetail(detailContent, item);
+    detailPane.hidden = false;
+    workEl.classList.add("has-detail");
+    detailContent.scrollTop = 0;
+    selectedId = item.id;
+    highlightSelected();
+  }
+  function highlightSelected() {
+    var nodes = document.querySelectorAll("#board .card, #board .list-row");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].classList.toggle("sel", !!selectedId && nodes[i].getAttribute("data-id") === selectedId);
+    }
   }
 
   function closeModal() {
-    if (!modalBackdrop) return;
     if (location.hash) setHash(null);
-    modalBackdrop.hidden = true;
-    document.body.classList.remove("modal-open");
+    if (modalBackdrop) {
+      modalBackdrop.hidden = true;
+      document.body.classList.remove("modal-open");
+    }
+    closeDetail();
+  }
+  function closeDetail() {
+    paneRefs();
+    selectedId = null;
+    if (workEl) workEl.classList.remove("has-detail");
+    if (detailPane) detailPane.hidden = true;
+    highlightSelected();
   }
 
   // A compact list row — denser than a card, one vertical column, tap → modal.
   function listRow(item) {
     var sig = signalMessages(item);
-    var r = el("div", "list-row" + (sig.length ? " flagged" : ""));
+    var r = el("div", "list-row" + (sig.length ? " flagged" : "") + (item.id === selectedId ? " sel" : ""));
+    r.setAttribute("data-id", item.id);
     r.style.setProperty("--repo", item.repoColor);
     r.title = item.repoName;
     var dot = el("span", "repo-dot");
@@ -1025,7 +1067,7 @@
   }
 
   // Status editor inside the modal — native pucks only, token set.
-  function buildStatusEditor(item) {
+  function buildStatusEditor(item, container) {
     if (!ghToken() || !item.native) return;
     var row = el("div", "edit-status");
     row.appendChild(el("span", "edit-label", "Set status"));
@@ -1036,7 +1078,7 @@
       else b.addEventListener("click", function () { changeStatus(item, s); });
       row.appendChild(b);
     });
-    modalContent.appendChild(row);
+    (container || modalContent).appendChild(row);
   }
 
   // Toast
@@ -1224,6 +1266,23 @@
 
   // Deep link: open the puck named in the URL hash on load, and react to the
   // hash changing (pasted link in the same tab, or Back after opening a modal).
+  var detailCloseBtn = document.getElementById("detailClose");
+  if (detailCloseBtn) detailCloseBtn.addEventListener("click", closeModal);
+
+  // If the viewport crosses the desktop/mobile line while a puck is open, move
+  // it to the right surface (pane ⇄ overlay) so it never ends up in a dead one.
+  window.addEventListener("resize", function () {
+    var it = itemFromHash();
+    if (!it) return;
+    if (isWide()) {
+      if (modalBackdrop) { modalBackdrop.hidden = true; document.body.classList.remove("modal-open"); }
+      openDetail(it);
+    } else {
+      closeDetail();
+      openOverlay(it);
+    }
+  });
+
   var deepItem = itemFromHash();
   if (deepItem) openModal(deepItem);
   window.addEventListener("hashchange", function () {

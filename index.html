@@ -64,7 +64,13 @@
       </label>
     </nav>
 
-    <main id="board" class="board" aria-live="polite"></main>
+    <div class="work" id="work">
+      <main id="board" class="board" aria-live="polite"></main>
+      <aside class="detail-pane" id="detailPane" hidden aria-label="Puck detail">
+        <button class="detail-close" id="detailClose" type="button" aria-label="Close">✕</button>
+        <div class="detail-content" id="detailContent"></div>
+      </aside>
+    </div>
 
     <footer class="foot">
       <span id="footmeta"></span>
