@@ -613,8 +613,18 @@
 
     updateFilterButton();
     var shown = visible.length;
+    updateViewHeader(shown);
     document.getElementById("footmeta").textContent =
       shown + " of " + DATA.total + " shown · generated " + DATA.generatedAt.slice(0, 16).replace("T", " ") + " UTC · ";
+  }
+
+  // The consistent view-header reflects the current focus + how many are shown.
+  var VIEW_TITLES = { all: "All pucks", ready: "Ready to take", attention: "Needs attention" };
+  function updateViewHeader(shown) {
+    var t = document.getElementById("viewTitle");
+    var c = document.getElementById("viewCount");
+    if (t) t.textContent = VIEW_TITLES[state.focus] || "All pucks";
+    if (c) c.textContent = shown != null ? String(shown) : "";
   }
 
   // ── filter chips ──
@@ -1193,12 +1203,12 @@
   }
   function afterAuth() { refreshEditControls(); refreshUser(); }
   function buildEditControls() {
-    var host = document.getElementById("theme");
-    if (!host || !host.parentNode) return;
-    newBtn = el("button", "iconbtn newpuckbtn", "＋");
+    var host = document.getElementById("viewActions");
+    if (!host) return;
+    newBtn = el("button", "newbtn", "＋ New");
     newBtn.type = "button"; newBtn.title = "New puck"; newBtn.hidden = !ghToken();
     newBtn.addEventListener("click", openNewPuckPanel);
-    host.parentNode.insertBefore(newBtn, host);
+    host.appendChild(newBtn);
   }
 
   // A user chip at the top of the sidebar: your GitHub identity (derived from the

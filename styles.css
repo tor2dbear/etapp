@@ -736,3 +736,15 @@ body.modal-open { overflow: hidden; }
 .user-mi { text-align: left; background: none; border: 0; padding: 7px 9px; border-radius: 6px; color: var(--ink); font-size: 13px; cursor: pointer; }
 .user-mi:hover { background: var(--panel-2); }
 .user-mi.danger { color: #cc6149; }
+
+/* ── v2 consistent view-header ─────────────────────────────────────────────── */
+.vhead { display: flex; align-items: center; gap: 10px; padding: 11px 20px; border-bottom: 1px solid var(--line); }
+.view-title { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.view-count { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.vopts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.newbtn { display: inline-flex; align-items: center; gap: 5px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; color: var(--ink); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.newbtn:hover { border-color: var(--ink-3); }
+.newbtn[hidden] { display: none; }
+/* filter popover: no empty band when closed (padding/border live on the chips) */
+.filters { padding: 0; border: 0; }
+.filter-chips { padding: 12px 20px; border-bottom: 1px solid var(--line); }

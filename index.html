@@ -54,12 +54,24 @@
           </div>
           <div class="controls">
             <button id="filterToggle" class="ghost" aria-expanded="false" aria-controls="filterChips">Filter</button>
-            <button id="viewToggle" class="ghost" title="Switch to list view" aria-label="Switch to list view">☰</button>
           </div>
         </header>
 
         <nav class="filters" id="filters" aria-label="Filters">
           <div class="filter-chips" id="filterChips" hidden>
+            <div class="filter-group" id="tagFilters" aria-label="Tags"></div>
+            <label class="toggle">
+              <input type="checkbox" id="showDone" />
+              <span>Show done</span>
+            </label>
+          </div>
+        </nav>
+
+        <!-- consistent view-header: current view + view-options (stays as you navigate/open pucks) -->
+        <header class="vhead">
+          <h2 class="view-title" id="viewTitle">All pucks</h2>
+          <span class="view-count" id="viewCount"></span>
+          <div class="vopts" id="viewActions">
             <div class="filter-sort">
               <label for="sortSelect">Sort</label>
               <select id="sortSelect">
@@ -70,13 +82,9 @@
                 <option value="title">Title A–Z</option>
               </select>
             </div>
-            <div class="filter-group" id="tagFilters" aria-label="Tags"></div>
-            <label class="toggle">
-              <input type="checkbox" id="showDone" />
-              <span>Show done</span>
-            </label>
+            <button id="viewToggle" class="ghost" title="Switch to list view" aria-label="Switch to list view">☰</button>
           </div>
-        </nav>
+        </header>
 
         <div class="work" id="work">
           <main id="board" class="board" aria-live="polite"></main>
