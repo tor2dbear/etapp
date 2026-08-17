@@ -913,8 +913,24 @@
 
   // The consistent view-header reflects the current focus + how many are shown.
   var VIEW_TITLES = { all: "All pucks", ready: "Ready to take", inbox: "Inbox", attention: "Needs attention" };
+  function repoNameOf(repo) {
+    for (var i = 0; i < DATA.sources.length; i++) if (DATA.sources[i].repo === repo) return DATA.sources[i].name;
+    return repo.split("/").pop();
+  }
+  // The active scope (repo/discipline/agent/priority filters) as human labels, so
+  // the view header reflects "you're in a filtered view" — not just a smaller count.
+  function scopeParts() {
+    var p = [];
+    state.repos.forEach(function (r) { p.push(repoNameOf(r)); });
+    state.tags.forEach(function (t) { p.push("#" + t); });
+    state.agents.forEach(function (a) { p.push("→ " + agentLabel(a)); });
+    if (state.priorityFilter) p.push(PRIORITY_LABEL[state.priorityFilter]);
+    return p;
+  }
   function updateViewHeader(shown) {
-    var title = VIEW_TITLES[state.focus] || "All pucks";
+    var base = VIEW_TITLES[state.focus] || "All pucks";
+    var scope = scopeParts();
+    var title = scope.length ? base + " · " + scope.join(", ") : base;
     var count = shown != null ? String(shown) : "";
     // Desktop: title lives in the view-header. Mobile: in the topbar (fills the
     // otherwise-empty band between the menu and search). CSS shows one per width.

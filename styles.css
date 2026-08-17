@@ -731,6 +731,8 @@ body.viewing-puck .vhead { display: none; }
 /* ── v2 consistent view-header ─────────────────────────────────────────────── */
 .vhead { display: flex; align-items: center; gap: 10px; padding: 11px 20px; border-bottom: 1px solid var(--line); }
 .view-title { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+/* keep a long composed "view · scope" title from pushing the view-options off */
+.vhead .view-title { max-width: 55ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .view-count { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .vopts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .newbtn { display: inline-flex; align-items: center; gap: 5px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; color: var(--ink); font-size: 13px; cursor: pointer; white-space: nowrap; }
