@@ -62,21 +62,23 @@
         <!-- mobile-only: sidebar (with search + New) is behind the menu, so mirror
              the quick actions here; hidden on desktop where the sidebar is visible -->
         <header class="topbar">
+          <!-- menu stays in puck mode too, so nav is always reachable -->
           <button id="menuToggle" class="ghost menu-toggle" type="button" aria-label="Menu">☰</button>
-          <!-- puck mode: a back button + the puck's context replace the board title -->
-          <button id="topBack" class="ghost top-back" type="button" aria-label="Back to the board">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-          </button>
           <div class="top-title">
             <span id="topTitle" class="view-title">All pucks</span>
             <span id="topCount" class="view-count"></span>
           </div>
-          <span id="topCrumb" class="top-crumb"></span>
+          <!-- puck mode: breadcrumb (Pucks › Title) replaces the board title; the
+               "Pucks" segment is the back action -->
+          <nav class="top-crumb" id="topCrumb" aria-label="Breadcrumb"></nav>
           <button id="topNew" class="ghost top-new" type="button" aria-label="New puck" hidden>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           </button>
           <button id="topSearch" class="ghost top-search" type="button" aria-label="Search (Cmd/Ctrl+K)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </button>
+          <button id="topShare" class="ghost top-share-btn" type="button" aria-label="Share puck">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>
           </button>
         </header>
 

@@ -380,7 +380,7 @@
   }
 
   // ── detail: a side pane on desktop, a modal overlay on mobile ──
-  var detailPane, detailContent, workEl, selectedId = null;
+  var detailPane, detailContent, workEl, selectedId = null, currentDetailItem = null;
   function isWide() { return window.matchMedia("(min-width: 900px)").matches; }
   function paneRefs() {
     if (!detailPane) {
@@ -729,9 +729,19 @@
     fillDetail(detailContent, item);
     detailPane.hidden = false;
     document.body.classList.add("viewing-puck");
-    // The mobile topbar becomes the puck's context (Linear-style) — set its crumb.
+    // The mobile topbar becomes the puck's context (Linear-style): Pucks › Title,
+    // where "Pucks" is the back action and the title truncates.
+    currentDetailItem = item;
     var tc = document.getElementById("topCrumb");
-    if (tc) { tc.textContent = item.repoName + " · " + item.slug; }
+    if (tc) {
+      tc.innerHTML = "";
+      var back = el("button", "crumb-back", "Pucks");
+      back.type = "button";
+      back.addEventListener("click", function () { closeModal(); });
+      tc.appendChild(back);
+      tc.appendChild(el("span", "crumb-sep", "›"));
+      tc.appendChild(el("span", "crumb-title", item.title));
+    }
     detailContent.scrollTop = 0;
     window.scrollTo(0, 0);
     selectedId = item.id;
@@ -1845,8 +1855,13 @@
   // hash changing (pasted link in the same tab, or Back after opening a modal).
   var detailCloseBtn = document.getElementById("detailClose");
   if (detailCloseBtn) detailCloseBtn.addEventListener("click", closeModal);
-  var topBackBtn = document.getElementById("topBack");
-  if (topBackBtn) topBackBtn.addEventListener("click", closeModal);
+  var topShareBtn = document.getElementById("topShare");
+  if (topShareBtn) topShareBtn.addEventListener("click", function () {
+    if (!currentDetailItem) return;
+    var url = location.origin + location.pathname + "#" + currentDetailItem.id;
+    if (navigator.share) { navigator.share({ title: currentDetailItem.title, url: url }).catch(function () {}); }
+    else { copyText(url, function () { toast("✓ Link copied"); }); }
+  });
 
   var deepItem = itemFromHash();
   if (deepItem) openModal(deepItem);

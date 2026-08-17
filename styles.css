@@ -971,18 +971,21 @@ body.viewing-puck .vhead { display: none; }
 .side-repos .chip.agent[aria-pressed="true"] { background: var(--panel-2); color: var(--ink); }
 
 /* ── mobile topbar goes contextual when a puck is open (Linear-style) ───────── */
-/* Board mode: puck-only chrome hidden. */
-.topbar .top-back, .topbar .top-crumb { display: none; }
+/* Puck mode keeps the hamburger; the board title/actions swap for a breadcrumb
+   (Pucks › Title) + a share button. Board mode hides the puck-only chrome. */
+.topbar .top-crumb, .topbar .top-share-btn { display: none; }
 .top-crumb {
-  flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; color: var(--ink-2);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px;
+  font-size: 14px; color: var(--ink-3); /* sans-serif (inherit) → more compact than mono */
 }
-/* Puck mode: the back button + puck context replace the board title + actions. */
-body.viewing-puck .topbar .menu-toggle,
+.crumb-back { font: inherit; background: none; border: 0; padding: 0; color: var(--ink-2); cursor: pointer; flex: none; }
+.crumb-back:hover { color: var(--accent); }
+.top-crumb .crumb-sep { color: var(--ink-3); flex: none; }
+.crumb-title { color: var(--ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body.viewing-puck .topbar .top-title,
 body.viewing-puck .topbar .top-new,
 body.viewing-puck .topbar .top-search { display: none; }
-body.viewing-puck .topbar .top-back { display: inline-flex; }
-body.viewing-puck .topbar .top-crumb { display: block; }
+body.viewing-puck .topbar .top-crumb { display: flex; }
+body.viewing-puck .topbar .top-share-btn { display: inline-flex; }
 /* The topbar now carries the breadcrumb → drop the duplicate in-content one on mobile. */
 @media (max-width: 899px) { body.viewing-puck .detail-crumb { display: none; } }
