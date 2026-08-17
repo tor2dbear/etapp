@@ -901,3 +901,19 @@ body.modal-open { overflow: hidden; }
   .vhead .view-title, .vhead .view-count { display: none; }
   .vhead .vopts { margin-left: 0; }
 }
+
+/* ── uniform control height across the topbar + view-header ─────────────────── */
+.topbar .ghost,
+.vhead .ghost,
+.vhead .filter-btn,
+.vhead .filter-sort select {
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 1;
+}
+.topbar .ghost { justify-content: center; }
+.top-new svg { width: 18px; height: 18px; }
+.top-new[hidden] { display: none; }

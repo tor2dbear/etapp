@@ -1440,17 +1440,19 @@
   }
 
   // ＋ new-puck control (sidebar foot).
-  var newBtn, userEl;
+  var newBtns = [], userEl;
   function refreshEditControls() {
-    if (newBtn) newBtn.hidden = !ghToken();
+    newBtns.forEach(function (b) { b.hidden = !ghToken(); });
   }
   function afterAuth() { refreshEditControls(); refreshUser(); }
   function buildEditControls() {
-    // New lives at the top of the sidebar (a primary create action), token-gated.
-    newBtn = document.getElementById("sideNew");
-    if (!newBtn) return;
-    newBtn.hidden = !ghToken();
-    newBtn.addEventListener("click", openNewPuckPanel);
+    // New: primary create action in the sidebar (desktop) + the mobile topbar
+    // (next to search, so it's reachable without opening the menu). Token-gated.
+    newBtns = ["sideNew", "topNew"].map(function (id) { return document.getElementById(id); }).filter(Boolean);
+    newBtns.forEach(function (b) {
+      b.hidden = !ghToken();
+      b.addEventListener("click", openNewPuckPanel);
+    });
   }
 
   // A user chip at the top of the sidebar: your GitHub identity (derived from the
