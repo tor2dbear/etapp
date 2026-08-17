@@ -1,56 +1,59 @@
 /* Roadmap aggregator — theme-aware, no dependencies. */
+/* Etapp identity — warm "map-paper" light, warm "ink" dark; trail-orange accent
+   (#cf551b/#e2622a), forest-green as the go/ready semantic. Chrome uses --mono. */
 :root {
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --panel-2: #f0f2f5;
-  --ink: #1a1d21;
-  --ink-2: #5a626b;
-  --ink-3: #8b929b;
-  --line: #e2e5ea;
-  --accent: #2563eb;
-  --shadow: 0 1px 2px rgba(20, 24, 33, 0.06), 0 2px 8px rgba(20, 24, 33, 0.05);
+  --bg: #f4efe4;
+  --panel: #fffdf7;
+  --panel-2: #efe8d9;
+  --ink: #2a241d;
+  --ink-2: #6b6153;
+  --ink-3: #9a9082;
+  --line: #e4ddcd;
+  --accent: #cf551b;
+  --shadow: 0 1px 2px rgba(60, 46, 28, 0.07), 0 2px 8px rgba(60, 46, 28, 0.05);
   --radius: 12px;
-  --now: #16a34a;
-  --next: #2563eb;
-  --later: #b45309;
-  --inbox: #7c3aed;
-  --done: #6b7280;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --now: #cf551b;
+  --next: #2c5b45;
+  --later: #b07d2e;
+  --inbox: #4f6592;
+  --done: #7d766a;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="auto"] {
-    --bg: #0e1116;
-    --panel: #161b22;
-    --panel-2: #1c222b;
-    --ink: #e6e9ee;
-    --ink-2: #9aa4b0;
-    --ink-3: #6a7481;
-    --line: #262d38;
-    --accent: #60a5fa;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
-    --now: #4ade80;
-    --next: #60a5fa;
-    --later: #fbbf24;
-    --inbox: #c084fc;
-    --done: #8b929b;
+    --bg: #14110d;
+    --panel: #1b1712;
+    --panel-2: #221c15;
+    --ink: #ece6da;
+    --ink-2: #a89f90;
+    --ink-3: #6f6759;
+    --line: #332c23;
+    --accent: #e2622a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.35);
+    --now: #e2622a;
+    --next: #57a578;
+    --later: #c9a15b;
+    --inbox: #7d90b6;
+    --done: #83907d;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0e1116;
-  --panel: #161b22;
-  --panel-2: #1c222b;
-  --ink: #e6e9ee;
-  --ink-2: #9aa4b0;
-  --ink-3: #6a7481;
-  --line: #262d38;
-  --accent: #60a5fa;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
-  --now: #4ade80;
-  --next: #60a5fa;
-  --later: #fbbf24;
-  --inbox: #c084fc;
-  --done: #8b929b;
+  --bg: #14110d;
+  --panel: #1b1712;
+  --panel-2: #221c15;
+  --ink: #ece6da;
+  --ink-2: #a89f90;
+  --ink-3: #6f6759;
+  --line: #332c23;
+  --accent: #e2622a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.35);
+  --now: #e2622a;
+  --next: #57a578;
+  --later: #c9a15b;
+  --inbox: #7d90b6;
+  --done: #83907d;
   color-scheme: dark;
 }
 
@@ -577,3 +580,10 @@ body.modal-open { overflow: hidden; }
 }
 .body-editor:focus { outline: none; border-color: var(--accent); }
 .body-edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+
+/* Etapp identity — mono for chrome/data (counts, column labels, dates) */
+.brand .sub,
+.col-head h2, .col-head .count, .list-head h3, .list-head .count,
+.card-date, .chip .n, #footmeta { font-family: var(--mono); }
+.brand .sub { font-size: 12px; letter-spacing: .015em; }
+.col-head h2 { letter-spacing: .11em; }
