@@ -544,7 +544,9 @@ body.modal-open { overflow: hidden; }
 .tbtn.primary:hover { filter: brightness(1.05); }
 
 /* ── inline SVG icons (Feather-style, inherit currentColor) ──────────────── */
-.icn { width: 16px; height: 16px; display: inline-block; vertical-align: middle; flex: none; }
+/* Icons are decorative — never let the SVG become the tap target (which can eat
+   taps on touch); the click always lands on the button. */
+.icn { width: 16px; height: 16px; display: inline-block; vertical-align: middle; flex: none; pointer-events: none; }
 .icn.inline { width: 13px; height: 13px; vertical-align: -2px; margin-right: 4px; }
 /* icon-only ghost buttons: center the glyph */
 #viewToggle, #theme { display: inline-flex; align-items: center; justify-content: center; }
@@ -990,5 +992,7 @@ body.viewing-puck .topbar .top-share-btn { display: inline-flex; }
 .top-share-btn { margin-left: auto; }
 .top-share-btn svg { width: 17px; height: 17px; }
 .menu-toggle svg { width: 17px; height: 17px; }
+/* icon-only topbar buttons: guarantee a square, comfortable tap target */
+.topbar .ghost { min-width: 38px; }
 /* The topbar now carries the breadcrumb → drop the duplicate in-content one on mobile. */
 @media (max-width: 899px) { body.viewing-puck .detail-crumb { display: none; } }
