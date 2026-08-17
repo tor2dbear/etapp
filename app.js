@@ -961,36 +961,6 @@
     });
   }
 
-  // Disciplines (tags) as a sidebar section — top N by count + a "more" expander.
-  function buildTagChips() {
-    var counts = {};
-    DATA.items.forEach(function (it) {
-      it.tags.forEach(function (t) { counts[t] = (counts[t] || 0) + 1; });
-    });
-    var tags = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
-    var wrap = document.getElementById("tagFilters");
-    if (!wrap) return;
-    var CAP = 10;
-    function chipFor(t) {
-      var chip = el("button", "chip tag");
-      chip.setAttribute("aria-pressed", "false");
-      chip.appendChild(document.createTextNode("#" + t));
-      chip.appendChild(el("span", "n", String(counts[t])));
-      chip.addEventListener("click", function () { exitPuckView(); toggleSet(state.tags, t, chip); renderBoard(); maybeCloseMenu(); });
-      return chip;
-    }
-    tags.slice(0, CAP).forEach(function (t) { wrap.appendChild(chipFor(t)); });
-    if (tags.length > CAP) {
-      var more = el("button", "side-more", "＋ " + (tags.length - CAP) + " more");
-      more.type = "button";
-      more.addEventListener("click", function () {
-        tags.slice(CAP).forEach(function (t) { wrap.insertBefore(chipFor(t), more); });
-        more.remove();
-      });
-      wrap.appendChild(more);
-    }
-  }
-
   // PO-console: discipline queues in the sidebar. Each routed discipline becomes a
   // filter chip with a count. Rebuilt on every route so counts stay live; the whole
   // section hides when nothing is routed yet. This IS the queue — pucks with an
@@ -1311,10 +1281,10 @@
   document.addEventListener("click", function (e) {
     if (swallowClick) { swallowClick = false; e.preventDefault(); e.stopPropagation(); }
   }, true);
-  // ── Filter popover (view-header) — view-scoped filters: Show done + Priority.
-  // Sidebar = scope (repos/disciplines); this = what the current view shows.
+  // ── Filter popover (view-header) — refinements: Show done · Priority · Disciplines.
+  // Sidebar = places (views/agents/repos); this popover = what narrows the view.
   function activeFilterCount() {
-    return (state.showDone ? 1 : 0) + (state.priorityFilter ? 1 : 0);
+    return (state.showDone ? 1 : 0) + (state.priorityFilter ? 1 : 0) + state.tags.size;
   }
   function refreshFilterBadge() {
     var badge = document.getElementById("filterCount");
@@ -1357,6 +1327,38 @@
     });
     pop.appendChild(prow);
 
+    // Disciplines (labels) — many, so a search + a scrollable chip list. Multi-select.
+    pop.appendChild(el("div", "fp-label", "Disciplines"));
+    var tagCounts = {};
+    DATA.items.forEach(function (it) { it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
+    var allTags = Object.keys(tagCounts).sort(function (a, b) { return tagCounts[b] - tagCounts[a] || a.localeCompare(b); });
+    if (allTags.length) {
+      var tagSearch = el("input", "fp-search"); tagSearch.type = "text"; tagSearch.placeholder = "Filter labels…"; tagSearch.autocomplete = "off"; tagSearch.spellcheck = false;
+      pop.appendChild(tagSearch);
+      var tagWrap = el("div", "fp-tags");
+      pop.appendChild(tagWrap);
+      var renderTags = function () {
+        tagWrap.innerHTML = "";
+        var q = tagSearch.value.trim().toLowerCase();
+        var shown = allTags.filter(function (t) { return !q || t.indexOf(q) !== -1; });
+        shown.forEach(function (t) {
+          var chip = el("button", "fp-chip tag" + (state.tags.has(t) ? " on" : ""));
+          chip.type = "button";
+          chip.appendChild(document.createTextNode("#" + t));
+          chip.appendChild(el("span", "fp-n", String(tagCounts[t])));
+          chip.addEventListener("click", function () {
+            if (state.tags.has(t)) state.tags.delete(t); else state.tags.add(t);
+            chip.classList.toggle("on", state.tags.has(t));
+            renderBoard(); refreshFilterBadge();
+          });
+          tagWrap.appendChild(chip);
+        });
+        if (!shown.length) tagWrap.appendChild(el("div", "fp-empty", "No labels"));
+      };
+      tagSearch.addEventListener("input", renderTags);
+      renderTags();
+    }
+
     wrap.appendChild(pop);
     filterBtn.setAttribute("aria-expanded", "true");
     setTimeout(function () {
@@ -1393,7 +1395,6 @@
     active + " active · " + DATA.counts.done + " done · " + DATA.sources.length + " repos";
   buildModal();
   buildRepoChips();
-  buildTagChips();
   buildAgentChips();
   buildFocusControl();
   updateViewButton();
