@@ -245,6 +245,8 @@
     plus: ["m7.5 3.125 0 8.75", "m3.125 7.5 8.75 0"],
     filter: ["M13.75 1.875 1.25 1.875l5 5.9125000000000005L6.25 11.875l2.5 1.25 0 -5.3374999999999995L13.75 1.875z"],
     edit: ["M6.875 2.5H2.5a1.25 1.25 0 0 0 -1.25 1.25v8.75a1.25 1.25 0 0 0 1.25 1.25h8.75a1.25 1.25 0 0 0 1.25 -1.25v-4.375", "M11.5625 1.5625a1.325625 1.325625 0 0 1 1.875 1.875L7.5 9.375l-2.5 0.625 0.625 -2.5 5.9375 -5.9375z"],
+    // git-commit — a puck is a commit-like unit in git (our "project" glyph)
+    commit: ["M5 7.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0 -5 0", "M1.25 7.5 4.375 7.5", "M10.625 7.5 13.75 7.5"],
     list: ["m5 3.75 8.125 0", "m5 7.5 8.125 0", "m5 11.25 8.125 0", "m1.875 3.75 0.00625 0", "m1.875 7.5 0.00625 0", "m1.875 11.25 0.00625 0"],
     grid: ["M1.875 1.875h4.375v4.375H1.875Z", "M8.75 1.875h4.375v4.375h-4.375Z", "M8.75 8.75h4.375v4.375h-4.375Z", "M1.875 8.75h4.375v4.375H1.875Z"],
     key: ["m13.125 1.25 -1.25 1.25m-4.7562500000000005 4.7562500000000005a3.4375 3.4375 0 1 1 -4.86125 4.86125 3.4375 3.4375 0 0 1 4.860625 -4.860625zm0 0L9.6875 4.6875m0 0 1.875 1.875L13.75 4.375l-1.875 -1.875m-2.1875 2.1875L11.875 2.5"],
@@ -462,6 +464,13 @@
     crumb.appendChild(cdot);
     crumb.appendChild(el("span", "crumb-cur", item.repoName + " · " + item.slug));
     container.appendChild(crumb);
+
+    // Puck glyph (git-commit) tinted with the repo colour — Etapp's answer to
+    // Linear's project icon: a puck is a commit-like unit in git.
+    var pic = el("div", "detail-icon");
+    pic.style.color = item.repoColor;
+    pic.appendChild(icon("commit"));
+    container.appendChild(pic);
 
     container.appendChild(el("h2", "modal-title", item.title));
 
@@ -1126,13 +1135,22 @@
   function computeSuggestions(q) {
     q = q.toLowerCase();
     if (!q) return [];
+    // Discipline shortcuts: matching labels not already active, as filter actions.
+    var tagCounts = {};
+    DATA.items.forEach(function (it) { it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
+    var tags = Object.keys(tagCounts)
+      .filter(function (t) { return t.indexOf(q) !== -1 && !state.tags.has(t); })
+      .sort(function (a, b) { return tagCounts[b] - tagCounts[a] || a.localeCompare(b); })
+      .slice(0, 3)
+      .map(function (t) { return { __tag: t, count: tagCounts[t] }; });
+    // Pucks by title (startsWith ranks above a mid-string hit).
     var starts = [], contains = [];
     DATA.items.forEach(function (it) {
       var i = it.title.toLowerCase().indexOf(q);
       if (i === 0) starts.push(it);
       else if (i > 0) contains.push(it);
     });
-    return starts.concat(contains).slice(0, 8);
+    return tags.concat(starts.concat(contains).slice(0, 8 - tags.length));
   }
 
   function renderSuggestions() {
@@ -1143,14 +1161,20 @@
       return;
     }
     suggestItems.forEach(function (it, idx) {
-      var li = el("li", "suggest-item");
+      var li = el("li", "suggest-item" + (it.__tag ? " suggest-tag" : ""));
       li.setAttribute("role", "option");
       li.setAttribute("aria-selected", idx === suggestIndex ? "true" : "false");
-      var dot = el("span", "suggest-dot");
-      dot.style.background = it.repoColor;
-      li.appendChild(dot);
-      li.appendChild(el("span", "suggest-title", it.title));
-      li.appendChild(el("span", "status-pill status-" + it.status, STATUS_LABEL[it.status] || it.status));
+      if (it.__tag) {
+        li.appendChild(el("span", "suggest-tagmark", "#"));
+        li.appendChild(el("span", "suggest-title", it.__tag));
+        li.appendChild(el("span", "suggest-hint", "Filter · " + it.count));
+      } else {
+        var dot = el("span", "suggest-dot");
+        dot.style.background = it.repoColor;
+        li.appendChild(dot);
+        li.appendChild(el("span", "suggest-title", it.title));
+        li.appendChild(el("span", "status-pill status-" + it.status, STATUS_LABEL[it.status] || it.status));
+      }
       // pointerdown (not click): fires before blur and preventDefault keeps the
       // input focused, so the selection lands instead of the dropdown vanishing.
       li.addEventListener("pointerdown", function (e) {
@@ -1179,8 +1203,16 @@
   function chooseSuggestion(it) {
     hideSuggestions();
     searchInput.blur();
-    closeCmdk();
-    openModal(it);
+    if (it.__tag) {
+      // Discipline shortcut → apply it as a filter and return to the board.
+      exitPuckView();
+      state.tags.add(it.__tag);
+      closeCmdk(); // resets the query and re-renders with the tag now active
+      refreshFilterBadge();
+    } else {
+      closeCmdk();
+      openModal(it);
+    }
   }
 
   // ── ⌘K command palette (holds the search input) ──

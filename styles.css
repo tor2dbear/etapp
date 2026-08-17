@@ -873,6 +873,14 @@ body.viewing-puck .vhead { display: none; }
 .fp-chip.tag .fp-n { color: var(--ink-3); font-family: var(--mono); font-size: 10px; margin-left: 4px; }
 .fp-chip.tag.on .fp-n { color: rgba(255, 255, 255, 0.8); }
 .fp-empty { color: var(--ink-3); font-size: 12px; padding: 4px 0; }
+
+/* puck glyph on the detail page — git-commit tinted with the repo colour */
+.detail-icon { margin: 2px 0 8px; line-height: 0; }
+.detail-icon svg { width: 26px; height: 26px; }
+
+/* discipline shortcuts in the ⌘K palette */
+.suggest-tagmark { width: 16px; text-align: center; flex: none; color: var(--accent); font-family: var(--mono); font-weight: 700; }
+.suggest-hint { flex: none; color: var(--ink-3); font-size: 11px; font-family: var(--mono); }
 .fp-chip.on.pri-low { background: var(--ink-3); }
 
 /* breadcrumb: clickable Board segment → current puck */
