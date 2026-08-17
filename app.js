@@ -439,37 +439,44 @@
 
     container.appendChild(el("h2", "modal-title", item.title));
 
-    // ── tabs: Overview (the puck) · Activity (git history of the puck's file).
-    //    Native pucks only — an adapted source has no per-puck file to log. ──
+    // ── tabs: Overview (the puck) · Activity (git history) · Discussion (linked
+    //    issue). Native pucks only; Discussion only when an issue is linked. Both
+    //    extra tabs are backed by GitHub primitives — no second store. ──
     var overview = el("div", "tab-panel");
-    var activity = el("div", "tab-panel");
-    activity.hidden = true;
+    var extraTabs = [];
     if (item.native) {
+      extraTabs.push({ key: "activity", label: "Activity", load: loadActivity });
+      if (item.issue) extraTabs.push({ key: "discussion", label: "Discussion", load: loadDiscussion });
+    }
+    if (extraTabs.length) {
+      var defs = [{ key: "overview", label: "Overview", panel: overview }].concat(
+        extraTabs.map(function (t) { t.panel = el("div", "tab-panel"); t.panel.hidden = true; return t; }));
       var tabs = el("div", "detail-tabs");
       tabs.setAttribute("role", "tablist");
       var tabBtns = {};
-      var activityLoaded = false;
+      var loadedSet = {};
       var pick = function (name) {
-        overview.hidden = name !== "overview";
-        activity.hidden = name !== "activity";
-        Object.keys(tabBtns).forEach(function (k) {
-          tabBtns[k].classList.toggle("on", k === name);
-          tabBtns[k].setAttribute("aria-selected", k === name ? "true" : "false");
+        defs.forEach(function (d) {
+          d.panel.hidden = d.key !== name;
+          tabBtns[d.key].classList.toggle("on", d.key === name);
+          tabBtns[d.key].setAttribute("aria-selected", d.key === name ? "true" : "false");
         });
-        if (name === "activity" && !activityLoaded) { activityLoaded = true; loadActivity(item, activity); }
+        var def = defs.filter(function (d) { return d.key === name; })[0];
+        if (def && def.load && !loadedSet[name]) { loadedSet[name] = true; def.load(item, def.panel); }
       };
-      [["overview", "Overview"], ["activity", "Activity"]].forEach(function (t) {
-        var b = el("button", "tab-btn" + (t[0] === "overview" ? " on" : ""), t[1]);
+      defs.forEach(function (d) {
+        var b = el("button", "tab-btn" + (d.key === "overview" ? " on" : ""), d.label);
         b.type = "button"; b.setAttribute("role", "tab");
-        b.setAttribute("aria-selected", t[0] === "overview" ? "true" : "false");
-        b.addEventListener("click", function () { pick(t[0]); });
-        tabBtns[t[0]] = b;
+        b.setAttribute("aria-selected", d.key === "overview" ? "true" : "false");
+        b.addEventListener("click", function () { pick(d.key); });
+        tabBtns[d.key] = b;
         tabs.appendChild(b);
       });
       container.appendChild(tabs);
+      defs.forEach(function (d) { container.appendChild(d.panel); });
+    } else {
+      container.appendChild(overview);
     }
-    container.appendChild(overview);
-    container.appendChild(activity);
 
     // ── Overview: properties rail — discrete rows, Linear-style ──
     var props = el("div", "props");
@@ -618,6 +625,55 @@
         panel.appendChild(el("div", "activity-empty", "Couldn’t load the history here (private repo or rate limit)."));
         var hist = linkEl("View history on GitHub ↗", (item.sourceUrl || "").replace("/blob/", "/commits/"));
         panel.appendChild(hist);
+      });
+  }
+
+  // Discussion tab: the puck's linked GitHub issue + its comments, read live.
+  // Thin-via-GitHub (the convention says discussion = the linked issue) — no
+  // second store. Read-only here; composing a comment links out to GitHub. Lazy.
+  function loadDiscussion(item, panel) {
+    panel.innerHTML = "";
+    panel.appendChild(el("div", "activity-loading", "Loading discussion…"));
+    var headers = { Accept: "application/vnd.github+json" };
+    var tok = ghToken();
+    if (tok) headers.Authorization = "Bearer " + tok;
+    var base = "https://api.github.com/repos/" + item.repo + "/issues/" + item.issue;
+    var issueUrl = "https://github.com/" + item.repo + "/issues/" + item.issue;
+    Promise.all([
+      fetch(base, { headers: headers }).then(function (r) { if (!r.ok) throw new Error("issue " + r.status); return r.json(); }),
+      fetch(base + "/comments?per_page=50", { headers: headers }).then(function (r) { return r.ok ? r.json() : []; }),
+    ])
+      .then(function (res) {
+        var issue = res[0], comments = res[1] || [];
+        panel.innerHTML = "";
+        var head = el("div", "disc-head");
+        var closed = issue.state === "closed";
+        head.appendChild(el("span", "disc-state disc-" + (closed ? "closed" : "open"), closed ? "Closed" : "Open"));
+        var titleA = el("a", "disc-title", issue.title + " #" + issue.number);
+        titleA.href = issue.html_url || issueUrl; titleA.target = "_blank"; titleA.rel = "noopener";
+        head.appendChild(titleA);
+        panel.appendChild(head);
+        if (issue.body && issue.body.trim()) {
+          var ib = el("div", "disc-comment");
+          ib.appendChild(el("div", "disc-cmeta", (issue.user && issue.user.login ? "@" + issue.user.login : "issue") + " · " + (issue.created_at || "").slice(0, 10)));
+          var ibb = el("div", "disc-body"); ibb.innerHTML = renderMd(issue.body); ib.appendChild(ibb);
+          panel.appendChild(ib);
+        }
+        comments.forEach(function (c) {
+          var cm = el("div", "disc-comment");
+          cm.appendChild(el("div", "disc-cmeta", (c.user && c.user.login ? "@" + c.user.login : "unknown") + " · " + (c.created_at || "").slice(0, 10)));
+          var cb = el("div", "disc-body"); cb.innerHTML = renderMd(c.body || ""); cm.appendChild(cb);
+          panel.appendChild(cm);
+        });
+        if (!comments.length) panel.appendChild(el("div", "activity-empty", "No comments yet."));
+        var foot = el("div", "card-links");
+        foot.appendChild(linkEl("Comment on GitHub ↗", issueUrl));
+        panel.appendChild(foot);
+      })
+      .catch(function () {
+        panel.innerHTML = "";
+        panel.appendChild(el("div", "activity-empty", "Couldn’t load the discussion here (private repo or rate limit)."));
+        panel.appendChild(linkEl("Open issue on GitHub ↗", issueUrl));
       });
   }
 
