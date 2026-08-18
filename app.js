@@ -1349,7 +1349,8 @@
   });
 
   var searchClear = document.getElementById("searchClear");
-  function updateSearchClear() { searchClear.hidden = !searchInput.value; }
+  var cmdkHint = document.getElementById("cmdkHint");
+  function updateSearchClear() { searchClear.hidden = !searchInput.value; if (cmdkHint) cmdkHint.hidden = !!searchInput.value; }
 
   searchInput.addEventListener("input", function (e) {
     state.query = e.target.value.trim();

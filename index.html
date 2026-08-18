@@ -19,24 +19,19 @@
     <div class="app" id="app">
       <!-- ── left sidebar: identity + navigation ── -->
       <aside class="sidebar" id="sidebar" aria-label="Navigation">
+        <!-- Linear-style header row: workspace button (glyph + title + caret) on the
+             left; search + New as icon buttons on the right. The account menu lives
+             on the workspace button; the git-merge glyph + icons are injected via JS. -->
         <div class="side-brand brand">
-          <!-- Linear-style workspace button: glyph + title + caret; its menu holds
-               the account (identity + sign out). The git-merge glyph is injected via JS. -->
           <button class="ws-btn" id="wsBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Workspace menu">
             <span class="brand-mark" id="brandMark" aria-hidden="true"></span>
             <h1>Roadmap</h1>
             <span class="ws-caret" aria-hidden="true">▾</span>
           </button>
-        </div>
-        <!-- top actions: search opens the ⌘K palette; New creates a puck (token-gated) -->
-        <div class="side-actions" id="sideActions">
-          <button id="sideSearch" class="side-act side-search" type="button" aria-label="Search (Cmd/Ctrl+K)">
-            <span>Search</span>
-            <kbd>⌘K</kbd>
-          </button>
-          <button id="sideNew" class="side-act side-new" type="button" aria-label="New puck" hidden>
-            <span>New</span>
-          </button>
+          <div class="side-head-actions">
+            <button id="sideSearch" class="head-act" type="button" aria-label="Search"></button>
+            <button id="sideNew" class="head-act" type="button" aria-label="New puck" hidden></button>
+          </div>
         </div>
         <div class="side-section">
           <div class="side-eyebrow">Views</div>
@@ -137,6 +132,7 @@
             aria-controls="searchSuggest"
             aria-expanded="false"
           />
+          <kbd id="cmdkHint" class="cmdk-hint">⌘K</kbd>
           <button id="searchClear" class="search-clear" type="button" aria-label="Clear search" hidden>✕</button>
           <ul id="searchSuggest" class="suggest" role="listbox" aria-label="Search suggestions" hidden></ul>
         </div>
