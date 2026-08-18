@@ -874,6 +874,12 @@ body.viewing-puck .vhead { display: none; }
 .fp-chip.tag.on .fp-n { color: rgba(255, 255, 255, 0.8); }
 .fp-empty { color: var(--ink-3); font-size: 12px; padding: 4px 0; }
 
+/* read-only note on the puck detail (signed in, but no write access to this repo) */
+.detail-note {
+  margin: 4px 0 10px; padding: 7px 11px; font-size: 12.5px; color: var(--ink-2);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+}
+
 /* puck glyph on the detail page — git-commit tinted with the repo (project) colour */
 .detail-icon { margin: 2px 0 8px; line-height: 0; }
 .detail-icon svg { width: 26px; height: 26px; }

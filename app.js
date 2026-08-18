@@ -524,7 +524,11 @@
     // ── Overview: properties rail — discrete rows, Linear-style ──
     var props = el("div", "props");
 
-    var editable = ghToken() && item.native;
+    var editable = ghToken() && item.native && canWrite(item);
+    // Signed in, native, but no write access to this repo → say so (once checked).
+    if (ghToken() && item.native && !editable && writableRepos !== null) {
+      overview.appendChild(el("div", "detail-note", "Read-only — your token has no write access to " + item.repoName + "."));
+    }
 
     // Status: current value as a chip; click to pick (editable) — Linear-style.
     props.appendChild(propRow("Status", propPicker({
@@ -1476,6 +1480,40 @@
   function today() { return new Date().toISOString().slice(0, 10); }
   function branchOf(item) { var m = /\/blob\/([^/]+)\//.exec(item.sourceUrl || ""); return m ? m[1] : "main"; }
 
+  // Which source repos the current token can WRITE to. Editing writes to the
+  // *source* repo (e.g. a PIA puck commits to PIA), so a token scoped to only one
+  // repo can't edit the others — surfaced as a 403. We check push permission per
+  // repo on sign-in and only offer edit controls where it's allowed. null = not
+  // yet checked (treat as allowed so controls aren't briefly missing).
+  var writableRepos = null;
+  function canWrite(item) { return writableRepos === null || writableRepos.has(item.repo); }
+  function loadWritableRepos() {
+    var token = ghToken();
+    if (!token) { writableRepos = null; return; }
+    var repos = DATA.sources.map(function (s) { return s.repo; });
+    Promise.all(repos.map(function (repo) {
+      return fetch("https://api.github.com/repos/" + repo, {
+        headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" },
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { return d && d.permissions && d.permissions.push ? repo : null; })
+        .catch(function () { return null; });
+    })).then(function (rs) {
+      writableRepos = new Set(rs.filter(Boolean));
+      // Re-render an open puck so its edit controls reflect real permissions.
+      var open = itemFromHash();
+      if (open && document.body.classList.contains("viewing-puck")) openDetail(open);
+    });
+  }
+
+  // Turn a failed write/read response into a clear, actionable error.
+  function assertWriteOk(r, item) {
+    if (r.ok) return;
+    if (r.status === 403 || r.status === 404) {
+      throw new Error("No write access to " + item.repoName + " — your token needs Contents: write on that repo");
+    }
+    throw new Error("write failed (" + r.status + ")");
+  }
+
   // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
   function editFrontmatter(text, key, value) {
     var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
@@ -1512,7 +1550,7 @@
           body: JSON.stringify({ message: "roadmap: " + item.slug + " → " + status, content: b64encode(out), sha: info.sha, branch: branch }),
         });
       })
-      .then(function (r) { if (!r.ok) throw new Error("write failed (" + r.status + ")"); });
+      .then(function (r) { assertWriteOk(r, item); });
   }
 
   // Optimistic: flip in-memory + re-render now, commit in the background, revert on failure.
@@ -1566,7 +1604,7 @@
           body: JSON.stringify({ message: "roadmap: " + item.slug + " priority " + (priority || "cleared"), content: b64encode(out), sha: info.sha, branch: branch }),
         });
       })
-      .then(function (r) { if (!r.ok) throw new Error("write failed (" + r.status + ")"); });
+      .then(function (r) { assertWriteOk(r, item); });
   }
 
   // Optimistic: flip in-memory + re-render, commit in the background, revert on failure.
@@ -1605,7 +1643,7 @@
           body: JSON.stringify({ message: "roadmap: " + item.slug + " → agent " + (agent || "unassigned"), content: b64encode(out), sha: info.sha, branch: branch }),
         });
       })
-      .then(function (r) { if (!r.ok) throw new Error("write failed (" + r.status + ")"); });
+      .then(function (r) { assertWriteOk(r, item); });
   }
   function changeAgent(item, agent) {
     if (agent === (item.agent || null) || !ghToken()) return;
@@ -1654,7 +1692,7 @@
           body: JSON.stringify({ message: "roadmap: " + item.slug + " edit body", content: b64encode(out), sha: info.sha, branch: branch }),
         });
       })
-      .then(function (r) { if (!r.ok) throw new Error("write failed (" + r.status + ")"); });
+      .then(function (r) { assertWriteOk(r, item); });
   }
 
   // Swap the rendered body for a textarea; Save commits, Cancel restores.
@@ -1764,7 +1802,7 @@
   function refreshEditControls() {
     newBtns.forEach(function (b) { b.hidden = !ghToken(); });
   }
-  function afterAuth() { refreshEditControls(); refreshUser(); }
+  function afterAuth() { writableRepos = null; refreshEditControls(); refreshUser(); loadWritableRepos(); }
   function buildEditControls() {
     // New: primary create action in the sidebar (desktop) + the mobile topbar
     // (next to search, so it's reachable without opening the menu). Token-gated.
@@ -1927,6 +1965,7 @@
 
   buildEditControls();
   buildUserControl();
+  loadWritableRepos(); // check write permissions for the signed-in token, if any
 
   // Deep link: open the puck named in the URL hash on load, and react to the
   // hash changing (pasted link in the same tab, or Back after opening a modal).
