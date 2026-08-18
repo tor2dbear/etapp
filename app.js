@@ -1417,6 +1417,15 @@
   // board.config.json (embedded in the payload), so nothing here is hardcoded
   // to one owner. Falls back to the static HTML defaults when absent.
   var CFG = DATA.config || {};
+  // Optional ribbon banner (config-driven, e.g. the live-demo strip) — rendered
+  // here so the demo's chrome isn't baked into index.html, which lets the mirror
+  // ship index.html verbatim and keep the demo's structure in sync with the tool.
+  if (CFG.ribbon) {
+    var ribbon = el(CFG.ribbonHref ? "a" : "div", "demo-ribbon");
+    ribbon.innerHTML = renderMd(CFG.ribbon).replace(/^<p>|<\/p>\s*$/g, "");
+    if (CFG.ribbonHref) { ribbon.href = CFG.ribbonHref; }
+    document.body.insertBefore(ribbon, document.body.firstChild);
+  }
   if (CFG.title) {
     document.title = CFG.title;
     var h1 = document.querySelector(".brand h1");

@@ -1032,3 +1032,13 @@ body.viewing-puck .topbar .top-share-btn { display: inline-flex; }
 .topbar .ghost { min-width: 38px; }
 /* The topbar now carries the breadcrumb → drop the duplicate in-content one on mobile. */
 @media (max-width: 899px) { body.viewing-puck .detail-crumb { display: none; } }
+
+/* ── optional config-driven ribbon (e.g. the live-demo strip) ──────────────── */
+.demo-ribbon {
+  display: block; text-align: center; text-decoration: none;
+  font-family: var(--mono); font-size: 12.5px; font-weight: 600; letter-spacing: .02em;
+  padding: 9px 12px; background: var(--accent); color: #fff8f3;
+}
+:root[data-theme="dark"] .demo-ribbon { color: #140d08; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .demo-ribbon { color: #140d08; } }
+.demo-ribbon b, .demo-ribbon strong { font-weight: 700; }
