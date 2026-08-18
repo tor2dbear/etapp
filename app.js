@@ -282,11 +282,13 @@
     return b;
   }
 
-  // The puck's structural mark: a neutral git-commit glyph (Linear shows the
-  // project icon in the view too). Deliberately NOT repo-tinted — repo colour
-  // stays on the compact dot, status stays on the column, so nothing doubles up.
-  function puckGlyph() {
+  // The puck's identity mark: a git-commit glyph tinted with the repo colour —
+  // like Linear's project icon, which is coloured by the project's identity (not
+  // status). It's the single colour marker, so the meta shows just the repo name.
+  function puckGlyph(item) {
     var g = el("span", "puck-glyph");
+    g.style.color = item.repoColor;
+    g.title = item.repoName;
     g.appendChild(icon("commit"));
     return g;
   }
@@ -299,18 +301,15 @@
     c.setAttribute("data-id", item.id);
     c.style.setProperty("--repo", item.repoColor);
 
-    // Row 1: puck glyph + title.
+    // Row 1: puck glyph (repo-colored) + title.
     var head = el("div", "card-head");
-    head.appendChild(puckGlyph());
+    head.appendChild(puckGlyph(item));
     head.appendChild(el("h3", "card-title", item.title));
     c.appendChild(head);
 
-    // Row 2: repo (colored dot + name) on the left, ⚠ and date on the right.
+    // Row 2: repo name on the left (the glyph carries the colour), ⚠ and date right.
     var meta = el("div", "card-meta");
     var repo = el("span", "card-repo");
-    var dot = el("span", "repo-dot");
-    dot.style.background = item.repoColor;
-    repo.appendChild(dot);
     repo.appendChild(document.createTextNode(item.repoName));
     meta.appendChild(repo);
     if (sig.length) {
@@ -471,15 +470,13 @@
     home.addEventListener("click", function () { closeModal(); });
     crumb.appendChild(home);
     crumb.appendChild(el("span", "crumb-sep", "›"));
-    var cdot = el("span", "repo-dot");
-    cdot.style.background = item.repoColor;
-    crumb.appendChild(cdot);
     crumb.appendChild(el("span", "crumb-cur", item.repoName + " · " + item.slug));
     container.appendChild(crumb);
 
-    // Puck glyph (git-commit) — Etapp's answer to Linear's project icon: a puck is
-    // a commit-like unit in git. Neutral; repo colour lives on the breadcrumb dot.
+    // Puck glyph (git-commit) — Etapp's answer to Linear's project icon, tinted
+    // with the repo (project) colour. The single colour marker on the page.
     var pic = el("div", "detail-icon");
+    pic.style.color = item.repoColor;
     pic.appendChild(icon("commit"));
     container.appendChild(pic);
 
