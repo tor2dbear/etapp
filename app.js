@@ -803,9 +803,7 @@
     r.setAttribute("data-id", item.id);
     r.style.setProperty("--repo", item.repoColor);
     r.title = item.repoName;
-    var dot = el("span", "repo-dot");
-    dot.style.background = item.repoColor;
-    r.appendChild(dot);
+    r.appendChild(puckGlyph(item));
     // title + meta share a wrapping row: inline (date right) on desktop, stacked
     // (date on its own line below the title) on mobile.
     var body = el("div", "list-body");

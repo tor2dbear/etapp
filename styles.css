@@ -272,7 +272,7 @@ body {
   cursor: pointer;
 }
 @media (hover: hover) { .list-row:hover { background: var(--panel-2); } }
-.list-row .repo-dot { margin-top: 6px; }
+.list-row .puck-glyph { margin-top: 2px; }
 .list-body {
   flex: 1;
   min-width: 0;
