@@ -1458,20 +1458,32 @@
     });
     pop.appendChild(prow);
 
-    // Disciplines (labels) — many, so a search + a scrollable chip list. Multi-select.
+    // Disciplines (labels) — scoped to the current place (repo/agent), ranked by
+    // use, with the long singleton tail collapsed behind "Show all" (a search
+    // reveals everything). Folksonomies sprawl; this keeps the useful few in view.
     pop.appendChild(el("div", "fp-label", "Disciplines"));
+    var scopePass = function (it) {
+      return (!state.repos.size || state.repos.has(it.repo)) && (!state.agents.size || state.agents.has(it.agent));
+    };
     var tagCounts = {};
-    DATA.items.forEach(function (it) { it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
+    DATA.items.forEach(function (it) { if (scopePass(it)) it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
+    // keep any already-selected tag visible even if it's outside the current scope
+    state.tags.forEach(function (t) { if (tagCounts[t] == null) tagCounts[t] = 0; });
     var allTags = Object.keys(tagCounts).sort(function (a, b) { return tagCounts[b] - tagCounts[a] || a.localeCompare(b); });
     if (allTags.length) {
+      var TAG_CAP = 12, tagsExpanded = false;
       var tagSearch = el("input", "fp-search"); tagSearch.type = "text"; tagSearch.placeholder = "Filter labels…"; tagSearch.autocomplete = "off"; tagSearch.spellcheck = false;
       pop.appendChild(tagSearch);
       var tagWrap = el("div", "fp-tags");
       pop.appendChild(tagWrap);
+      var moreBtn = el("button", "fp-more"); moreBtn.type = "button"; moreBtn.hidden = true;
+      pop.appendChild(moreBtn);
       var renderTags = function () {
         tagWrap.innerHTML = "";
         var q = tagSearch.value.trim().toLowerCase();
-        var shown = allTags.filter(function (t) { return !q || t.indexOf(q) !== -1; });
+        var matches = allTags.filter(function (t) { return !q || t.indexOf(q) !== -1; });
+        var collapsed = !q && !tagsExpanded && matches.length > TAG_CAP;
+        var shown = collapsed ? matches.slice(0, TAG_CAP) : matches;
         shown.forEach(function (t) {
           var chip = el("button", "fp-chip tag" + (state.tags.has(t) ? " on" : ""));
           chip.type = "button";
@@ -1485,7 +1497,12 @@
           tagWrap.appendChild(chip);
         });
         if (!shown.length) tagWrap.appendChild(el("div", "fp-empty", "No labels"));
+        if (!q && matches.length > TAG_CAP) {
+          moreBtn.hidden = false;
+          moreBtn.textContent = tagsExpanded ? "Show fewer" : "Show all " + matches.length + " labels";
+        } else { moreBtn.hidden = true; }
       };
+      moreBtn.addEventListener("click", function () { tagsExpanded = !tagsExpanded; renderTags(); });
       tagSearch.addEventListener("input", renderTags);
       renderTags();
     }
