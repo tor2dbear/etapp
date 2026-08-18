@@ -1936,66 +1936,104 @@
     });
   }
 
-  // A user chip at the top of the sidebar: your GitHub identity (derived from the
-  // token via api.github.com) with a Sign out menu; or a "Sign in to edit" button
-  // when no token is set. Replaces the key-in-the-foot.
+  // Desktop-only resizable sidebar: a drag handle on the sidebar/main seam sets
+  // --sidebar-w (the grid's first column), persisted to localStorage. clientX is the
+  // sidebar's width because the sidebar starts at viewport-left. Pointer capture keeps
+  // the drag alive when the cursor leaves the 6px handle. Mobile (drawer) is untouched.
+  function initSidebarResize() {
+    var KEY = "roadmap-sidebar-w", MIN = 190, MAX = 460;
+    try { var saved = localStorage.getItem(KEY); if (saved) document.documentElement.style.setProperty("--sidebar-w", parseInt(saved, 10) + "px"); } catch (e) {}
+    var r = document.getElementById("colResizer");
+    if (!r) return;
+    var dragging = false;
+    r.addEventListener("pointerdown", function (e) {
+      if (window.matchMedia("(max-width: 899px)").matches) return;
+      dragging = true; r.classList.add("dragging"); document.body.classList.add("col-resizing");
+      try { r.setPointerCapture(e.pointerId); } catch (err) {}
+      e.preventDefault();
+    });
+    r.addEventListener("pointermove", function (e) {
+      if (!dragging) return;
+      var w = Math.max(MIN, Math.min(MAX, Math.round(e.clientX)));
+      document.documentElement.style.setProperty("--sidebar-w", w + "px");
+    });
+    function end() {
+      if (!dragging) return;
+      dragging = false; r.classList.remove("dragging"); document.body.classList.remove("col-resizing");
+      var cur = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-w"), 10);
+      if (cur) { try { localStorage.setItem(KEY, String(cur)); } catch (e) {} }
+    }
+    r.addEventListener("pointerup", end);
+    r.addEventListener("pointercancel", end);
+    r.addEventListener("dblclick", function () { document.documentElement.style.removeProperty("--sidebar-w"); try { localStorage.removeItem(KEY); } catch (e) {} });
+  }
+
+  // Linear-style workspace header: the top of the sidebar leads with the workspace
+  // (the git-merge glyph + the board title), and the *account* — your GitHub identity
+  // (derived from the token via api.github.com) and Sign out — lives inside its menu.
+  // Workspace = what board this is (config-driven title); identity = whose token it is
+  // (whose commits your edits become). Two different things, two slots — the person is
+  // never the headline, the workspace is.
   function buildUserControl() {
-    var sb = document.getElementById("sidebar");
-    var brand = sb && sb.querySelector(".side-brand");
-    if (!brand) return;
-    userEl = el("div", "side-user");
-    brand.parentNode.insertBefore(userEl, brand.nextSibling);
+    userEl = document.querySelector(".side-brand");
+    var btn = document.getElementById("wsBtn");
+    if (!btn || !userEl) return;
+    btn.addEventListener("click", function (e) { e.stopPropagation(); toggleUserMenu(); });
     refreshUser();
   }
   function refreshUser() {
+    // Auth state changed → drop any open menu so it rebuilds fresh next open.
     if (!userEl) return;
-    userEl.innerHTML = "";
-    if (!ghToken()) {
-      var signin = el("button", "user-signin");
-      signin.type = "button";
-      signin.appendChild(icon("key"));
-      signin.appendChild(el("span", null, "Sign in to edit"));
-      signin.addEventListener("click", function () { openTokenPanel(afterAuth); });
-      userEl.appendChild(signin);
-      return;
-    }
-    var chip = el("button", "user-chip");
-    chip.type = "button";
-    var av = el("span", "user-av");
-    var name = el("span", "user-name", "…");
-    chip.appendChild(av);
-    chip.appendChild(name);
-    chip.appendChild(el("span", "user-caret", "▾"));
-    chip.addEventListener("click", function (e) { e.stopPropagation(); toggleUserMenu(); });
-    userEl.appendChild(chip);
-    fetch("https://api.github.com/user", { headers: { Authorization: "Bearer " + ghToken(), Accept: "application/vnd.github+json" } })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (u) {
-        if (u && u.login) {
-          name.textContent = "@" + u.login;
-          var img = document.createElement("img");
-          img.className = "user-av-img"; img.alt = ""; img.src = u.avatar_url;
-          av.appendChild(img);
-        } else { name.textContent = "token invalid"; chip.classList.add("bad"); }
-      })
-      .catch(function () { name.textContent = "signed in"; });
+    var open = userEl.querySelector(".ws-menu");
+    if (open) open.remove();
+    var btn = document.getElementById("wsBtn");
+    if (btn) btn.setAttribute("aria-expanded", "false");
   }
   function toggleUserMenu() {
-    var open = userEl.querySelector(".user-menu");
-    if (open) { open.remove(); return; }
-    var menu = el("div", "user-menu");
-    var change = el("button", "user-mi", "Change token");
-    change.type = "button";
-    change.addEventListener("click", function () { menu.remove(); openTokenPanel(afterAuth); });
-    var out = el("button", "user-mi danger", "Sign out");
-    out.type = "button";
-    out.addEventListener("click", function () { menu.remove(); setGhToken(""); afterAuth(); });
-    menu.appendChild(change);
-    menu.appendChild(out);
+    var btn = document.getElementById("wsBtn");
+    var open = userEl.querySelector(".ws-menu");
+    if (open) { open.remove(); if (btn) btn.setAttribute("aria-expanded", "false"); return; }
+    var menu = el("div", "ws-menu user-menu");
+    menu.setAttribute("role", "menu");
+    if (ghToken()) {
+      // identity header — the account, shown inside the workspace menu (Linear puts
+      // the person here, not at the top). Fetched live from the token.
+      var head = el("div", "ws-menu-head");
+      var av = el("span", "user-av");
+      var name = el("span", "ws-menu-who", "…");
+      head.appendChild(av);
+      head.appendChild(name);
+      menu.appendChild(head);
+      fetch("https://api.github.com/user", { headers: { Authorization: "Bearer " + ghToken(), Accept: "application/vnd.github+json" } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (u) {
+          if (u && u.login) {
+            name.textContent = "@" + u.login;
+            var img = document.createElement("img");
+            img.className = "user-av-img"; img.alt = ""; img.src = u.avatar_url;
+            av.appendChild(img);
+          } else { name.textContent = "token invalid"; head.classList.add("bad"); }
+        })
+        .catch(function () { name.textContent = "signed in"; });
+      var change = el("button", "user-mi", "Change token");
+      change.type = "button";
+      change.addEventListener("click", function () { menu.remove(); openTokenPanel(afterAuth); });
+      var out = el("button", "user-mi danger", "Sign out");
+      out.type = "button";
+      out.addEventListener("click", function () { menu.remove(); setGhToken(""); afterAuth(); });
+      menu.appendChild(change);
+      menu.appendChild(out);
+    } else {
+      var signin = el("button", "user-mi", "Sign in to edit");
+      signin.type = "button";
+      signin.addEventListener("click", function () { menu.remove(); openTokenPanel(afterAuth); });
+      menu.appendChild(signin);
+    }
     userEl.appendChild(menu);
+    if (btn) btn.setAttribute("aria-expanded", "true");
     setTimeout(function () {
       document.addEventListener("click", function closer(e) {
-        if (!userEl.contains(e.target)) { menu.remove(); document.removeEventListener("click", closer); }
+        if (!userEl.contains(e.target)) { menu.remove(); if (btn) btn.setAttribute("aria-expanded", "false"); document.removeEventListener("click", closer); }
       });
     }, 0);
   }
@@ -2088,6 +2126,7 @@
 
   buildEditControls();
   buildUserControl();
+  initSidebarResize();
   loadWritableRepos(); // check write permissions for the signed-in token, if any
 
   // Deep link: open the puck named in the URL hash on load, and react to the

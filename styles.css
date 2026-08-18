@@ -11,64 +11,64 @@
 @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 100 800; font-display: swap; src: url("fonts/jetbrains-mono.woff2") format("woff2"); }
 
 :root {
-  --bg: #faf7f1;
-  --panel: #fffdf7;
-  --panel-2: #efe8d9;
-  --sidebar-bg: #ece4d3;
-  --ink: #2a241d;
-  --ink-2: #6b6153;
-  --ink-3: #9a9082;
-  --line: #e4ddcd;
-  --accent: #cf551b;
-  --shadow: 0 1px 2px rgba(60, 46, 28, 0.07), 0 2px 8px rgba(60, 46, 28, 0.05);
+  --bg: #f5f3ee;
+  --panel: #fffefb;
+  --panel-2: #ebe8e1;
+  --sidebar-bg: #e9e6df;
+  --ink: #262320;
+  --ink-2: #6a635a;
+  --ink-3: #9c948a;
+  --line: #e6e2d9;
+  --accent: #87414b;
+  --shadow: 0 1px 2px rgba(45, 38, 30, 0.07), 0 2px 8px rgba(45, 38, 30, 0.05);
   --radius: 12px;
   /* Apple's San Francisco stays first; Switzer is the self-hosted fallback that
      loads everywhere else (the -apple-system keywords resolve to SF only on Apple). */
   --sans: -apple-system, BlinkMacSystemFont, "Switzer", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --now: #cf551b;
-  --next: #2c5b45;
-  --later: #b07d2e;
-  --inbox: #4f6592;
-  --done: #7d766a;
+  --now: #87414b;
+  --next: #567f66;
+  --later: #b8944a;
+  --inbox: #5f6590;
+  --done: #8f887c;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="auto"] {
-    --bg: #1c1813;
-    --panel: #232019;
-    --panel-2: #2b271f;
-    --sidebar-bg: #131009;
-    --ink: #ece6da;
-    --ink-2: #a89f90;
-    --ink-3: #6f6759;
-    --line: #332c23;
-    --accent: #e2622a;
+    --bg: #1a1815;
+    --panel: #211f1b;
+    --panel-2: #2a2722;
+    --sidebar-bg: #141210;
+    --ink: #eae6de;
+    --ink-2: #9d968a;
+    --ink-3: #6d665b;
+    --line: #322e28;
+    --accent: #c07682;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.35);
-    --now: #e2622a;
-    --next: #57a578;
-    --later: #c9a15b;
-    --inbox: #7d90b6;
-    --done: #83907d;
+    --now: #c07682;
+    --next: #79a58a;
+    --later: #c9a35b;
+    --inbox: #8b93c0;
+    --done: #8f887c;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #1c1813;
-  --panel: #232019;
-  --panel-2: #2b271f;
-  --sidebar-bg: #131009;
-  --ink: #ece6da;
-  --ink-2: #a89f90;
-  --ink-3: #6f6759;
-  --line: #332c23;
-  --accent: #e2622a;
+  --bg: #1a1815;
+  --panel: #211f1b;
+  --panel-2: #2a2722;
+  --sidebar-bg: #141210;
+  --ink: #eae6de;
+  --ink-2: #9d968a;
+  --ink-3: #6d665b;
+  --line: #322e28;
+  --accent: #c07682;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.35);
-  --now: #e2622a;
-  --next: #57a578;
-  --later: #c9a15b;
-  --inbox: #7d90b6;
-  --done: #83907d;
+  --now: #c07682;
+  --next: #79a58a;
+  --later: #c9a35b;
+  --inbox: #8b93c0;
+  --done: #8f887c;
   color-scheme: dark;
 }
 
@@ -639,15 +639,28 @@ body.viewing-puck .vhead { display: none; }
 .card.sel, .list-row.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 
 /* ── Pass 4: app shell — left sidebar + thin topbar ───────────────────────── */
-.app { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; }
-.maincol { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+.app { display: grid; grid-template-columns: var(--sidebar-w, 240px) minmax(0, 1fr); min-height: 100vh; }
+.maincol { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; position: relative; }
+
+/* drag handle straddling the sidebar/main seam — desktop only (mobile is a drawer) */
+.col-resizer { position: absolute; left: -3px; top: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 30; }
+.col-resizer::after { content: ""; position: absolute; left: 2px; top: 0; width: 1px; height: 100%; background: transparent; transition: background .15s; }
+.col-resizer:hover::after, .col-resizer.dragging::after { background: var(--accent); }
+body.col-resizing { cursor: col-resize; user-select: none; }
+@media (max-width: 899px) { .col-resizer { display: none; } }
 
 .sidebar {
   background: var(--sidebar-bg); border-right: 1px solid var(--line);
   padding: 16px 12px; display: flex; flex-direction: column; gap: 18px;
+  /* minimal, self-effacing scrollbar */
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
-.side-brand { padding: 4px 6px; }
+.sidebar::-webkit-scrollbar { width: 8px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+.sidebar:hover::-webkit-scrollbar-thumb { background: var(--ink-3); background-clip: padding-box; }
+.side-brand { padding: 4px 6px; position: relative; }
 .side-brand h1 { font-size: 16px; letter-spacing: -0.01em; }
 .side-brand .brand-glyph { width: 17px; height: 17px; }
 .side-brand .sub { margin-top: 3px; }
@@ -718,31 +731,25 @@ body.viewing-puck .vhead { display: none; }
 .prop-status-edit { display: flex; gap: 5px; flex-wrap: wrap; }
 .sect-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 16px 0 6px; }
 
-/* ── user chip at the top of the sidebar (identity + sign out) ─────────────── */
-.side-user { padding: 0 4px; position: relative; }
-.user-signin {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
-  padding: 7px 10px; color: var(--ink-2); cursor: pointer; font-size: 12.5px;
-}
-.user-signin:hover { color: var(--ink); border-color: var(--ink-3); }
-.user-signin .icn { width: 14px; height: 14px; }
-.user-chip {
+/* ── workspace header (leads with the board) + account menu (identity + sign out) ─ */
+.ws-btn {
   display: flex; align-items: center; gap: 8px; width: 100%;
   background: none; border: 1px solid transparent; border-radius: 8px;
-  padding: 5px 8px; color: var(--ink); cursor: pointer;
+  padding: 3px 6px; color: var(--ink); cursor: pointer; text-align: left;
 }
-.user-chip:hover { background: var(--panel-2); }
-.user-av { width: 20px; height: 20px; border-radius: 50%; background: var(--panel-2); overflow: hidden; flex: none; }
+.ws-btn:hover, .ws-btn[aria-expanded="true"] { background: var(--panel-2); }
+.ws-btn h1 { margin: 0; }
+.ws-caret { margin-left: auto; color: var(--ink-3); font-size: 11px; flex: none; }
+.user-av { width: 22px; height: 22px; border-radius: 50%; background: var(--panel-2); overflow: hidden; flex: none; }
 .user-av-img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.user-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
-.user-caret { margin-left: auto; color: var(--ink-3); font-size: 10px; }
-.user-chip.bad .user-name { color: #cc6149; }
 .user-menu {
   position: absolute; top: calc(100% + 4px); left: 4px; right: 4px; z-index: 50;
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; box-shadow: var(--shadow); padding: 4px; display: flex; flex-direction: column;
 }
+.ws-menu-head { display: flex; align-items: center; gap: 8px; padding: 7px 9px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.ws-menu-who { font-size: 13px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.ws-menu-head.bad .ws-menu-who { color: #cc6149; }
 .user-mi { text-align: left; background: none; border: 0; padding: 7px 9px; border-radius: 6px; color: var(--ink); font-size: 13px; cursor: pointer; }
 .user-mi:hover { background: var(--panel-2); }
 .user-mi.danger { color: #cc6149; }
