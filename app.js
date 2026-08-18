@@ -2092,6 +2092,44 @@
     p.appendChild(preview);
     p.appendChild(field("Status", st));
     p.appendChild(field("Tags", tg));
+    // Reuse-first: surface the project's existing tags (ranked) as clickable
+    // suggestions, filtered by the token you're typing — so authors pick an
+    // existing label instead of coining a near-duplicate. Keeps the folksonomy
+    // from sprawling at the source.
+    var tagSug = el("div", "np-tagsug");
+    p.appendChild(tagSug);
+    function repoTagCounts(repo) {
+      var c = {};
+      DATA.items.forEach(function (it) { if (it.repo === repo) it.tags.forEach(function (t) { c[t] = (c[t] || 0) + 1; }); });
+      return c;
+    }
+    function renderTagSug() {
+      tagSug.innerHTML = "";
+      var counts = repoTagCounts(proj.value);
+      var all = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
+      var toks = tg.value.split(",").map(function (s) { return s.trim().toLowerCase(); });
+      var typed = toks[toks.length - 1];
+      var chosen = toks.slice(0, -1).filter(Boolean);
+      var matches = all.filter(function (t) { return chosen.indexOf(t) === -1 && (!typed || t.indexOf(typed) !== -1); }).slice(0, 8);
+      if (!matches.length) return;
+      tagSug.appendChild(el("span", "np-sug-label", typed ? "Existing:" : "Reuse:"));
+      matches.forEach(function (t) {
+        var chip = el("button", "np-sug-chip", "#" + t);
+        chip.type = "button";
+        chip.appendChild(el("span", "np-sug-n", String(counts[t])));
+        chip.addEventListener("mousedown", function (e) {
+          e.preventDefault(); // keep the input focused
+          var parts = tg.value.split(",");
+          parts[parts.length - 1] = " " + t;
+          tg.value = parts.join(",").replace(/^\s+/, "") + ", ";
+          renderTagSug(); tg.focus();
+        });
+        tagSug.appendChild(chip);
+      });
+    }
+    tg.addEventListener("input", renderTagSug);
+    proj.addEventListener("change", renderTagSug);
+    renderTagSug();
     var actions = el("div", "token-actions");
     var create = el("button", "tbtn primary", "Create");
     var cancel = el("button", "tbtn", "Cancel");
