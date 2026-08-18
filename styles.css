@@ -11,9 +11,10 @@
 @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 100 800; font-display: swap; src: url("fonts/jetbrains-mono.woff2") format("woff2"); }
 
 :root {
-  --bg: #f4efe4;
+  --bg: #faf7f1;
   --panel: #fffdf7;
   --panel-2: #efe8d9;
+  --sidebar-bg: #ece4d3;
   --ink: #2a241d;
   --ink-2: #6b6153;
   --ink-3: #9a9082;
@@ -34,9 +35,10 @@
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="auto"] {
-    --bg: #14110d;
-    --panel: #1b1712;
-    --panel-2: #221c15;
+    --bg: #1c1813;
+    --panel: #232019;
+    --panel-2: #2b271f;
+    --sidebar-bg: #131009;
     --ink: #ece6da;
     --ink-2: #a89f90;
     --ink-3: #6f6759;
@@ -52,9 +54,10 @@
   }
 }
 :root[data-theme="dark"] {
-  --bg: #14110d;
-  --panel: #1b1712;
-  --panel-2: #221c15;
+  --bg: #1c1813;
+  --panel: #232019;
+  --panel-2: #2b271f;
+  --sidebar-bg: #131009;
   --ink: #ece6da;
   --ink-2: #a89f90;
   --ink-3: #6f6759;
@@ -640,7 +643,7 @@ body.viewing-puck .vhead { display: none; }
 .maincol { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
 
 .sidebar {
-  background: var(--panel); border-right: 1px solid var(--line);
+  background: var(--sidebar-bg); border-right: 1px solid var(--line);
   padding: 16px 12px; display: flex; flex-direction: column; gap: 18px;
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }

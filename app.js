@@ -1031,7 +1031,8 @@
     var wrap = document.getElementById("repoFilters");
     DATA.sources.forEach(function (s) {
       var chip = el("button", "chip repo");
-      chip.setAttribute("aria-pressed", "false");
+      chip.dataset.repo = s.repo;
+      chip.setAttribute("aria-pressed", state.repos.has(s.repo) ? "true" : "false");
       var dot = el("span", "dot");
       dot.style.background = s.color;
       chip.appendChild(dot);
@@ -1041,7 +1042,7 @@
       chip.title = s.blurb + (s.native ? "" : " — adapted from " + s.adapter);
       chip.addEventListener("click", function () {
         exitPuckView();
-        toggleSet(state.repos, s.repo, chip);
+        pickScope(state.repos, s.repo, wrap, "repo");
         renderBoard();
         maybeCloseMenu();
       });
@@ -1065,11 +1066,12 @@
     if (section) section.hidden = agents.length === 0;
     agents.forEach(function (a) {
       var chip = el("button", "chip agent");
+      chip.dataset.agent = a;
       chip.setAttribute("aria-pressed", state.agents.has(a) ? "true" : "false");
       chip.appendChild(el("span", "agent-arrow", "→"));
       chip.appendChild(document.createTextNode(agentLabel(a)));
       chip.appendChild(el("span", "n", String(counts[a])));
-      chip.addEventListener("click", function () { exitPuckView(); toggleSet(state.agents, a, chip); renderBoard(); maybeCloseMenu(); });
+      chip.addEventListener("click", function () { exitPuckView(); pickScope(state.agents, a, wrap, "agent"); renderBoard(); maybeCloseMenu(); });
       wrap.appendChild(chip);
     });
   }
@@ -1077,6 +1079,24 @@
   function toggleSet(set, key, chip) {
     if (set.has(key)) { set.delete(key); chip.setAttribute("aria-pressed", "false"); }
     else { set.add(key); chip.setAttribute("aria-pressed", "true"); }
+  }
+
+  // Sidebar repos/agents are places, not filters: single-select within their own
+  // dimension (radio, not checkbox). Clicking a repo scopes to exactly that repo;
+  // clicking the one that's already the sole scope clears it (back to the view).
+  // Repo and agent stay orthogonal, so "Backend, within Etapp" still composes. The
+  // set stays a Set so passesFilters is untouched and the Filter popover can still
+  // offer the same dimensions as multi-select later. `attr` is the dataset key each
+  // chip stores its value under, so siblings refresh their pressed state together.
+  function pickScope(set, key, wrap, attr) {
+    var wasSole = set.size === 1 && set.has(key);
+    set.clear();
+    if (!wasSole) set.add(key);
+    Array.prototype.forEach.call(wrap.children, function (c) {
+      if (c.dataset && c.dataset[attr] != null) {
+        c.setAttribute("aria-pressed", set.has(c.dataset[attr]) ? "true" : "false");
+      }
+    });
   }
 
   // Views — the primary navigation: All pucks (the committed board) · Ready (the
