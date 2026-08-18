@@ -1,6 +1,15 @@
 /* Roadmap aggregator — theme-aware, no dependencies. */
 /* Etapp identity — warm "map-paper" light, warm "ink" dark; trail-orange accent
    (#cf551b/#e2622a), forest-green as the go/ready semantic. Chrome uses --mono. */
+
+/* Self-hosted typefaces (woff2, latin subset, font-display: swap):
+   Switzer — the sans fallback after Apple's San Francisco (system fonts stay first).
+   JetBrains Mono — the mono. One Medium face covers 500–800 so headings don't fake-bold. */
+@font-face { font-family: "Switzer"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/switzer-400.woff2") format("woff2"); }
+@font-face { font-family: "Switzer"; font-style: normal; font-weight: 500 800; font-display: swap; src: url("fonts/switzer-500.woff2") format("woff2"); }
+@font-face { font-family: "Switzer"; font-style: italic; font-weight: 400 800; font-display: swap; src: url("fonts/switzer-400-italic.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 100 800; font-display: swap; src: url("fonts/jetbrains-mono.woff2") format("woff2"); }
+
 :root {
   --bg: #f4efe4;
   --panel: #fffdf7;
@@ -12,7 +21,10 @@
   --accent: #cf551b;
   --shadow: 0 1px 2px rgba(60, 46, 28, 0.07), 0 2px 8px rgba(60, 46, 28, 0.05);
   --radius: 12px;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  /* Apple's San Francisco stays first; Switzer is the self-hosted fallback that
+     loads everywhere else (the -apple-system keywords resolve to SF only on Apple). */
+  --sans: -apple-system, BlinkMacSystemFont, "Switzer", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --now: #cf551b;
   --next: #2c5b45;
   --later: #b07d2e;
@@ -62,7 +74,7 @@ html, body { margin: 0; }
 body {
   background: var(--bg);
   color: var(--ink);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 15px/1.5 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -602,7 +614,7 @@ body.modal-open { overflow: hidden; }
 .focusbtn:focus:not(:focus-visible) { outline: none; }
 
 /* ── Pass 3: work area = board + optional detail pane (desktop) ──────────── */
-.work { display: grid; grid-template-columns: 1fr; align-items: start; }
+.work { display: grid; grid-template-columns: 1fr; align-items: start; flex: 1; }
 /* A puck opens as a full-width page (same on desktop + mobile): the board and the
    view-header hide, and the detail fills the content area as a centered,
    document-width column. The breadcrumb "← All pucks" is the back action. */
@@ -622,7 +634,7 @@ body.viewing-puck .vhead { display: none; }
 
 /* ── Pass 4: app shell — left sidebar + thin topbar ───────────────────────── */
 .app { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; }
-.maincol { min-width: 0; display: flex; flex-direction: column; }
+.maincol { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
 
 .sidebar {
   background: var(--panel); border-right: 1px solid var(--line);
