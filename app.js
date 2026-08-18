@@ -10,7 +10,6 @@
       '<div class="banner">No data loaded. Run <code>node scripts/harvest.mjs</code> to' +
       " generate <code>data/roadmap.js</code>, then reload. When served over http this" +
       " page reads that file automatically.</div>";
-    document.getElementById("subtitle").textContent = "No data";
     return;
   }
 
@@ -1532,9 +1531,6 @@
     else sourceLink.style.display = "none"; // no repo configured → hide the dead link
   }
 
-  var active = DATA.counts.now + DATA.counts.next + DATA.counts.later;
-  document.getElementById("subtitle").textContent =
-    active + " active · " + DATA.counts.done + " done · " + DATA.sources.length + " repos";
   buildModal();
   buildRepoChips();
   buildAgentChips();

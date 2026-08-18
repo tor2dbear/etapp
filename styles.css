@@ -93,7 +93,6 @@ body {
 .brand-mark { display: inline-flex; color: var(--accent); flex: none; }
 .brand-glyph { width: 20px; height: 20px; }
 .brand h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
-.brand .sub { margin: 2px 0 0; color: var(--ink-2); font-size: 13px; }
 .controls { display: flex; gap: 8px; align-items: center; }
 .search-wrap { position: relative; min-width: 220px; }
 #search {
@@ -613,10 +612,8 @@ body.modal-open { overflow: hidden; }
 .body-edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 
 /* Etapp identity — mono for chrome/data (counts, column labels, dates) */
-.brand .sub,
 .col-head h2, .col-head .count, .list-head h3, .list-head .count,
 .card-date, .chip .n, #footmeta { font-family: var(--mono); }
-.brand .sub { font-size: 12px; letter-spacing: .015em; }
 .col-head h2 { letter-spacing: .11em; }
 
 /* ── cockpit focus switcher (Ready · All · ⚠) ─────────────────────────────── */
@@ -678,7 +675,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .side-brand { padding: 4px 6px; position: relative; }
 .side-brand h1 { font-size: 16px; letter-spacing: -0.01em; }
 .side-brand .brand-glyph { width: 17px; height: 17px; }
-.side-brand .sub { margin-top: 3px; }
 .side-eyebrow {
   font-family: var(--mono); font-size: 10px; letter-spacing: .13em;
   text-transform: uppercase; color: var(--ink-3); padding: 0 8px; margin-bottom: 6px;
