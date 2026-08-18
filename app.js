@@ -123,13 +123,17 @@
     var lines = esc(src).split("\n");
     var inList = false;
     var para = []; // buffer of wrapped lines that form one paragraph
+    var liBuf = null; // buffer of wrapped lines that form one list item
     var inCode = false;
     var code = []; // buffer of lines inside a ``` fence
     function flushPara() {
       if (para.length) { out.push("<p>" + mdInline(para.join(" ")) + "</p>"); para = []; }
     }
+    function flushLi() {
+      if (liBuf) { out.push("<li>" + mdInline(liBuf.join(" ")) + "</li>"); liBuf = null; }
+    }
     function closeList() {
-      if (inList) { out.push("</ul>"); inList = false; }
+      if (inList) { flushLi(); out.push("</ul>"); inList = false; }
     }
     function flushCode() {
       if (code.length) { out.push("<pre><code>" + code.join("\n") + "</code></pre>"); code = []; }
@@ -151,13 +155,15 @@
         out.push("<h" + lvl + ">" + mdInline(h[2]) + "</h" + lvl + ">");
       } else if (li) {
         flushPara();
+        flushLi(); // close the previous item before starting this one
         if (!inList) { out.push("<ul>"); inList = true; }
-        out.push("<li>" + mdInline(li[1]) + "</li>");
+        liBuf = [li[1]]; // buffer so soft-wrapped lines fold into this item
       } else if (line.trim() === "") {
         flushPara();
         closeList();
+      } else if (inList) {
+        liBuf.push(line.trim()); // lazy continuation of the current list item
       } else {
-        closeList();
         para.push(line.trim()); // fold wrapped lines into the current paragraph
       }
     }
