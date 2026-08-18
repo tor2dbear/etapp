@@ -247,6 +247,8 @@
     edit: ["M6.875 2.5H2.5a1.25 1.25 0 0 0 -1.25 1.25v8.75a1.25 1.25 0 0 0 1.25 1.25h8.75a1.25 1.25 0 0 0 1.25 -1.25v-4.375", "M11.5625 1.5625a1.325625 1.325625 0 0 1 1.875 1.875L7.5 9.375l-2.5 0.625 0.625 -2.5 5.9375 -5.9375z"],
     // git-commit — a puck is a commit-like unit in git (our "project" glyph)
     commit: ["M5 7.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0 -5 0", "M0.65625 7.5 4.375 7.5", "m10.631250000000001 7.5 3.71875 0"],
+    // git-merge — the Etapp brand mark: two stages meeting on one line
+    merge: ["M9.5833 11.5a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M1.9167 3.8333a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M3.8333 13.4167V5.75a5.75 5.75 0 0 0 5.75 5.75"],
     list: ["m5 3.75 8.125 0", "m5 7.5 8.125 0", "m5 11.25 8.125 0", "m1.875 3.75 0.00625 0", "m1.875 7.5 0.00625 0", "m1.875 11.25 0.00625 0"],
     grid: ["M1.875 1.875h4.375v4.375H1.875Z", "M8.75 1.875h4.375v4.375h-4.375Z", "M8.75 8.75h4.375v4.375h-4.375Z", "M1.875 8.75h4.375v4.375H1.875Z"],
     key: ["m13.125 1.25 -1.25 1.25m-4.7562500000000005 4.7562500000000005a3.4375 3.4375 0 1 1 -4.86125 4.86125 3.4375 3.4375 0 0 1 4.860625 -4.860625zm0 0L9.6875 4.6875m0 0 1.875 1.875L13.75 4.375l-1.875 -1.875m-2.1875 2.1875L11.875 2.5"],
@@ -655,6 +657,53 @@
   // Activity tab: the git history of this puck's file, read live from GitHub's
   // commits API (no second store — the markdown file's history IS the log). Lazy:
   // fetched only when the tab is first opened. Native pucks only.
+  // Relative "time ago" from an ISO date — now / 3m / 2h / 5d / 3w, then a date.
+  function relTime(iso) {
+    var t = Date.parse(iso);
+    if (isNaN(t)) return "";
+    var s = Math.floor((Date.now() - t) / 1000);
+    if (s < 45) return "now";
+    if (s < 3600) return Math.round(s / 60) + "m";
+    if (s < 86400) return Math.round(s / 3600) + "h";
+    if (s < 7 * 86400) return Math.round(s / 86400) + "d";
+    if (s < 30 * 86400) return Math.round(s / (7 * 86400)) + "w";
+    return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  // Type a commit from its subject line. Our GUI/CLI writes structured subjects
+  // ("roadmap: <slug> → now", "… priority high", "… → agent backend", "… edit
+  // body", "roadmap: add <slug>"), so the history already carries typed events —
+  // we classify them here without a second source of truth. Anything else (a
+  // hand-written commit) falls back to a generic commit row.
+  function classifyCommit(subject, slug) {
+    var s = (subject || "").trim();
+    // strip a leading "roadmap: <slug> " so the rest reads as the change
+    var rest = s.replace(/^roadmap:\s*/i, "");
+    var m;
+    if ((m = rest.match(/^add\s+/i)) || /^new\s+/i.test(rest)) {
+      return { icon: "plus", text: "created this puck" };
+    }
+    if ((m = rest.match(/(?:^|\s)(?:→|->)\s*(now|next|later|inbox|done)\s*$/i))) {
+      var st = m[1].toLowerCase();
+      var badge = el("span", "status-pill status-" + st, STATUS_LABEL[st] || st);
+      return { badge: badge, text: "moved to" };
+    }
+    if ((m = rest.match(/priority\s+(urgent|high|medium|low|cleared)\s*$/i))) {
+      var lv = m[1].toLowerCase();
+      if (lv === "cleared") return { icon: "commit", text: "cleared priority" };
+      return { badge: priorityBadge(lv), text: "set priority" };
+    }
+    if ((m = rest.match(/(?:→|->)\s*agent\s+(.+?)\s*$/i))) {
+      var ag = m[1].toLowerCase();
+      if (ag === "unassigned") return { icon: "merge", text: "unrouted from agent" };
+      return { icon: "merge", text: "routed → " + agentLabel(ag) };
+    }
+    if (/edit\s+body\s*$/i.test(rest)) {
+      return { icon: "edit", text: "edited the body" };
+    }
+    return { icon: "commit", text: rest || s || "commit" };
+  }
+
   function loadActivity(item, panel) {
     panel.innerHTML = "";
     panel.appendChild(el("div", "activity-loading", "Loading history…"));
@@ -672,16 +721,36 @@
         var list = el("ol", "activity-list");
         commits.forEach(function (c) {
           var li = el("li", "activity-item");
-          li.appendChild(el("span", "activity-dot"));
+          var subject = ((c.commit && c.commit.message) || "").split("\n")[0];
+          var kind = classifyCommit(subject, item.slug);
+          var when = (c.commit && c.commit.author && c.commit.author.date) || "";
+          var login = (c.author && c.author.login) || "";
+          var name = (c.commit && c.commit.author && c.commit.author.name) || login || "unknown";
+
+          // gutter: the author's avatar (falls back to a typed glyph / dot)
+          var gutter = el("span", "activity-gutter");
+          if (c.author && c.author.avatar_url) {
+            var img = el("img", "activity-avatar");
+            img.src = c.author.avatar_url + "&s=48"; img.alt = ""; img.loading = "lazy";
+            gutter.appendChild(img);
+          } else if (kind.icon) {
+            gutter.appendChild(icon(kind.icon, "activity-glyph"));
+          } else {
+            gutter.appendChild(el("span", "activity-dot"));
+          }
+          li.appendChild(gutter);
+
           var bodyEl = el("div", "activity-body");
-          var date = ((c.commit && c.commit.author && c.commit.author.date) || "").slice(0, 10);
-          var who = (c.author && c.author.login) ? "@" + c.author.login
-            : (c.commit && c.commit.author && c.commit.author.name) || "unknown";
-          var msg = ((c.commit && c.commit.message) || "").split("\n")[0];
-          var a = el("a", "activity-msg", msg);
+          var line = el("div", "activity-line");
+          // small type marker next to the text (glyph or the status/priority badge)
+          if (kind.badge) { line.appendChild(kind.badge); }
+          else if (kind.icon && c.author && c.author.avatar_url) { line.appendChild(icon(kind.icon, "activity-glyph")); }
+          var a = el("a", "activity-msg", kind.text);
           a.href = c.html_url; a.target = "_blank"; a.rel = "noopener";
-          bodyEl.appendChild(a);
-          bodyEl.appendChild(el("div", "activity-meta", who + " · " + date));
+          line.appendChild(a);
+          bodyEl.appendChild(line);
+          var who = login ? "@" + login : name;
+          bodyEl.appendChild(el("div", "activity-meta", who + " · " + relTime(when)));
           li.appendChild(bodyEl);
           list.appendChild(li);
         });
@@ -1431,6 +1500,8 @@
     var h1 = document.querySelector(".brand h1");
     if (h1) h1.textContent = CFG.title;
   }
+  var brandMark = document.getElementById("brandMark");
+  if (brandMark) brandMark.appendChild(icon("merge", "brand-glyph"));
   if (CFG.description) {
     var descMeta = document.querySelector('meta[name="description"]');
     if (descMeta) descMeta.setAttribute("content", CFG.description);

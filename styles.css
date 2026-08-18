@@ -86,6 +86,9 @@ body {
   padding: 20px 24px 12px;
   flex-wrap: wrap;
 }
+.brand-lockup { display: flex; align-items: center; gap: 8px; }
+.brand-mark { display: inline-flex; color: var(--accent); flex: none; }
+.brand-glyph { width: 20px; height: 20px; }
 .brand h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
 .brand .sub { margin: 2px 0 0; color: var(--ink-2); font-size: 13px; }
 .controls { display: flex; gap: 8px; align-items: center; }
@@ -643,6 +646,7 @@ body.viewing-puck .vhead { display: none; }
 }
 .side-brand { padding: 4px 6px; }
 .side-brand h1 { font-size: 16px; letter-spacing: -0.01em; }
+.side-brand .brand-glyph { width: 17px; height: 17px; }
 .side-brand .sub { margin-top: 3px; }
 .side-eyebrow {
   font-family: var(--mono); font-size: 10px; letter-spacing: .13em;
@@ -983,11 +987,18 @@ body.viewing-puck .vhead { display: none; }
 
 .activity-loading, .activity-empty { color: var(--ink-3); font-size: 13px; padding: 12px 0; }
 .activity-list { list-style: none; margin: 4px 0 0; padding: 0; }
-.activity-item { display: flex; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+.activity-item { display: flex; gap: 11px; padding: 11px 0; border-top: 1px solid var(--line); }
 .activity-item:first-child { border-top: 0; }
-.activity-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); margin-top: 6px; flex: none; }
+.activity-gutter { flex: none; display: flex; align-items: center; justify-content: center; width: 22px; margin-top: 1px; }
+.activity-avatar { width: 22px; height: 22px; border-radius: 50%; display: block; background: var(--line); }
+.activity-gutter .activity-glyph { width: 16px; height: 16px; color: var(--ink-3); }
+.activity-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
 .activity-body { min-width: 0; }
-.activity-msg { color: var(--ink); text-decoration: none; font-size: 13.5px; display: block; overflow-wrap: anywhere; }
+.activity-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.activity-line .activity-glyph { width: 14px; height: 14px; color: var(--ink-3); flex: none; }
+.activity-line .status-pill { flex: none; }
+.activity-line .pri { flex: none; }
+.activity-msg { color: var(--ink); text-decoration: none; font-size: 13.5px; overflow-wrap: anywhere; }
 .activity-msg:hover { color: var(--accent); }
 .activity-meta { color: var(--ink-3); font-size: 12px; font-family: var(--mono); margin-top: 2px; }
 

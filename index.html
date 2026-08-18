@@ -12,7 +12,7 @@
       name="description"
       content="An aggregated roadmap across repos — truth in git, one board."
     />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🗺️%3C/text%3E%3C/svg%3E" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-0.5 -0.5 24 24' fill='none' stroke='%23e2622a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14.375 17.25a2.875 2.875 0 1 0 5.75 0 2.875 2.875 0 1 0 -5.75 0'/%3E%3Cpath d='M2.875 5.75a2.875 2.875 0 1 0 5.75 0 2.875 2.875 0 1 0 -5.75 0'/%3E%3Cpath d='M5.75 20.125V8.625a8.625 8.625 0 0 0 8.625 8.625'/%3E%3C/svg%3E" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -20,7 +20,11 @@
       <!-- ── left sidebar: identity + navigation ── -->
       <aside class="sidebar" id="sidebar" aria-label="Navigation">
         <div class="side-brand brand">
-          <h1>Roadmap</h1>
+          <!-- git-merge glyph injected via JS as the Etapp brand mark -->
+          <div class="brand-lockup">
+            <span class="brand-mark" id="brandMark" aria-hidden="true"></span>
+            <h1>Roadmap</h1>
+          </div>
           <p class="sub" id="subtitle">Aggregated across repos · loading…</p>
         </div>
         <!-- top actions: search opens the ⌘K palette; New creates a puck (token-gated) -->
