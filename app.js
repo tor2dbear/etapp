@@ -1486,7 +1486,16 @@
   // repo on sign-in and only offer edit controls where it's allowed. null = not
   // yet checked (treat as allowed so controls aren't briefly missing).
   var writableRepos = null;
-  function canWrite(item) { return writableRepos === null || writableRepos.has(item.repo); }
+  // Repos a write actually 403/404'd on this session — the reliable signal, since
+  // a fine-grained token's permissions.push can read true while Contents: write is
+  // missing. Learned from real failures; cleared on sign-in.
+  var readOnlyRepos = new Set();
+  function canWrite(item) {
+    return (writableRepos === null || writableRepos.has(item.repo)) && !readOnlyRepos.has(item.repo);
+  }
+  function noteWriteError(item, err) {
+    if (err && (err.status === 403 || err.status === 404)) readOnlyRepos.add(item.repo);
+  }
   function loadWritableRepos() {
     var token = ghToken();
     if (!token) { writableRepos = null; return; }
@@ -1505,13 +1514,15 @@
     });
   }
 
-  // Turn a failed write/read response into a clear, actionable error.
-  function assertWriteOk(r, item) {
+  // Turn a failed read/write response into a clear, actionable error that also
+  // carries the status so callers can mark the repo read-only.
+  function assertOk(r, item) {
     if (r.ok) return;
-    if (r.status === 403 || r.status === 404) {
-      throw new Error("No write access to " + item.repoName + " — your token needs Contents: write on that repo");
-    }
-    throw new Error("write failed (" + r.status + ")");
+    var e = new Error(r.status === 403 || r.status === 404
+      ? "No write access to " + item.repoName + " — your token needs Contents: write on that repo"
+      : "write failed (" + r.status + ")");
+    e.status = r.status;
+    throw e;
   }
 
   // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
@@ -1538,7 +1549,7 @@
     var branch = branchOf(item);
     var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
     return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
-      .then(function (r) { if (!r.ok) throw new Error("read failed (" + r.status + ")"); return r.json(); })
+      .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
         var out = editFrontmatter(text, "status", status);
@@ -1550,7 +1561,7 @@
           body: JSON.stringify({ message: "roadmap: " + item.slug + " → " + status, content: b64encode(out), sha: info.sha, branch: branch }),
         });
       })
-      .then(function (r) { assertWriteOk(r, item); });
+      .then(function (r) { assertOk(r, item); });
   }
 
   // Optimistic: flip in-memory + re-render now, commit in the background, revert on failure.
@@ -1564,6 +1575,7 @@
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
         item.status = prevS; item.updated = prevU;
+        noteWriteError(item, err);
         renderBoard(); openModal(item);
         toast("✗ " + err.message, true);
       });
@@ -1592,7 +1604,7 @@
     var branch = branchOf(item);
     var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
     return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
-      .then(function (r) { if (!r.ok) throw new Error("read failed (" + r.status + ")"); return r.json(); })
+      .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
         var out = priority ? editFrontmatter(text, "priority", priority) : removeFrontmatter(text, "priority");
@@ -1604,7 +1616,7 @@
           body: JSON.stringify({ message: "roadmap: " + item.slug + " priority " + (priority || "cleared"), content: b64encode(out), sha: info.sha, branch: branch }),
         });
       })
-      .then(function (r) { assertWriteOk(r, item); });
+      .then(function (r) { assertOk(r, item); });
   }
 
   // Optimistic: flip in-memory + re-render, commit in the background, revert on failure.
@@ -1618,6 +1630,7 @@
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
         item.priority = prevP; item.updated = prevU;
+        noteWriteError(item, err);
         renderBoard(); openModal(item);
         toast("✗ " + err.message, true);
       });
@@ -1631,7 +1644,7 @@
     var branch = branchOf(item);
     var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
     return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
-      .then(function (r) { if (!r.ok) throw new Error("read failed (" + r.status + ")"); return r.json(); })
+      .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
         var out = agent ? editFrontmatter(text, "agent", agent) : removeFrontmatter(text, "agent");
@@ -1643,7 +1656,7 @@
           body: JSON.stringify({ message: "roadmap: " + item.slug + " → agent " + (agent || "unassigned"), content: b64encode(out), sha: info.sha, branch: branch }),
         });
       })
-      .then(function (r) { assertWriteOk(r, item); });
+      .then(function (r) { assertOk(r, item); });
   }
   function changeAgent(item, agent) {
     if (agent === (item.agent || null) || !ghToken()) return;
@@ -1654,6 +1667,7 @@
     commitAgent(item, agent)
       .then(function () { toast(agent ? "✓ Routed to " + agent + " — live in ~1 min" : "✓ Unassigned — live in ~1 min"); })
       .catch(function (err) {
+        noteWriteError(item, err);
         item.agent = prevA; item.updated = prevU;
         renderBoard(); buildAgentChips(); openModal(item);
         toast("✗ " + err.message, true);
@@ -1681,7 +1695,7 @@
     var branch = branchOf(item);
     var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
     return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
-      .then(function (r) { if (!r.ok) throw new Error("read failed (" + r.status + ")"); return r.json(); })
+      .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var out = replaceBody(b64decode(info.content), newBody);
         if (out == null) throw new Error("no frontmatter");
@@ -1692,7 +1706,7 @@
           body: JSON.stringify({ message: "roadmap: " + item.slug + " edit body", content: b64encode(out), sha: info.sha, branch: branch }),
         });
       })
-      .then(function (r) { assertWriteOk(r, item); });
+      .then(function (r) { assertOk(r, item); });
   }
 
   // Swap the rendered body for a textarea; Save commits, Cancel restores.
@@ -1717,7 +1731,7 @@
       toast("Saving…");
       commitBody(item, newBody)
         .then(function () { toast("✓ Saved — live in ~1 min"); })
-        .catch(function (err) { item.body = prev; restore(prev); toast("✗ " + err.message, true); });
+        .catch(function (err) { item.body = prev; noteWriteError(item, err); openModal(item); toast("✗ " + err.message, true); });
     });
   }
 
@@ -1765,7 +1779,15 @@
       method: "PUT",
       headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
       body: JSON.stringify({ message: message, content: b64encode(content), branch: branch }),
-    }).then(function (r) { if (!r.ok) throw new Error(r.status === 422 ? "already exists" : "create failed (" + r.status + ")"); });
+    }).then(function (r) {
+      if (r.ok) return;
+      if (r.status === 422) throw new Error("already exists");
+      var e = new Error(r.status === 403 || r.status === 404
+        ? "No write access to that repo — your token needs Contents: write"
+        : "create failed (" + r.status + ")");
+      e.status = r.status;
+      throw e;
+    });
   }
 
   // Optimistic create: add to the board now, commit in the background, revert on failure.
@@ -1791,6 +1813,7 @@
     commitCreate(repo, path, meta.branch, puckTemplate(title, status, tags), "roadmap: add " + slug)
       .then(function () { toast("✓ Created — live in ~1 min"); })
       .catch(function (err) {
+        noteWriteError({ repo: repo }, err);
         var i = DATA.items.indexOf(item); if (i >= 0) DATA.items.splice(i, 1);
         DATA.total -= 1; renderBoard(); closeModal();
         toast("✗ " + err.message, true);
@@ -1802,7 +1825,7 @@
   function refreshEditControls() {
     newBtns.forEach(function (b) { b.hidden = !ghToken(); });
   }
-  function afterAuth() { writableRepos = null; refreshEditControls(); refreshUser(); loadWritableRepos(); }
+  function afterAuth() { writableRepos = null; readOnlyRepos = new Set(); refreshEditControls(); refreshUser(); loadWritableRepos(); }
   function buildEditControls() {
     // New: primary create action in the sidebar (desktop) + the mobile topbar
     // (next to search, so it's reachable without opening the menu). Token-gated.
