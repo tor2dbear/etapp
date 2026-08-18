@@ -560,6 +560,21 @@ body.modal-open { overflow: hidden; }
 .tbtn:hover { border-color: var(--ink-3); }
 .tbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .tbtn.primary:hover { filter: brightness(1.05); }
+.tbtn:disabled { opacity: .5; cursor: not-allowed; }
+.tbtn:disabled:hover { border-color: var(--accent); filter: none; }
+
+/* ── settings panel ──────────────────────────────────────────────────────── */
+.set-panel { max-width: 440px; }
+.set-panel .token-input { margin: 0; }
+.set-eyebrow { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 18px 0 4px; }
+.set-eyebrow:first-of-type { margin-top: 10px; }
+.set-note { margin: 0 0 4px; font-size: 12.5px; color: var(--ink-2); line-height: 1.4; }
+.set-note.warn { color: var(--later); }
+.set-seg { display: inline-flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.set-seg-btn { font: inherit; font-size: 12px; padding: 5px 12px; border: 0; border-radius: 6px; background: none; color: var(--ink-2); cursor: pointer; }
+.set-seg-btn.on { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
+.set-linkbtn { display: block; margin-top: 12px; font-size: 13px; background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; }
+.set-linkbtn:hover { text-decoration: underline; }
 
 /* ── inline SVG icons (Feather-style, inherit currentColor) ──────────────── */
 /* Icons are decorative — never let the SVG become the tap target (which can eat

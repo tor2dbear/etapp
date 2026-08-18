@@ -1995,6 +1995,12 @@
     if (open) { open.remove(); if (btn) btn.setAttribute("aria-expanded", "false"); return; }
     var menu = el("div", "ws-menu user-menu");
     menu.setAttribute("role", "menu");
+    function settingsItem() {
+      var s = el("button", "user-mi", "Settings");
+      s.type = "button";
+      s.addEventListener("click", function () { menu.remove(); openSettingsPanel(); });
+      return s;
+    }
     if (ghToken()) {
       // identity header — the account, shown inside the workspace menu (Linear puts
       // the person here, not at the top). Fetched live from the token.
@@ -2004,6 +2010,7 @@
       head.appendChild(av);
       head.appendChild(name);
       menu.appendChild(head);
+      menu.appendChild(settingsItem());
       fetch("https://api.github.com/user", { headers: { Authorization: "Bearer " + ghToken(), Accept: "application/vnd.github+json" } })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (u) {
@@ -2024,6 +2031,7 @@
       menu.appendChild(change);
       menu.appendChild(out);
     } else {
+      menu.appendChild(settingsItem());
       var signin = el("button", "user-mi", "Sign in to edit");
       signin.type = "button";
       signin.addEventListener("click", function () { menu.remove(); openTokenPanel(afterAuth); });
@@ -2122,6 +2130,124 @@
     document.body.appendChild(back);
     document.body.classList.add("modal-open");
     inp.focus();
+  }
+
+  // Derive the aggregator repo (where board.config.json lives) from the source URL.
+  function aggregatorRepo() {
+    var m = /github\.com\/([^\/]+)\/([^\/#?]+)/.exec(CFG.repoUrl || "");
+    return m ? m[1] + "/" + m[2].replace(/\.git$/, "") : null;
+  }
+  function settingsField(parent, label, value) {
+    var f = el("div", "np-field");
+    f.appendChild(el("label", null, label));
+    var i = el("input", "token-input"); i.type = "text"; i.value = value; i.autocomplete = "off"; i.spellcheck = false;
+    f.appendChild(i); parent.appendChild(f);
+    return i;
+  }
+  function themeControl() {
+    var wrap = el("div", "np-field");
+    wrap.appendChild(el("label", null, "Theme"));
+    var seg = el("div", "set-seg");
+    var cur = root.getAttribute("data-theme") || "auto";
+    [["light", "Light"], ["dark", "Dark"], ["auto", "Auto"]].forEach(function (o) {
+      var b = el("button", "set-seg-btn" + (cur === o[0] ? " on" : ""), o[1]);
+      b.type = "button";
+      b.addEventListener("click", function () {
+        if (o[0] === "auto") { root.removeAttribute("data-theme"); try { localStorage.removeItem("roadmap-theme"); } catch (e) {} }
+        else { root.setAttribute("data-theme", o[0]); try { localStorage.setItem("roadmap-theme", o[0]); } catch (e) {} }
+        applyThemeColor(); updateThemeButton();
+        seg.querySelectorAll(".set-seg-btn").forEach(function (x) { x.classList.remove("on"); });
+        b.classList.add("on");
+      });
+      seg.appendChild(b);
+    });
+    wrap.appendChild(seg);
+    return wrap;
+  }
+  // Commit board.config.json (read sha → merge → PUT) to the aggregator repo.
+  function commitConfig(repo, next) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + repo + "/contents/board.config.json";
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    var errItem = { repo: repo, repoName: repo };
+    return fetch(api, { headers: headers })
+      .then(function (r) { assertOk(r, errItem); return r.json(); })
+      .then(function (info) {
+        var cfg = {};
+        try { cfg = JSON.parse(b64decode(info.content)); } catch (e) {}
+        cfg.title = next.title; cfg.description = next.description; cfg.repoUrl = next.repoUrl;
+        var out = JSON.stringify(cfg, null, 2) + "\n";
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: update board config", content: b64encode(out), sha: info.sha }),
+        });
+      })
+      .then(function (r) { assertOk(r, errItem); });
+  }
+  // Settings: workspace identity writes through to board.config.json (git-native,
+  // the same pen as puck edits); preferences are per-browser.
+  function openSettingsPanel() {
+    var back = el("div", "token-backdrop");
+    var p = el("div", "token-panel set-panel");
+    p.appendChild(el("h3", "token-title", "Settings"));
+    var repo = aggregatorRepo();
+    var canGit = !!ghToken() && !!repo && !readOnlyRepos.has(repo);
+
+    p.appendChild(el("div", "set-eyebrow", "Workspace"));
+    p.appendChild(el("p", "set-note", repo
+      ? "Writes board.config.json in " + repo + " — live after the next sync."
+      : "No source repo configured, so board.config.json can’t be located."));
+    var title = settingsField(p, "Name (organisation / workspace)", CFG.title || "");
+    var desc = settingsField(p, "Description", CFG.description || "");
+    var url = settingsField(p, "Source URL", CFG.repoUrl || "");
+    if (!ghToken()) {
+      [title, desc, url].forEach(function (i) { i.disabled = true; });
+      p.appendChild(el("p", "set-note warn", "Sign in to edit these."));
+    } else if (repo && readOnlyRepos.has(repo)) {
+      [title, desc, url].forEach(function (i) { i.disabled = true; });
+      p.appendChild(el("p", "set-note warn", "Read-only — your token has no write access to " + repo + "."));
+    }
+
+    p.appendChild(el("div", "set-eyebrow", "Preferences"));
+    p.appendChild(themeControl());
+    var resetW = el("button", "set-linkbtn", "Reset sidebar width");
+    resetW.type = "button";
+    resetW.addEventListener("click", function () {
+      document.documentElement.style.removeProperty("--sidebar-w");
+      try { localStorage.removeItem("roadmap-sidebar-w"); } catch (e) {}
+      toast("Sidebar width reset");
+    });
+    p.appendChild(resetW);
+
+    var actions = el("div", "token-actions");
+    var save = el("button", "tbtn primary", "Save");
+    var cancel = el("button", "tbtn", "Close");
+    function close() { if (back.parentNode) document.body.removeChild(back); document.body.classList.remove("modal-open"); }
+    save.disabled = !canGit;
+    save.addEventListener("click", function () {
+      if (!canGit) { close(); return; }
+      var next = { title: title.value.trim(), description: desc.value.trim(), repoUrl: url.value.trim() };
+      save.disabled = true; toast("Saving…");
+      commitConfig(repo, next)
+        .then(function () {
+          CFG.title = next.title; CFG.description = next.description; CFG.repoUrl = next.repoUrl;
+          if (next.title) { document.title = next.title; var h1 = document.querySelector(".brand h1"); if (h1) h1.textContent = next.title; }
+          var sl = document.getElementById("sourceLink"); if (sl && next.repoUrl) sl.href = next.repoUrl;
+          toast("✓ Saved — live after next sync"); close();
+        })
+        .catch(function (err) {
+          if (err && (err.status === 403 || err.status === 404) && repo) readOnlyRepos.add(repo);
+          save.disabled = false; toast("✗ " + (err && err.message || "save failed"), true);
+        });
+    });
+    actions.appendChild(save); actions.appendChild(cancel);
+    cancel.addEventListener("click", close);
+    p.appendChild(actions);
+    back.appendChild(p);
+    back.addEventListener("click", function (e) { if (e.target === back) close(); });
+    document.body.appendChild(back);
+    document.body.classList.add("modal-open");
   }
 
   buildEditControls();
