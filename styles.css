@@ -658,7 +658,7 @@ body.viewing-puck .vhead { display: none; }
 .side-section { display: flex; flex-direction: column; }
 
 /* focus switcher → vertical nav in the sidebar */
-.side-views .focusseg { flex-direction: column; background: none; border: 0; padding: 0; gap: 1px; }
+.side-views .focusseg { display: flex; flex-direction: column; background: none; border: 0; padding: 0; gap: 1px; }
 .side-views .focusbtn {
   text-align: left; justify-content: flex-start; font-size: 13px;
   font-family: var(--sans); letter-spacing: 0; padding: 7px 10px; border-radius: 7px;
@@ -673,7 +673,7 @@ body.viewing-puck .vhead { display: none; }
 }
 @media (hover: hover) { .side-repos .chip:hover { background: var(--panel-2); color: var(--ink); } }
 .side-repos .chip[aria-pressed="true"] { background: var(--panel-2); color: var(--ink); border: 0; }
-.side-repos .chip .n { margin-left: auto; }
+.side-repos .chip .n { margin-left: auto; font-size: 11px; }
 
 .side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 
