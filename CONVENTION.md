@@ -68,7 +68,7 @@ order: 10
 | Field     | Required | Meaning |
 |-----------|----------|---------|
 | `title`   | yes      | Short heading for the board. Quote it if it contains a `:`. |
-| `status`  | yes      | One of `inbox`, `now`, `next`, `later`, `done`. See lifecycle. |
+| `status`  | yes      | One of `inbox`, `now`, `next`, `later`, `done`, `cancelled`. See lifecycle. |
 | `priority`| no       | One of `urgent`, `high`, `medium`, `low`. Omit for "no priority". Orthogonal to `status` — *when* vs *how much it matters*. Renders as a signal badge; the board can sort by it. |
 | `updated` | yes      | `YYYY-MM-DD`, last touched. The aggregator sorts and shows freshness on it. |
 | `created` | no       | `YYYY-MM-DD`. Usually omit — the aggregator derives it from the file's first commit. `roadmap new` stamps it for you. Set it by hand only to override that. |
@@ -110,6 +110,7 @@ disturbing any other.
 
 ```
 inbox  →  now / next / later  →  done
+                              ↘  cancelled
 ```
 
 - **`inbox`** — raw material and research that is not yet a decision. Put
@@ -120,6 +121,11 @@ inbox  →  now / next / later  →  done
 - **`later`** — want to do, not soon.
 - **`done`** — shipped. The aggregator collapses/archives it. Keep the file as
   history; don't delete it.
+- **`cancelled`** — decided against ("won't do"). A terminal state like `done`:
+  hidden from the active board (shown via the same "show done & cancelled"
+  toggle), struck through, exempt from drift/staleness. Keep the file so the
+  decision stays on record; use it instead of deleting when the reasoning is
+  worth keeping (delete is for genuine junk).
 
 A puck usually starts in `inbox`, is promoted to `now/next/later` once it is an
 actual decision, and lands in `done`. Update `updated` every time you touch the

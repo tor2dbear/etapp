@@ -10,7 +10,7 @@
 import { parseFrontmatter } from "./frontmatter.mjs";
 import { blobUrl } from "./repo.mjs";
 
-export const STATUSES = ["now", "next", "later", "inbox", "done"];
+export const STATUSES = ["now", "next", "later", "inbox", "done", "cancelled"];
 const VALID = new Set(STATUSES);
 
 // Priority is an optional, ordered interface field (highest → lowest). Absence

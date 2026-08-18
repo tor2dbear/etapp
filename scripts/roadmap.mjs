@@ -377,6 +377,7 @@ async function main() {
     case "next": return setStatus(pos.shift(), "next");
     case "later": return setStatus(pos.shift(), "later");
     case "done": return setStatus(pos.shift(), "done");
+    case "cancel": case "cancelled": return setStatus(pos.shift(), "cancelled");
     case "inbox": return setStatus(pos.shift(), "inbox");
     case "status": { const s = pos.shift(); const st = pos.shift(); return setStatus(s, st); }
     case "tag": return cmdTag();
@@ -400,7 +401,7 @@ function printHelp() {
   console.log(`roadmap — author pucks without touching YAML (updated is bumped for you)
 
   roadmap new "Title" [--status inbox] [--tags a,b]   create a puck
-  roadmap start|next|later|done|inbox <slug>          set status
+  roadmap start|next|later|done|cancel|inbox <slug>   set status
   roadmap status <slug> <status>                      set any status
   roadmap tag <slug> +add -remove …                   edit tags
   roadmap issue <slug> <number>                       link a working issue

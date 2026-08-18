@@ -31,6 +31,7 @@
   --later: #b8944a;
   --inbox: #5f6590;
   --done: #8f887c;
+  --cancelled: #b0a89c;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -50,6 +51,7 @@
     --later: #c9a35b;
     --inbox: #8b93c0;
     --done: #8f887c;
+    --cancelled: #7e776c;
     color-scheme: dark;
   }
 }
@@ -69,6 +71,7 @@
   --later: #c9a35b;
   --inbox: #8b93c0;
   --done: #8f887c;
+  --cancelled: #7e776c;
   color-scheme: dark;
 }
 
@@ -256,6 +259,7 @@ body {
 .col-status-later .swatch { background: var(--later); }
 .col-status-inbox .swatch { background: var(--inbox); }
 .col-status-done .swatch { background: var(--done); }
+.col-status-cancelled .swatch { background: var(--cancelled); }
 
 .cards { display: flex; flex-direction: column; gap: 10px; }
 
@@ -361,6 +365,7 @@ body {
 .card-links { margin-top: 10px; display: flex; gap: 12px; font-size: 12px; }
 .card-links a { color: var(--accent); text-decoration: none; }
 .card-links .linklike { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: var(--accent); cursor: pointer; }
+.card-links .linklike.danger { color: #c0564f; margin-left: auto; }
 @media (hover: hover) { .card-links a:hover, .card-links .linklike:hover { text-decoration: underline; } }
 
 /* ── detail modal ── */
@@ -427,6 +432,7 @@ body {
 .status-pill.status-later { color: var(--later); }
 .status-pill.status-inbox { color: var(--inbox); }
 .status-pill.status-done { color: var(--done); }
+.status-pill.status-cancelled { color: var(--cancelled); text-decoration: line-through; }
 .modal-body { margin-top: 14px; font-size: 14px; color: var(--ink-2); overflow-wrap: anywhere; }
 .modal-body :is(h2, h3, h4) { font-size: 14px; margin: 16px 0 6px; color: var(--ink); }
 .modal-body :is(h2, h3, h4):first-child { margin-top: 0; }
@@ -517,6 +523,11 @@ body.modal-open { overflow: hidden; }
 .edit-btn.active.status-later { background: var(--later); }
 .edit-btn.active.status-inbox { background: var(--inbox); }
 .edit-btn.active.status-done { background: var(--done); }
+.edit-btn.active.status-cancelled { background: var(--cancelled); }
+/* cancelled pucks read as struck-through + faded on the board */
+.col-status-cancelled .card h3, .col-status-cancelled .card-title,
+.col-status-cancelled .list-title { text-decoration: line-through; }
+.col-status-cancelled .card, .col-status-cancelled .list-row { opacity: .72; }
 
 /* toast */
 .toast {

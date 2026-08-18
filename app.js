@@ -13,7 +13,9 @@
     return;
   }
 
-  var STATUS_LABEL = { now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done" };
+  var STATUS_LABEL = { now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" };
+  // Terminal statuses: settled, hidden from the active board unless "show done" is on.
+  var TERMINAL = { done: 1, cancelled: 1 };
   // Priority is an optional, ordered field (highest → lowest). Absence = none.
   var PRIORITIES = ["urgent", "high", "medium", "low"];
   var PRIORITY_LABEL = { urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
@@ -186,7 +188,7 @@
     } else {
       // "all" = the board of committed work; inbox lives in its own view.
       if (item.status === "inbox") return false;
-      if (!state.showDone && item.status === "done") return false;
+      if (!state.showDone && TERMINAL[item.status]) return false;
     }
     if (state.priorityFilter && item.priority !== state.priorityFilter) return false;
     if (state.agents.size && !state.agents.has(item.agent)) return false;
@@ -254,6 +256,8 @@
     commit: ["M5 7.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0 -5 0", "M0.65625 7.5 4.375 7.5", "m10.631250000000001 7.5 3.71875 0"],
     // git-merge — the Etapp brand mark: two stages meeting on one line
     merge: ["M9.5833 11.5a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M1.9167 3.8333a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M3.8333 13.4167V5.75a5.75 5.75 0 0 0 5.75 5.75"],
+    // trash-2 (Feather), scaled to the 16 viewBox
+    trash: ["M2 4h12", "M12.667 4v9.333a1.333 1.333 0 0 1 -1.333 1.333H4.667a1.333 1.333 0 0 1 -1.333 -1.333V4", "M5.333 4V2.667a1.333 1.333 0 0 1 1.333 -1.333h2.667a1.333 1.333 0 0 1 1.333 1.333V4", "M6.667 7.333v4", "M9.333 7.333v4"],
     list: ["m5 3.75 8.125 0", "m5 7.5 8.125 0", "m5 11.25 8.125 0", "m1.875 3.75 0.00625 0", "m1.875 7.5 0.00625 0", "m1.875 11.25 0.00625 0"],
     grid: ["M1.875 1.875h4.375v4.375H1.875Z", "M8.75 1.875h4.375v4.375h-4.375Z", "M8.75 8.75h4.375v4.375h-4.375Z", "M1.875 8.75h4.375v4.375H1.875Z"],
     key: ["m13.125 1.25 -1.25 1.25m-4.7562500000000005 4.7562500000000005a3.4375 3.4375 0 1 1 -4.86125 4.86125 3.4375 3.4375 0 0 1 4.860625 -4.860625zm0 0L9.6875 4.6875m0 0 1.875 1.875L13.75 4.375l-1.875 -1.875m-2.1875 2.1875L11.875 2.5"],
@@ -656,6 +660,14 @@
       });
     });
     links.appendChild(copyBtn);
+    if (canWrite(item) && item.native) {
+      var delBtn = el("button", "linklike danger");
+      delBtn.type = "button";
+      delBtn.appendChild(icon("trash", "inline"));
+      delBtn.appendChild(el("span", null, "Delete"));
+      delBtn.addEventListener("click", function () { confirmDeletePuck(item); });
+      links.appendChild(delBtn);
+    }
     overview.appendChild(links);
   }
 
@@ -998,9 +1010,9 @@
     if (state.focus === "inbox") return ["inbox"];
     if (state.focus === "ready") return ["now", "next"];
     if (state.focus === "attention") return DATA.statuses; // flagged can be any status
-    // "all" = the committed board: now/next/later (+done when shown), never inbox.
+    // "all" = the committed board: now/next/later (+done/cancelled when shown), never inbox.
     return DATA.statuses.filter(function (s) {
-      return s !== "inbox" && (s !== "done" || state.showDone);
+      return s !== "inbox" && (!TERMINAL[s] || state.showDone);
     });
   }
 
@@ -1111,7 +1123,7 @@
     var c = { all: 0, ready: 0, inbox: 0, attention: 0 };
     DATA.items.forEach(function (it) {
       if (it.status === "inbox") c.inbox++;
-      else if (it.status !== "done") c.all++;
+      else if (!TERMINAL[it.status]) c.all++;
       if ((it.status === "now" || it.status === "next") && !(it.blockedBy || []).length) c.ready++;
       if (isFlagged(it)) c.attention++;
     });
@@ -1444,7 +1456,7 @@
     var doneRow = el("label", "fp-toggle");
     var cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = state.showDone;
     cb.addEventListener("change", function () { state.showDone = cb.checked; renderBoard(); refreshFilterBadge(); });
-    doneRow.appendChild(cb); doneRow.appendChild(el("span", null, "Show done"));
+    doneRow.appendChild(cb); doneRow.appendChild(el("span", null, "Show done & cancelled"));
     pop.appendChild(doneRow);
 
     // Priority
@@ -1806,6 +1818,41 @@
     var fm = lines.slice(0, end + 1);
     var b = newBody.replace(/\r\n/g, "\n").replace(/\s+$/, "").split("\n");
     return fm.concat([""], b, [""]).join(nl);
+  }
+
+  // Delete a puck: remove its markdown file from the source repo (read sha →
+  // DELETE). Git-native — the file is gone from the board, git history keeps it.
+  // For genuine junk; "won't do but keep the record" is `status: cancelled`.
+  function commitDelete(item) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { assertOk(r, item); return r.json(); })
+      .then(function (info) {
+        return fetch(api, {
+          method: "DELETE",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: delete " + item.slug, sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { assertOk(r, item); });
+  }
+  function confirmDeletePuck(item) {
+    if (!canWrite(item)) return;
+    if (!window.confirm("Delete “" + item.title + "”?\n\nThis removes " + item.sourcePath + " from " + item.repoName +
+      ". Git history keeps it, but it leaves the board. For “won’t do, keep the record”, set status to Cancelled instead.")) return;
+    toast("Deleting…");
+    commitDelete(item)
+      .then(function () {
+        var i = DATA.items.indexOf(item);
+        if (i >= 0) DATA.items.splice(i, 1);
+        closeModal();
+        renderBoard();
+        toast("✓ Deleted — live after next sync");
+      })
+      .catch(function (err) { noteWriteError(item, err); toast("✗ " + (err && err.message || "delete failed"), true); });
   }
 
   // Commit an edited body via the Contents API (read sha → PUT), bumping updated.
