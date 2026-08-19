@@ -1339,7 +1339,7 @@
   // Where a ⌘K quick-capture lands: the single scoped repo if you're in one,
   // else this board's own aggregator repo, else the first source.
   function defaultCaptureRepo() {
-    if (state.repos && state.repos.size === 1) return Array.prototype.slice.call(state.repos)[0];
+    if (state.repos && state.repos.size === 1) return state.repos.values().next().value;
     var agg = aggregatorRepo();
     if (agg && DATA.sources.some(function (s) { return s.repo === agg; })) return agg;
     return DATA.sources[0] && DATA.sources[0].repo;
