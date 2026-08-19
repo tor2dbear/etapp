@@ -973,8 +973,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* discipline shortcuts in the ⌘K palette */
 .suggest-tagmark { width: 16px; text-align: center; flex: none; color: var(--accent); font-family: var(--mono); font-weight: 700; }
 .suggest-hint { flex: none; color: var(--ink-3); font-size: 11px; font-family: var(--mono); }
-.suggest-createmark { width: 16px; display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--accent); }
-.suggest-createmark svg { width: 14px; height: 14px; }
+.suggest-createmark, .suggest-cmdmark { width: 16px; display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--accent); }
+.suggest-createmark svg, .suggest-cmdmark svg { width: 14px; height: 14px; }
+.suggest-cmdmark { color: var(--ink-3); }
 .suggest-create { border-top: 1px solid var(--line); }
 .suggest-create .suggest-title { color: var(--accent); }
 .fp-chip.on.pri-low { background: var(--ink-3); }

@@ -258,6 +258,8 @@
     merge: ["M9.5833 11.5a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M1.9167 3.8333a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M3.8333 13.4167V5.75a5.75 5.75 0 0 0 5.75 5.75"],
     // trash-2 (Feather), scaled to the 16 viewBox
     trash: ["M2 4h12", "M12.667 4v9.333a1.333 1.333 0 0 1 -1.333 1.333H4.667a1.333 1.333 0 0 1 -1.333 -1.333V4", "M5.333 4V2.667a1.333 1.333 0 0 1 1.333 -1.333h2.667a1.333 1.333 0 0 1 1.333 1.333V4", "M6.667 7.333v4", "M9.333 7.333v4"],
+    // sliders (Feather) — settings/command
+    sliders: ["M2.6667 14v-4.6667", "M2.6667 6.6667V2", "M8 14v-6", "M8 5.3333V2", "M13.3333 14v-3.3333", "M13.3333 8V2", "M0.6667 9.3333h4", "M6 5.3333h4", "M11.3333 10.6667h4"],
     list: ["m5 3.75 8.125 0", "m5 7.5 8.125 0", "m5 11.25 8.125 0", "m1.875 3.75 0.00625 0", "m1.875 7.5 0.00625 0", "m1.875 11.25 0.00625 0"],
     grid: ["M1.875 1.875h4.375v4.375H1.875Z", "M8.75 1.875h4.375v4.375h-4.375Z", "M8.75 8.75h4.375v4.375h-4.375Z", "M1.875 8.75h4.375v4.375H1.875Z"],
     key: ["m13.125 1.25 -1.25 1.25m-4.7562500000000005 4.7562500000000005a3.4375 3.4375 0 1 1 -4.86125 4.86125 3.4375 3.4375 0 0 1 4.860625 -4.860625zm0 0L9.6875 4.6875m0 0 1.875 1.875L13.75 4.375l-1.875 -1.875m-2.1875 2.1875L11.875 2.5"],
@@ -1252,6 +1254,15 @@
     var host = document.getElementById("sideViews") || document.getElementById("filters");
     host.appendChild(seg);
   }
+  // Switch the active view (used by the sidebar rows and the ⌘K palette).
+  function setFocus(key) {
+    exitPuckView();
+    state.focus = key;
+    var host = document.getElementById("sideViews") || document.getElementById("filters");
+    if (host) { host.innerHTML = ""; buildFocusControl(); }
+    renderBoard();
+    maybeCloseMenu();
+  }
 
   // ── theme ──
   var root = document.documentElement;
@@ -1282,14 +1293,14 @@
     // Show the icon of the mode a tap switches TO (dark now → sun to go light).
     themeBtn.appendChild(icon(effectiveIsDark() ? "sun" : "moon"));
   }
-  themeBtn.addEventListener("click", function () {
+  function toggleTheme() {
     var next = effectiveIsDark() ? "light" : "dark";
     root.setAttribute("data-theme", next);
     try { localStorage.setItem("roadmap-theme", next); } catch (e) {}
     applyThemeColor();
     updateThemeButton();
-    themeBtn.blur();
-  });
+  }
+  themeBtn.addEventListener("click", function () { toggleTheme(); themeBtn.blur(); });
   // Follow the system scheme while on "auto" (no explicit toggle yet).
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
@@ -1344,10 +1355,33 @@
     if (agg && DATA.sources.some(function (s) { return s.repo === agg; })) return agg;
     return DATA.sources[0] && DATA.sources[0].repo;
   }
+  // ⌘K is a command palette, not just search: actions (create, views, settings,
+  // theme, account) alongside pucks and tag filters. Each action carries its own
+  // run(); nothing here is a second source of truth — they just drive the same
+  // functions the chrome buttons do.
+  function paletteCommands() {
+    var cmds = [], signedIn = !!ghToken(), vc = viewCounts();
+    if (signedIn) cmds.push({ __cmd: true, label: "New puck…", hint: "Create", icon: "plus", run: function () { openNewPuckPanel(); } });
+    cmds.push({ __cmd: true, label: "Go to All pucks", hint: "View", icon: "list", run: function () { setFocus("all"); } });
+    cmds.push({ __cmd: true, label: "Go to Ready", hint: "View", icon: "list", run: function () { setFocus("ready"); } });
+    cmds.push({ __cmd: true, label: "Go to Inbox", hint: "View", icon: "list", run: function () { setFocus("inbox"); } });
+    if (vc.attention) cmds.push({ __cmd: true, label: "Go to Needs attention", hint: "View", icon: "list", run: function () { setFocus("attention"); } });
+    cmds.push({ __cmd: true, label: "Settings", hint: "Workspace", icon: "sliders", run: function () { openSettingsPanel(); } });
+    cmds.push({ __cmd: true, label: effectiveIsDark() ? "Switch to light" : "Switch to dark", hint: "Theme", icon: effectiveIsDark() ? "sun" : "moon", run: function () { toggleTheme(); } });
+    if (signedIn) {
+      cmds.push({ __cmd: true, label: "Change token", hint: "Account", icon: "key", run: function () { openTokenPanel(afterAuth); } });
+      cmds.push({ __cmd: true, label: "Sign out", hint: "Account", icon: "key", run: function () { setGhToken(""); afterAuth(); } });
+    } else {
+      cmds.push({ __cmd: true, label: "Sign in to edit", hint: "Account", icon: "key", run: function () { openTokenPanel(afterAuth); } });
+    }
+    return cmds;
+  }
   function computeSuggestions(q) {
     var raw = (q || "").trim();
     q = q.toLowerCase();
-    if (!q) return [];
+    var cmds = paletteCommands();
+    if (!q) return cmds; // empty ⌘K → the command palette home
+    var matchedCmds = cmds.filter(function (c) { return c.label.toLowerCase().indexOf(q) !== -1; });
     // Discipline shortcuts: matching labels not already active, as filter actions.
     var tagCounts = {};
     DATA.items.forEach(function (it) { it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
@@ -1363,7 +1397,7 @@
       if (i === 0) starts.push(it);
       else if (i > 0) contains.push(it);
     });
-    var out = tags.concat(starts.concat(contains).slice(0, 8 - tags.length));
+    var out = matchedCmds.concat(tags).concat(starts.concat(contains).slice(0, 6));
     // Quick-capture: type a line → create an inbox stub straight from ⌘K.
     if (ghToken() && raw) out.push({ __create: true, title: raw });
     return out;
@@ -1377,10 +1411,16 @@
       return;
     }
     suggestItems.forEach(function (it, idx) {
-      var li = el("li", "suggest-item" + (it.__tag ? " suggest-tag" : "") + (it.__create ? " suggest-create" : ""));
+      var li = el("li", "suggest-item" + (it.__tag ? " suggest-tag" : "") + (it.__create ? " suggest-create" : "") + (it.__cmd ? " suggest-cmd" : ""));
       li.setAttribute("role", "option");
       li.setAttribute("aria-selected", idx === suggestIndex ? "true" : "false");
-      if (it.__create) {
+      if (it.__cmd) {
+        var cm = el("span", "suggest-cmdmark");
+        cm.appendChild(icon(it.icon || "list"));
+        li.appendChild(cm);
+        li.appendChild(el("span", "suggest-title", it.label));
+        if (it.hint) li.appendChild(el("span", "suggest-hint", it.hint));
+      } else if (it.__create) {
         var mk = el("span", "suggest-createmark");
         mk.appendChild(icon("plus"));
         li.appendChild(mk);
@@ -1403,6 +1443,7 @@
         e.preventDefault();
         chooseSuggestion(it);
       });
+      if (idx === suggestIndex) li.scrollIntoView({ block: "nearest" });
       suggestEl.appendChild(li);
     });
     suggestEl.hidden = false;
@@ -1411,7 +1452,8 @@
 
   function updateSuggestions() {
     suggestItems = computeSuggestions(state.query);
-    suggestIndex = -1;
+    // Spotlight-style: highlight the top row so Enter runs it immediately.
+    suggestIndex = suggestItems.length ? 0 : -1;
     renderSuggestions();
   }
 
@@ -1425,6 +1467,11 @@
   function chooseSuggestion(it) {
     hideSuggestions();
     searchInput.blur();
+    if (it.__cmd) {
+      closeCmdk();
+      if (typeof it.run === "function") it.run();
+      return;
+    }
     if (it.__create) {
       // Quick-capture: create an inbox stub, then land on it to route/refine.
       var repo = defaultCaptureRepo();
@@ -1490,7 +1537,7 @@
     updateSearchClear();
   });
   searchInput.addEventListener("focus", function () {
-    if (state.query) updateSuggestions();
+    updateSuggestions(); // empty query shows the command palette
   });
   // pointerdown + preventDefault so the tap clears without first blurring the
   // input (keeps focus, so the keyboard stays and you can keep typing).
