@@ -527,6 +527,24 @@
     if (!n) { toast("✗ Couldn’t read an issue number", true); return; }
     changeIssue(item, n);
   }
+  // The Labels cell: the tag pills, plus an edit affordance when writable.
+  function labelsValue(item, editable) {
+    var wrap = el("div", "card-tags");
+    item.tags.forEach(function (t) { wrap.appendChild(el("span", "tagpill", "#" + t)); });
+    if (!item.native) wrap.appendChild(el("span", "adapted-badge", "adapted"));
+    if (editable && item.native) {
+      var ed = el("button", "linklike issue-editbtn", item.tags.length ? "Edit" : "Add labels");
+      ed.type = "button";
+      ed.addEventListener("click", function () { promptLabels(item); });
+      wrap.appendChild(ed);
+    }
+    return wrap;
+  }
+  function promptLabels(item) {
+    var val = window.prompt("Labels (comma-separated):", (item.tags || []).join(", "));
+    if (val === null) return;
+    changeTags(item, val.split(",").map(function (x) { return slugify(x); }).filter(Boolean));
+  }
 
   // Build the full puck detail into `container` — shared by both surfaces.
   // Structure: breadcrumb → title → properties rail → details (body) → links.
@@ -658,11 +676,8 @@
       props.appendChild(propRow("Issue", issueValue(item, editable)));
     }
 
-    if (item.tags.length || !item.native) {
-      var tags = el("div", "card-tags");
-      item.tags.forEach(function (t) { tags.appendChild(el("span", "tagpill", "#" + t)); });
-      if (!item.native) tags.appendChild(el("span", "adapted-badge", "adapted"));
-      props.appendChild(propRow("Labels", tags));
+    if (editable || item.tags.length || !item.native) {
+      props.appendChild(propRow("Labels", labelsValue(item, editable)));
     }
 
     if ((item.blockedBy || []).length) {
@@ -1473,10 +1488,10 @@
       return;
     }
     if (it.__create) {
-      // Quick-capture: create an inbox stub, then land on it to route/refine.
-      var repo = defaultCaptureRepo();
+      // Quick-capture → the same capture dialog, title prefilled, repo defaulted
+      // (always shown so you confirm it — the repo is permanent).
       closeCmdk();
-      if (repo) createPuck(repo, it.title, "inbox", [], null);
+      openNewPuckPanel({ title: it.title });
       return;
     }
     if (it.__tag) {
@@ -1995,6 +2010,42 @@
       })
       .then(function (r) { assertOk(r, item); });
   }
+  // Edit the puck's labels by rewriting the `tags:` frontmatter line (empty removes it).
+  function commitTags(item, tags) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { assertOk(r, item); return r.json(); })
+      .then(function (info) {
+        var text = b64decode(info.content);
+        var out = tags.length ? editFrontmatter(text, "tags", "[" + tags.join(", ") + "]") : removeFrontmatter(text, "tags");
+        if (out == null) throw new Error("no frontmatter");
+        out = editFrontmatter(out, "updated", today());
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: " + item.slug + " labels", content: b64encode(out), sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { assertOk(r, item); });
+  }
+  function changeTags(item, tags) {
+    if (!ghToken() || tags.join(",") === (item.tags || []).join(",")) return;
+    var prev = item.tags, prevU = item.updated;
+    item.tags = tags; item.updated = today();
+    renderBoard(); openModal(item);
+    toast("Saving…");
+    commitTags(item, tags)
+      .then(function () { toast("✓ Labels saved — live in ~1 min"); })
+      .catch(function (err) {
+        item.tags = prev; item.updated = prevU;
+        noteWriteError(item, err);
+        renderBoard(); openModal(item);
+        toast("✗ " + err.message, true);
+      });
+  }
   function changeIssue(item, number) {
     number = number || null;
     if (number === (item.issue || null) || !ghToken()) return;
@@ -2173,18 +2224,19 @@
     if (typeof s === "string") return s.split(",").map(function (x) { return x.trim(); }).filter(Boolean);
     return ["Goal", "Research", "Open questions"];
   }
-  function puckBody() {
+  function puckBody(context) {
     var secs = templateSections();
-    if (!secs.length) return "";
-    return secs.map(function (name) { return "## " + name + "\n\n"; }).join("\n");
+    var body = secs.length ? secs.map(function (name) { return "## " + name + "\n\n"; }).join("\n") : "";
+    if (context) body = context + "\n\n" + body; // a lead paragraph above the skeleton
+    return body;
   }
-  function puckTemplate(title, status, tags, agent) {
+  function puckTemplate(title, status, tags, agent, context) {
     var t = /[:#]/.test(title) ? JSON.stringify(title) : title;
     var lines = ["---", "title: " + t, "status: " + status];
     if (tags.length) lines.push("tags: [" + tags.join(", ") + "]");
     if (agent) lines.push("agent: " + agent);
     lines.push("updated: " + today(), "created: " + today(), "---", "");
-    var body = puckBody();
+    var body = puckBody(context);
     return lines.join("\n") + (body ? "\n" + body : "");
   }
 
@@ -2217,7 +2269,7 @@
   }
 
   // Optimistic create: add to the board now, commit in the background, revert on failure.
-  function createPuck(repo, title, status, tags, agent) {
+  function createPuck(repo, title, status, tags, agent, context) {
     var slug = slugify(title);
     var short = repo.split("/").pop();
     var id = short + "/" + slug;
@@ -2225,7 +2277,7 @@
     var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0] || {};
     var meta = sourceMeta(repo);
     var path = meta.dir + "/" + slug + ".md";
-    var body = puckBody();
+    var body = puckBody(context);
     var item = {
       id: id, repo: repo, repoName: src.name || short, repoColor: src.color || "#888888",
       issueState: null, slug: slug, title: title, status: status, tags: tags, updated: today(),
@@ -2236,7 +2288,7 @@
     DATA.items.push(item); DATA.total += 1;
     renderBoard(); buildAgentChips(); openModal(item);
     toast("Creating…");
-    commitCreate(repo, path, meta.branch, puckTemplate(title, status, tags, agent), "roadmap: add " + slug)
+    commitCreate(repo, path, meta.branch, puckTemplate(title, status, tags, agent, context), "roadmap: add " + slug)
       .then(function () { toast("✓ Created — live in ~1 min"); })
       .catch(function (err) {
         noteWriteError({ repo: repo }, err);
@@ -2383,70 +2435,32 @@
     if (value != null) s.value = value;
     return s;
   }
+  // One capture flow for New *and* ⌘K: Title + Repo (+ optional context). Repo is
+  // permanent (the file lives there, can't move later), so it's always shown —
+  // defaulting to the current scope / this board's repo. Everything else (status,
+  // priority, agent, labels) is set on the puck page after creation.
   function openNewPuckPanel(preset) {
     if (!ghToken()) return;
+    preset = preset || {};
     var back = el("div", "token-backdrop");
     var p = el("div", "token-panel");
     p.appendChild(el("h3", "token-title", "New puck"));
-    var proj = selectEl("np-select", DATA.sources.map(function (s) { return { value: s.repo, label: s.name }; }),
-      DATA.sources.some(function (s) { return s.repo === "tor2dbear/roadmap"; }) ? "tor2dbear/roadmap" : null);
+    var defRepo = preset.repo || defaultCaptureRepo() || (DATA.sources[0] && DATA.sources[0].repo);
+    var proj = selectEl("np-select", DATA.sources.map(function (s) { return { value: s.repo, label: s.name }; }), defRepo);
     var title = el("input", "token-input"); title.type = "text"; title.placeholder = "Title"; title.autocomplete = "off";
-    var st = selectEl("np-select", DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; }), (preset && preset.status) || "inbox");
-    // Agent = the "hand this to a discipline to pick up / refine later" marker
-    // (the PO-layer queue). Capture cheaply now; an agent fleshes it out out-of-band.
-    var ag = selectEl("np-select", [{ value: "", label: "Unassigned" }].concat(
-      agentOptions().map(function (a) { return { value: a, label: agentLabel(a) }; })), (preset && preset.agent) || "");
-    var tg = el("input", "token-input"); tg.type = "text"; tg.placeholder = "tags (comma-separated)"; tg.autocomplete = "off";
+    if (preset.title) title.value = preset.title;
+    var ctx = el("textarea", "token-input np-context"); ctx.placeholder = "Context (optional) — a line more than the title"; ctx.rows = 2;
     var preview = el("div", "np-preview", "");
     function updatePreview() {
       var m = sourceMeta(proj.value);
       preview.textContent = title.value.trim() ? "→ " + m.dir + "/" + slugify(title.value) + ".md" : "";
     }
     title.addEventListener("input", updatePreview); proj.addEventListener("change", updatePreview);
-    p.appendChild(field("Project", proj));
+    p.appendChild(field("Repo", proj));
     p.appendChild(field("Title", title));
     p.appendChild(preview);
-    p.appendChild(field("Status", st));
-    p.appendChild(field("Agent (pick up later)", ag));
-    p.appendChild(field("Tags", tg));
-    // Reuse-first: surface the project's existing tags (ranked) as clickable
-    // suggestions, filtered by the token you're typing — so authors pick an
-    // existing label instead of coining a near-duplicate. Keeps the folksonomy
-    // from sprawling at the source.
-    var tagSug = el("div", "np-tagsug");
-    p.appendChild(tagSug);
-    function repoTagCounts(repo) {
-      var c = {};
-      DATA.items.forEach(function (it) { if (it.repo === repo) it.tags.forEach(function (t) { c[t] = (c[t] || 0) + 1; }); });
-      return c;
-    }
-    function renderTagSug() {
-      tagSug.innerHTML = "";
-      var counts = repoTagCounts(proj.value);
-      var all = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
-      var toks = tg.value.split(",").map(function (s) { return s.trim().toLowerCase(); });
-      var typed = toks[toks.length - 1];
-      var chosen = toks.slice(0, -1).filter(Boolean);
-      var matches = all.filter(function (t) { return chosen.indexOf(t) === -1 && (!typed || t.indexOf(typed) !== -1); }).slice(0, 8);
-      if (!matches.length) return;
-      tagSug.appendChild(el("span", "np-sug-label", typed ? "Existing:" : "Reuse:"));
-      matches.forEach(function (t) {
-        var chip = el("button", "np-sug-chip", "#" + t);
-        chip.type = "button";
-        chip.appendChild(el("span", "np-sug-n", String(counts[t])));
-        chip.addEventListener("mousedown", function (e) {
-          e.preventDefault(); // keep the input focused
-          var parts = tg.value.split(",");
-          parts[parts.length - 1] = " " + t;
-          tg.value = parts.join(",").replace(/^\s+/, "") + ", ";
-          renderTagSug(); tg.focus();
-        });
-        tagSug.appendChild(chip);
-      });
-    }
-    tg.addEventListener("input", renderTagSug);
-    proj.addEventListener("change", renderTagSug);
-    renderTagSug();
+    p.appendChild(field("Context", ctx));
+    p.appendChild(el("p", "set-note", "Status, priority, agent and labels are set on the puck after you create it."));
     var actions = el("div", "token-actions");
     var create = el("button", "tbtn primary", "Create");
     var cancel = el("button", "tbtn", "Cancel");
@@ -2454,8 +2468,8 @@
     create.addEventListener("click", function () {
       var t = title.value.trim();
       if (!t) { title.focus(); return; }
-      var tags = tg.value.split(",").map(function (x) { return slugify(x); }).filter(Boolean);
-      close(); createPuck(proj.value, t, st.value, tags, ag.value || null);
+      close();
+      createPuck(proj.value, t, preset.status || "inbox", [], null, ctx.value.trim());
     });
     cancel.addEventListener("click", close);
     actions.appendChild(create); actions.appendChild(cancel);
@@ -2464,6 +2478,7 @@
     back.addEventListener("click", function (e) { if (e.target === back) close(); });
     document.body.appendChild(back);
     document.body.classList.add("modal-open");
+    updatePreview();
     title.focus();
   }
 
