@@ -2054,10 +2054,11 @@
   }
 
   // The new-puck file body — mirrors `roadmap new` in scripts/roadmap.mjs.
-  function puckTemplate(title, status, tags) {
+  function puckTemplate(title, status, tags, agent) {
     var t = /[:#]/.test(title) ? JSON.stringify(title) : title;
     var lines = ["---", "title: " + t, "status: " + status];
     if (tags.length) lines.push("tags: [" + tags.join(", ") + "]");
+    if (agent) lines.push("agent: " + agent);
     lines.push("updated: " + today(), "created: " + today(), "---", "", "## Mål", "", "", "## Research", "", "", "## Öppna frågor", "- ", "");
     return lines.join("\n");
   }
@@ -2091,7 +2092,7 @@
   }
 
   // Optimistic create: add to the board now, commit in the background, revert on failure.
-  function createPuck(repo, title, status, tags) {
+  function createPuck(repo, title, status, tags, agent) {
     var slug = slugify(title);
     var short = repo.split("/").pop();
     var id = short + "/" + slug;
@@ -2103,19 +2104,19 @@
     var item = {
       id: id, repo: repo, repoName: src.name || short, repoColor: src.color || "#888888",
       issueState: null, slug: slug, title: title, status: status, tags: tags, updated: today(),
-      created: today(), issue: null, order: 0, depends: [], owner: null, body: body,
+      created: today(), issue: null, order: 0, depends: [], owner: null, agent: agent || null, body: body,
       sourcePath: path, sourceUrl: "https://github.com/" + repo + "/blob/" + meta.branch + "/" + path,
       adapter: "pucks", native: true, blockedBy: [], signals: [],
     };
     DATA.items.push(item); DATA.total += 1;
-    renderBoard(); openModal(item);
+    renderBoard(); buildAgentChips(); openModal(item);
     toast("Creating…");
-    commitCreate(repo, path, meta.branch, puckTemplate(title, status, tags), "roadmap: add " + slug)
+    commitCreate(repo, path, meta.branch, puckTemplate(title, status, tags, agent), "roadmap: add " + slug)
       .then(function () { toast("✓ Created — live in ~1 min"); })
       .catch(function (err) {
         noteWriteError({ repo: repo }, err);
         var i = DATA.items.indexOf(item); if (i >= 0) DATA.items.splice(i, 1);
-        DATA.total -= 1; renderBoard(); closeModal();
+        DATA.total -= 1; renderBoard(); buildAgentChips(); closeModal();
         toast("✗ " + err.message, true);
       });
   }
@@ -2266,6 +2267,10 @@
       DATA.sources.some(function (s) { return s.repo === "tor2dbear/roadmap"; }) ? "tor2dbear/roadmap" : null);
     var title = el("input", "token-input"); title.type = "text"; title.placeholder = "Title"; title.autocomplete = "off";
     var st = selectEl("np-select", DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; }), (preset && preset.status) || "inbox");
+    // Agent = the "hand this to a discipline to pick up / refine later" marker
+    // (the PO-layer queue). Capture cheaply now; an agent fleshes it out out-of-band.
+    var ag = selectEl("np-select", [{ value: "", label: "Unassigned" }].concat(
+      agentOptions().map(function (a) { return { value: a, label: agentLabel(a) }; })), (preset && preset.agent) || "");
     var tg = el("input", "token-input"); tg.type = "text"; tg.placeholder = "tags (comma-separated)"; tg.autocomplete = "off";
     var preview = el("div", "np-preview", "");
     function updatePreview() {
@@ -2277,6 +2282,7 @@
     p.appendChild(field("Title", title));
     p.appendChild(preview);
     p.appendChild(field("Status", st));
+    p.appendChild(field("Agent (pick up later)", ag));
     p.appendChild(field("Tags", tg));
     // Reuse-first: surface the project's existing tags (ranked) as clickable
     // suggestions, filtered by the token you're typing — so authors pick an
@@ -2324,7 +2330,7 @@
       var t = title.value.trim();
       if (!t) { title.focus(); return; }
       var tags = tg.value.split(",").map(function (x) { return slugify(x); }).filter(Boolean);
-      close(); createPuck(proj.value, t, st.value, tags);
+      close(); createPuck(proj.value, t, st.value, tags, ag.value || null);
     });
     cancel.addEventListener("click", close);
     actions.appendChild(create); actions.appendChild(cancel);
