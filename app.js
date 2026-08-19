@@ -1333,7 +1333,16 @@
 
   // Title matches only (v1): startsWith ranks above a mid-string hit. Suggestions
   // span all items — clicking jumps to any card, even one the board is hiding.
+  // Where a ⌘K quick-capture lands: the single scoped repo if you're in one,
+  // else this board's own aggregator repo, else the first source.
+  function defaultCaptureRepo() {
+    if (state.repos && state.repos.size === 1) return Array.prototype.slice.call(state.repos)[0];
+    var agg = aggregatorRepo();
+    if (agg && DATA.sources.some(function (s) { return s.repo === agg; })) return agg;
+    return DATA.sources[0] && DATA.sources[0].repo;
+  }
   function computeSuggestions(q) {
+    var raw = (q || "").trim();
     q = q.toLowerCase();
     if (!q) return [];
     // Discipline shortcuts: matching labels not already active, as filter actions.
@@ -1351,7 +1360,10 @@
       if (i === 0) starts.push(it);
       else if (i > 0) contains.push(it);
     });
-    return tags.concat(starts.concat(contains).slice(0, 8 - tags.length));
+    var out = tags.concat(starts.concat(contains).slice(0, 8 - tags.length));
+    // Quick-capture: type a line → create an inbox stub straight from ⌘K.
+    if (ghToken() && raw) out.push({ __create: true, title: raw });
+    return out;
   }
 
   function renderSuggestions() {
@@ -1362,10 +1374,16 @@
       return;
     }
     suggestItems.forEach(function (it, idx) {
-      var li = el("li", "suggest-item" + (it.__tag ? " suggest-tag" : ""));
+      var li = el("li", "suggest-item" + (it.__tag ? " suggest-tag" : "") + (it.__create ? " suggest-create" : ""));
       li.setAttribute("role", "option");
       li.setAttribute("aria-selected", idx === suggestIndex ? "true" : "false");
-      if (it.__tag) {
+      if (it.__create) {
+        var mk = el("span", "suggest-createmark");
+        mk.appendChild(icon("plus"));
+        li.appendChild(mk);
+        li.appendChild(el("span", "suggest-title", "Create “" + it.title + "”"));
+        li.appendChild(el("span", "suggest-hint", "New puck · " + repoNameOf(defaultCaptureRepo())));
+      } else if (it.__tag) {
         li.appendChild(el("span", "suggest-tagmark", "#"));
         li.appendChild(el("span", "suggest-title", it.__tag));
         li.appendChild(el("span", "suggest-hint", "Filter · " + it.count));
@@ -1404,6 +1422,13 @@
   function chooseSuggestion(it) {
     hideSuggestions();
     searchInput.blur();
+    if (it.__create) {
+      // Quick-capture: create an inbox stub, then land on it to route/refine.
+      var repo = defaultCaptureRepo();
+      closeCmdk();
+      if (repo) createPuck(repo, it.title, "inbox", [], null);
+      return;
+    }
     if (it.__tag) {
       // Discipline shortcut → apply it as a filter and return to the board.
       exitPuckView();
