@@ -508,6 +508,9 @@
       var link = el("button", "linklike", "Link issue"); link.type = "button";
       link.addEventListener("click", function () { promptIssue(item); });
       wrap.appendChild(link);
+      var mk = el("button", "linklike issue-newbtn", "New issue"); mk.type = "button";
+      mk.addEventListener("click", function () { newIssue(item); });
+      wrap.appendChild(mk);
     } else {
       wrap.appendChild(el("span", "prop-muted", "—"));
     }
@@ -1962,6 +1965,37 @@
         renderBoard(); openModal(item);
         toast("✗ " + err.message, true);
       });
+  }
+
+  // Create a GitHub issue for this puck and auto-link it. Thin-via-GitHub: the
+  // issue is the discussion; we just open one and point `issue:` at it. Needs
+  // Issues: write on the token — without it we fall back to GitHub's prefilled
+  // new-issue composer (the "just give me a link" path), then you Link issue.
+  function openGithubNewIssue(item) {
+    var url = "https://github.com/" + item.repo + "/issues/new?title=" +
+      encodeURIComponent(item.title) + "&body=" + encodeURIComponent("From the roadmap board: " + item.sourceUrl);
+    window.open(url, "_blank", "noopener");
+  }
+  function newIssue(item) {
+    if (!canWrite(item)) return;
+    if (!window.confirm("Create a GitHub issue “" + item.title + "” in " + item.repoName + " and link it to this puck?")) return;
+    var token = ghToken();
+    toast("Creating issue…");
+    fetch("https://api.github.com/repos/" + item.repo + "/issues", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+      body: JSON.stringify({ title: item.title, body: "From the roadmap board: " + item.sourceUrl }),
+    }).then(function (r) {
+      if (r.status === 403 || r.status === 404) {
+        toast("Token can’t create issues here — opening GitHub. Paste the number via Link issue.", true);
+        openGithubNewIssue(item);
+        return null;
+      }
+      if (!r.ok) throw new Error("couldn’t create the issue (" + r.status + ")");
+      return r.json();
+    }).then(function (data) {
+      if (data && data.number) { item.issueState = data.state || "open"; changeIssue(item, data.number); }
+    }).catch(function (err) { toast("✗ " + (err && err.message || "issue failed"), true); });
   }
 
   // Replace the body (everything after the frontmatter fence), keeping the
