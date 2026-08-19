@@ -484,6 +484,45 @@
     return wrap;
   }
 
+  // Pull a trailing issue number out of "42", "#42", or a full issue URL.
+  function parseIssue(s) {
+    var m = String(s).trim().match(/(\d+)\s*$/);
+    return m ? parseInt(m[1], 10) : null;
+  }
+  // The Issue property cell: a link (+ open/closed state) when set, "Link issue"
+  // when editable and empty, "—" otherwise. Edit uses a prompt (number or URL).
+  function issueValue(item, editable) {
+    var wrap = el("span", "issue-cell");
+    if (item.issue) {
+      var a = el("a", "issue-link", "#" + item.issue);
+      a.href = "https://github.com/" + item.repo + "/issues/" + item.issue;
+      a.target = "_blank"; a.rel = "noopener";
+      wrap.appendChild(a);
+      if (item.issueState) wrap.appendChild(el("span", "issue-state issue-" + item.issueState, item.issueState));
+      if (editable) {
+        var ed = el("button", "linklike issue-editbtn", "Edit"); ed.type = "button";
+        ed.addEventListener("click", function () { promptIssue(item); });
+        wrap.appendChild(ed);
+      }
+    } else if (editable) {
+      var link = el("button", "linklike", "Link issue"); link.type = "button";
+      link.addEventListener("click", function () { promptIssue(item); });
+      wrap.appendChild(link);
+    } else {
+      wrap.appendChild(el("span", "prop-muted", "—"));
+    }
+    return wrap;
+  }
+  function promptIssue(item) {
+    var val = window.prompt("Link a GitHub issue in " + item.repoName + " — number or URL.\nLeave blank to unlink.", item.issue ? String(item.issue) : "");
+    if (val === null) return; // cancelled
+    val = val.trim();
+    if (val === "") { if (item.issue) changeIssue(item, null); return; }
+    var n = parseIssue(val);
+    if (!n) { toast("✗ Couldn’t read an issue number", true); return; }
+    changeIssue(item, n);
+  }
+
   // Build the full puck detail into `container` — shared by both surfaces.
   // Structure: breadcrumb → title → properties rail → details (body) → links.
   function fillDetail(container, item) {
@@ -606,6 +645,12 @@
         },
         onPick: function (v) { changeAgent(item, v); },
       })));
+    }
+
+    // Issue: link/unlink a GitHub issue (writes the `issue:` frontmatter line).
+    // Thin-via-GitHub — the discussion is the issue; this is just a pointer field.
+    if (editable || item.issue) {
+      props.appendChild(propRow("Issue", issueValue(item, editable)));
     }
 
     if (item.tags.length || !item.native) {
@@ -1848,6 +1893,48 @@
         noteWriteError(item, err);
         item.agent = prevA; item.updated = prevU;
         renderBoard(); buildAgentChips(); openModal(item);
+        toast("✗ " + err.message, true);
+      });
+  }
+
+  // Link/unlink a GitHub issue by writing the `issue:` frontmatter line (null
+  // removes it). issueState is reconciled against the real issue at the next
+  // harvest, which also refreshes the Discussion tab and drift flags.
+  function commitIssue(item, number) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { assertOk(r, item); return r.json(); })
+      .then(function (info) {
+        var text = b64decode(info.content);
+        var out = number ? editFrontmatter(text, "issue", String(number)) : removeFrontmatter(text, "issue");
+        if (out == null) throw new Error("no frontmatter");
+        out = editFrontmatter(out, "updated", today());
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: " + item.slug + (number ? " issue #" + number : " unlink issue"), content: b64encode(out), sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { assertOk(r, item); });
+  }
+  function changeIssue(item, number) {
+    number = number || null;
+    if (number === (item.issue || null) || !ghToken()) return;
+    var prevI = item.issue, prevState = item.issueState, prevU = item.updated;
+    item.issue = number;
+    if (number == null) item.issueState = null; // unknown until reharvest
+    item.updated = today();
+    renderBoard(); openModal(item);
+    toast("Saving…");
+    commitIssue(item, number)
+      .then(function () { toast(number ? "✓ Linked issue #" + number + " — live in ~1 min" : "✓ Unlinked — live in ~1 min"); })
+      .catch(function (err) {
+        item.issue = prevI; item.issueState = prevState; item.updated = prevU;
+        noteWriteError(item, err);
+        renderBoard(); openModal(item);
         toast("✗ " + err.message, true);
       });
   }

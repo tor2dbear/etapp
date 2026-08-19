@@ -767,6 +767,15 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .prop-k { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
 .prop-v { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--ink); }
 .prop-muted { color: var(--ink-3); }
+.issue-cell { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.issue-link { color: var(--accent); text-decoration: none; font-family: var(--mono); font-size: 13px; }
+.issue-link:hover { text-decoration: underline; }
+.issue-cell .linklike { background: none; border: 0; padding: 0; font: inherit; font-size: 13px; color: var(--accent); cursor: pointer; }
+.issue-cell .linklike:hover { text-decoration: underline; }
+.issue-editbtn { font-size: 12px; color: var(--ink-3); }
+.issue-state { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; border-radius: 5px; padding: 1px 6px; border: 1px solid currentColor; }
+.issue-state.issue-open { color: var(--next); }
+.issue-state.issue-closed { color: var(--done); }
 .prop-date { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
 .prop-v .card-tags { margin: 0; gap: 5px; }
 .prop-status-edit { display: flex; gap: 5px; flex-wrap: wrap; }
