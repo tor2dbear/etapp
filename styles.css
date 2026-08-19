@@ -576,7 +576,7 @@ body.modal-open { overflow: hidden; }
   background: var(--bg); color: var(--ink);
 }
 .token-input:focus { outline: none; border-color: var(--accent); }
-.token-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.token-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .tbtn {
   font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
