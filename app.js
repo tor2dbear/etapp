@@ -344,7 +344,23 @@
     }
 
     c.addEventListener("click", function () { openModal(item); });
+    // Drag-to-restatus (desktop): writable native pucks can be dragged to another
+    // status column, which commits the status change. Touch falls back to the picker.
+    if (canWrite(item) && item.native) {
+      c.setAttribute("draggable", "true");
+      c.addEventListener("dragstart", function (e) {
+        dragItem = item;
+        c.classList.add("dragging");
+        if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", item.id); }
+      });
+      c.addEventListener("dragend", function () { dragItem = null; c.classList.remove("dragging"); clearDropTargets(); });
+    }
     return c;
+  }
+  var dragItem = null;
+  function clearDropTargets() {
+    var els = document.querySelectorAll(".column.drop-target");
+    Array.prototype.forEach.call(els, function (e) { e.classList.remove("drop-target"); });
   }
 
   function linkEl(text, href) {
@@ -929,6 +945,30 @@
         group.forEach(function (it) { cards.appendChild(card(it)); });
       }
       col.appendChild(cards);
+      // in-column "+" — create a puck already in this column (Linear-style)
+      if (ghToken()) {
+        var add = el("button", "col-add", "");
+        add.type = "button";
+        add.appendChild(icon("plus"));
+        add.setAttribute("aria-label", "New puck in " + (STATUS_LABEL[status] || status));
+        add.addEventListener("click", function () { openNewPuckPanel({ status: status }); });
+        col.appendChild(add);
+      }
+      // drop target for drag-to-restatus
+      col.addEventListener("dragover", function (e) {
+        if (!dragItem || dragItem.status === status) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        col.classList.add("drop-target");
+      });
+      col.addEventListener("dragleave", function (e) { if (e.target === col || !col.contains(e.relatedTarget)) col.classList.remove("drop-target"); });
+      col.addEventListener("drop", function (e) {
+        col.classList.remove("drop-target");
+        if (!dragItem || dragItem.status === status) return;
+        e.preventDefault();
+        changeStatus(dragItem, status);
+        dragItem = null;
+      });
       board.appendChild(col);
     });
   }
@@ -1623,7 +1663,9 @@
   // missing. Learned from real failures; cleared on sign-in.
   var readOnlyRepos = new Set();
   function canWrite(item) {
-    return (writableRepos === null || writableRepos.has(item.repo)) && !readOnlyRepos.has(item.repo);
+    // == null also catches `undefined` — card() calls this during the first render,
+    // before writableRepos/readOnlyRepos are assigned (they mean "not checked yet").
+    return (writableRepos == null || writableRepos.has(item.repo)) && !(readOnlyRepos && readOnlyRepos.has(item.repo));
   }
   function noteWriteError(item, err) {
     if (err && (err.status === 403 || err.status === 404)) readOnlyRepos.add(item.repo);
@@ -1640,7 +1682,8 @@
         .catch(function () { return null; });
     })).then(function (rs) {
       writableRepos = new Set(rs.filter(Boolean));
-      // Re-render an open puck so its edit controls reflect real permissions.
+      // Reflect real permissions: cards' draggability + the detail's edit controls.
+      renderBoard();
       var open = itemFromHash();
       if (open && document.body.classList.contains("viewing-puck")) openDetail(open);
     });
@@ -1697,18 +1740,21 @@
   }
 
   // Optimistic: flip in-memory + re-render now, commit in the background, revert on failure.
+  // Reopen the detail only if it's currently showing (so a status change from the
+  // picker refreshes the open puck, but a drag-drop on the board doesn't pop it).
+  function reopenIfOpen(item) { if (document.body.classList.contains("viewing-puck")) openModal(item); }
   function changeStatus(item, status) {
     if (status === item.status || !ghToken()) return;
     var prevS = item.status, prevU = item.updated;
     item.status = status; item.updated = today();
-    renderBoard(); openModal(item);
+    renderBoard(); reopenIfOpen(item);
     toast("Saving…");
     commitStatus(item, status)
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
         item.status = prevS; item.updated = prevU;
         noteWriteError(item, err);
-        renderBoard(); openModal(item);
+        renderBoard(); reopenIfOpen(item);
         toast("✗ " + err.message, true);
       });
   }
@@ -2124,7 +2170,7 @@
     if (value != null) s.value = value;
     return s;
   }
-  function openNewPuckPanel() {
+  function openNewPuckPanel(preset) {
     if (!ghToken()) return;
     var back = el("div", "token-backdrop");
     var p = el("div", "token-panel");
@@ -2132,7 +2178,7 @@
     var proj = selectEl("np-select", DATA.sources.map(function (s) { return { value: s.repo, label: s.name }; }),
       DATA.sources.some(function (s) { return s.repo === "tor2dbear/roadmap"; }) ? "tor2dbear/roadmap" : null);
     var title = el("input", "token-input"); title.type = "text"; title.placeholder = "Title"; title.autocomplete = "off";
-    var st = selectEl("np-select", DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; }), "inbox");
+    var st = selectEl("np-select", DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; }), (preset && preset.status) || "inbox");
     var tg = el("input", "token-input"); tg.type = "text"; tg.placeholder = "tags (comma-separated)"; tg.autocomplete = "off";
     var preview = el("div", "np-preview", "");
     function updatePreview() {
