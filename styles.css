@@ -22,6 +22,7 @@
   --accent: #87414b;
   --shadow: 0 1px 2px rgba(45, 38, 30, 0.07), 0 2px 8px rgba(45, 38, 30, 0.05);
   --radius: 12px;
+  --topbar-h: 52px; /* fixed app-header height, shared by the topbar and sidebar header */
   /* Apple's San Francisco stays first; Switzer is the self-hosted fallback that
      loads everywhere else (the -apple-system keywords resolve to SF only on Apple). */
   --sans: -apple-system, BlinkMacSystemFont, "Switzer", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -260,6 +261,10 @@ body {
   align-items: center;
   gap: 8px;
   position: sticky;
+  /* The kanban .board is its own scroll container (overflow-x: auto forces
+     overflow-y: auto too), so this sticks relative to the board, not the page —
+     top: 0 keeps it at the column top. (The list view scrolls with the viewport
+     and offsets below the topbar via --topbar-h; see .list-head.) */
   top: 0;
   padding: 4px 2px 10px;
   background: var(--bg);
@@ -277,11 +282,11 @@ body {
 
 .cards { display: flex; flex-direction: column; gap: 10px; }
 
-/* ── list view ── one vertical column, grouped by status. #board gets .as-list. */
+/* ── list view ── a full-width table grouped by status. #board gets .as-list. */
 .board.as-list {
   display: block;
   overflow-x: visible;
-  max-width: 760px;
+  max-width: none;
   padding: 12px 24px 40px;
 }
 .list-group { margin-bottom: 20px; }
@@ -290,7 +295,7 @@ body {
   align-items: center;
   gap: 8px;
   position: sticky;
-  top: 0;
+  top: var(--topbar-h, 0px); /* sit below the sticky topbar, not under it */
   padding: 6px 2px 8px;
   background: var(--bg);
   z-index: 1;
@@ -299,29 +304,32 @@ body {
 .list-head h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; }
 .list-head .count { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
 .list-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 9px 4px 9px 12px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 44px 108px 148px 92px;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 6px 8px 12px;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
 }
 @media (hover: hover) { .list-row:hover { background: var(--panel-2); } }
-.list-row .puck-glyph { margin-top: 2px; }
-.list-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 2px 10px;
+.list-name { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.list-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14px; font-weight: 600; color: var(--ink);
 }
-.list-title { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--ink); line-height: 1.35; }
-.list-meta { flex: 0 0 auto; display: flex; align-items: baseline; gap: 6px; }
+.list-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.list-pri { justify-content: center; }
+.list-repo { color: var(--ink-2); font-size: 12.5px; }
+.list-repo .repo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-repo .repo-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.list-dt { justify-content: flex-end; }
 .list-date { color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* On mobile the title takes the full row so the date drops onto its own line. */
-@media (max-width: 600px) { .list-title { flex-basis: 100%; } }
+/* Mobile: drop to Name · Priority · Updated so the row stays legible when narrow. */
+@media (max-width: 640px) {
+  .list-row { grid-template-columns: 18px minmax(0, 1fr) auto auto; gap: 10px; }
+  .list-agent, .list-repo { display: none; }
+}
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -373,7 +381,8 @@ body {
 .card-body :is(h2, h3, h4) { font-size: 13px; margin: 12px 0 4px; color: var(--ink); }
 .card-body :is(h2, h3, h4):first-child { margin-top: 0; }
 .card-body p { margin: 0 0 8px; }
-.card-body ul { margin: 4px 0 8px; padding-left: 18px; }
+.card-body ul, .card-body ol { margin: 4px 0 8px; padding-left: 20px; }
+.card-body ol { list-style: decimal; }
 .card-body li { margin: 2px 0; }
 .card-body a { color: var(--accent); }
 .card-links { margin-top: 10px; display: flex; gap: 12px; font-size: 12px; }
@@ -451,7 +460,9 @@ body {
 .modal-body :is(h2, h3, h4) { font-size: 14px; margin: 16px 0 6px; color: var(--ink); }
 .modal-body :is(h2, h3, h4):first-child { margin-top: 0; }
 .modal-body p { margin: 0 0 10px; }
-.modal-body ul { margin: 6px 0 10px; padding-left: 20px; }
+.modal-body ul, .modal-body ol { margin: 6px 0 10px; padding-left: 22px; }
+.modal-body ol { list-style: decimal; }
+.modal-body ol li, .modal-body ul li { margin: 2px 0; }
 .modal-body li { margin: 3px 0; }
 .modal-body code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
 .modal-body pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; overflow-x: auto; }
@@ -694,7 +705,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 .sidebar {
   background: var(--sidebar-bg); border-right: 1px solid var(--line);
-  padding: 16px 12px; display: flex; flex-direction: column; gap: 18px;
+  padding: 0 12px 16px; display: flex; flex-direction: column; gap: 18px;
   /* minimal, self-effacing scrollbar */
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
@@ -703,7 +714,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .sidebar::-webkit-scrollbar-track { background: transparent; }
 .sidebar::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
 .sidebar:hover::-webkit-scrollbar-thumb { background: var(--ink-3); background-clip: padding-box; }
-.side-brand { padding: 4px 4px; position: relative; display: flex; align-items: center; gap: 2px; }
+/* The workspace-header band: same fixed height as the topbar and top-aligned to the
+   viewport (the sidebar has no top padding), so "Roadmap" + search line up with the
+   topbar's title/breadcrumb across the seam. */
+.side-brand { height: var(--topbar-h); box-sizing: border-box; padding: 0 4px; position: relative; display: flex; align-items: center; gap: 2px; }
 .side-brand h1 { font-size: 16px; letter-spacing: -0.01em; }
 .side-brand .brand-glyph { width: 17px; height: 17px; }
 .side-eyebrow {
@@ -732,10 +746,13 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 .side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 
-/* topbar — thin, contextual (brand moved to the sidebar) */
+/* topbar — thin, contextual (brand moved to the sidebar). Fixed height so it
+   doesn't jump between board (title) and puck (breadcrumb + taller share button),
+   and so its content lines up with the sidebar's workspace-header band. */
 .topbar {
   justify-content: flex-start; align-items: center; gap: 12px;
-  padding: 12px 20px; position: sticky; top: 0; z-index: 20;
+  height: var(--topbar-h); box-sizing: border-box; padding: 0 20px;
+  position: sticky; top: 0; z-index: 20;
   background: var(--bg); border-bottom: 1px solid var(--line);
 }
 .topbar .search-wrap { flex: 1 1 auto; max-width: 440px; }
@@ -743,15 +760,21 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .menu-toggle { display: none; }
 .filters { padding: 10px 20px; }
 
+/* Suppress every transition during first paint, then app.js drops .preload.
+   Without this, iOS Safari animates the mobile drawer from its stylesheet
+   transform on load — the sidebar visibly slides out on every reload. */
+body.preload * { transition: none !important; }
+
 /* mobile: the sidebar becomes a slide-in drawer over a scrim */
 @media (max-width: 899px) {
   .app { grid-template-columns: 1fr; }
   .sidebar {
     position: fixed; left: 0; top: 0; bottom: 0; width: 264px; height: 100%;
     transform: translateX(-100%); transition: transform .2s ease; z-index: 60;
-    box-shadow: 2px 0 24px rgba(0, 0, 0, .34);
   }
-  .app.menu-open .sidebar { transform: none; }
+  /* Shadow only while the drawer is open — otherwise the closed, off-screen drawer's
+     24px blur bleeds past its right edge into the content. */
+  .app.menu-open .sidebar { transform: none; box-shadow: 2px 0 24px rgba(0, 0, 0, .34); }
   .menu-toggle { display: inline-flex; align-items: center; justify-content: center; }
   .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 55; }
   .scrim[hidden] { display: none; }
@@ -863,6 +886,39 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .cmdk-box .search-clear { top: 25px; right: 12px; }
 .cmdk-box .suggest { position: static; border: 0; border-radius: 0; box-shadow: none; max-height: 52vh; margin: 0; padding: 6px; background: var(--panel); }
 
+/* ── keyboard shortcut help overlay ("?") ── */
+.shortcut-help {
+  position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, .4);
+  display: flex; align-items: flex-start; justify-content: center; padding: 10vh 16px 16px;
+}
+.shortcut-help .sc-card {
+  width: 100%; max-width: 440px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
+}
+.shortcut-help .sc-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--line);
+}
+.shortcut-help .sc-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--ink); }
+.shortcut-help .sc-close {
+  border: 0; background: none; color: var(--ink-3); font-size: 14px; cursor: pointer;
+  padding: 2px 6px; border-radius: 6px; line-height: 1;
+}
+.shortcut-help .sc-close:hover { color: var(--ink); background: var(--panel-2); }
+.shortcut-help .sc-list { padding: 8px; max-height: 64vh; overflow: auto; }
+.shortcut-help .sc-row {
+  display: flex; align-items: center; gap: 12px; padding: 7px 8px; border-radius: 6px;
+}
+.shortcut-help .sc-row:hover { background: var(--panel-2); }
+.shortcut-help .sc-keys { display: flex; align-items: center; gap: 5px; flex: none; min-width: 116px; }
+.shortcut-help .sc-key {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+  padding: 2px 6px; min-width: 18px; text-align: center; background: var(--panel);
+}
+.shortcut-help .sc-then { font-size: 11px; color: var(--ink-3); }
+.shortcut-help .sc-desc { font-size: 13px; color: var(--ink); }
+
 /* ── priority: an optional ordered field (urgent/high/medium/low) ── */
 /* Card badge: ascending signal bars, urgent = a red "!" chip. */
 .pri { display: inline-flex; align-items: flex-end; gap: 2px; height: 11px; flex: none; line-height: 1; }
@@ -898,7 +954,13 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .cmdk-hint[hidden] { display: none; }
 
 /* topbar: desktop hides it (actions live in the sidebar); mobile shows ☰ + 🔍 */
-@media (min-width: 900px) { .topbar { display: none; } }
+/* Desktop shares the same contextual header (title / breadcrumb + share). Search
+   and New live permanently in the sidebar there, so drop them from the topbar. */
+@media (min-width: 900px) {
+  .topbar .top-search.ghost, .topbar .top-new.ghost { display: none; }
+  /* the sidebar is always present on desktop — no drawer to toggle */
+  .topbar .menu-toggle.ghost { display: none; }
+}
 .top-search { margin-left: auto; }
 .top-search svg { width: 18px; height: 18px; }
 
@@ -1013,11 +1075,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* ── mobile: view title moves into the topbar (fills the ☰ … 🔍 dead band) ──── */
 .top-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
 .top-title .view-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 899px) {
-  /* the vhead keeps only the view-options; the title is up in the topbar now */
-  .vhead .view-title, .vhead .view-count { display: none; }
-  .vhead .vopts { margin-left: 0; }
-}
+/* The title lives in the topbar on every width now, so the vhead carries only the
+   view-options (filter / sort / layout) — the "body" toolbar. */
+.vhead .view-title, .vhead .view-count { display: none; }
+.vhead .vopts { margin-left: 0; }
 
 /* ── uniform control height across the topbar + view-header ─────────────────── */
 .topbar .ghost,
@@ -1108,7 +1169,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px;
   font-size: 14px; color: var(--ink-3); /* sans-serif (inherit) → more compact than mono */
 }
-.crumb-back { font: inherit; background: none; border: 0; padding: 0; color: var(--ink-2); cursor: pointer; flex: none; }
+.crumb-back { font: inherit; background: none; border: 0; padding: 0; color: var(--ink-2); cursor: pointer; flex: 0 1 auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crumb-back:hover { color: var(--accent); }
 .top-crumb .crumb-sep { color: var(--ink-3); flex: none; }
 .crumb-title { color: var(--ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1122,8 +1183,8 @@ body.viewing-puck .topbar .top-share-btn { display: inline-flex; }
 .menu-toggle svg { width: 17px; height: 17px; }
 /* icon-only topbar buttons: guarantee a square, comfortable tap target */
 .topbar .ghost { min-width: 38px; }
-/* The topbar now carries the breadcrumb → drop the duplicate in-content one on mobile. */
-@media (max-width: 899px) { body.viewing-puck .detail-crumb { display: none; } }
+/* The topbar carries the breadcrumb on every width → drop the in-content one. */
+body.viewing-puck .detail-crumb { display: none; }
 
 /* ── optional config-driven ribbon (e.g. the live-demo strip) ──────────────── */
 .demo-ribbon {

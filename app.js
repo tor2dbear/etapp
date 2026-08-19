@@ -13,6 +13,12 @@
     return;
   }
 
+  // Drop the transition-suppression guard once the first frame has painted, so
+  // real interactions animate but the initial load never does (see .preload CSS).
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () { document.body.classList.remove("preload"); });
+  });
+
   var STATUS_LABEL = { now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" };
   // Terminal statuses: settled, hidden from the active board unless "show done" is on.
   var TERMINAL = { done: 1, cancelled: 1 };
@@ -124,6 +130,7 @@
     var out = [];
     var lines = esc(src).split("\n");
     var inList = false;
+    var listType = null; // "ul" (bullets) | "ol" (numbered)
     var para = []; // buffer of wrapped lines that form one paragraph
     var liBuf = null; // buffer of wrapped lines that form one list item
     var inCode = false;
@@ -135,7 +142,7 @@
       if (liBuf) { out.push("<li>" + mdInline(liBuf.join(" ")) + "</li>"); liBuf = null; }
     }
     function closeList() {
-      if (inList) { flushLi(); out.push("</ul>"); inList = false; }
+      if (inList) { flushLi(); out.push("</" + listType + ">"); inList = false; listType = null; }
     }
     function flushCode() {
       if (code.length) { out.push("<pre><code>" + code.join("\n") + "</code></pre>"); code = []; }
@@ -149,7 +156,11 @@
       }
       if (inCode) { code.push(line); continue; }
       var h = /^(#{2,4})\s+(.*)$/.exec(line);
-      var li = /^\s*[-*]\s+(.*)$/.exec(line);
+      var ul = /^\s*[-*]\s+(.*)$/.exec(line);
+      var ol = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+      var li = ul || ol;
+      var wantType = ul ? "ul" : (ol ? "ol" : null);
+      var liContent = ul ? ul[1] : (ol ? ol[2] : null);
       if (h) {
         flushPara();
         closeList();
@@ -157,9 +168,15 @@
         out.push("<h" + lvl + ">" + mdInline(h[2]) + "</h" + lvl + ">");
       } else if (li) {
         flushPara();
+        if (inList && listType !== wantType) closeList(); // switching bullets ↔ numbered
         flushLi(); // close the previous item before starting this one
-        if (!inList) { out.push("<ul>"); inList = true; }
-        liBuf = [li[1]]; // buffer so soft-wrapped lines fold into this item
+        if (!inList) {
+          // Preserve an author's starting number (a section that resumes at "3.").
+          var openTag = "<" + wantType + ">";
+          if (wantType === "ol" && parseInt(ol[1], 10) !== 1) openTag = '<ol start="' + parseInt(ol[1], 10) + '">';
+          out.push(openTag); inList = true; listType = wantType;
+        }
+        liBuf = [liContent]; // buffer so soft-wrapped lines fold into this item
       } else if (line.trim() === "") {
         flushPara();
         closeList();
@@ -374,9 +391,20 @@
   }
 
   // ── deep links: #<item.id> opens that puck's modal ──
+  // Opening a *different* puck pushes a new history entry so the browser Back
+  // button returns to where you were; re-rendering the same open puck (after an
+  // edit) or clearing the hash replaces in place, so history never piles up.
   function setHash(id) {
     var base = location.pathname + location.search;
-    try { history.replaceState(null, "", id ? base + "#" + id : base); } catch (e) {}
+    var url = id ? base + "#" + id : base;
+    var curId = decodeURIComponent(location.hash.replace(/^#/, ""));
+    // Mark entries we push so boot can tell a reload of an app-opened puck (state
+    // set) from a genuine direct deep link (no state) and not duplicate the board.
+    var st = id ? { puck: id } : null;
+    try {
+      if (id && id !== curId) history.pushState(st, "", url);
+      else history.replaceState(st, "", url);
+    } catch (e) {}
   }
   function itemFromHash() {
     var h = decodeURIComponent(location.hash.replace(/^#/, ""));
@@ -422,7 +450,8 @@
     });
     document.body.appendChild(modalBackdrop);
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") closeModal();
+      // Defer to the palette/help layers — their own Escape unwinds them first.
+      if (e.key === "Escape" && !cmdkVisible() && !helpOpen()) closeModal();
     });
   }
 
@@ -440,6 +469,7 @@
   // A property row: mono key + value node. Add a field = add a row (growable).
   function propRow(k, valNode, cls) {
     var row = el("div", "prop" + (cls ? " prop-" + cls : ""));
+    row.dataset.field = String(k).toLowerCase(); // lets keyboard shortcuts target a field
     row.appendChild(el("span", "prop-k", k));
     var v = el("div", "prop-v");
     if (valNode != null) v.appendChild(valNode);
@@ -553,7 +583,7 @@
     container.style.setProperty("--repo", item.repoColor);
 
     var crumb = el("div", "detail-crumb");
-    var home = el("button", "crumb-home", "← " + (VIEW_TITLES[state.focus] || "Board"));
+    var home = el("button", "crumb-home", "← " + currentViewTitle());
     home.type = "button";
     home.title = "Back to the board";
     home.addEventListener("click", function () { closeModal(); });
@@ -929,7 +959,7 @@
     var tc = document.getElementById("topCrumb");
     if (tc) {
       tc.innerHTML = "";
-      var back = el("button", "crumb-back", VIEW_TITLES[state.focus] || "Pucks");
+      var back = el("button", "crumb-back", currentViewTitle());
       back.type = "button";
       back.addEventListener("click", function () { closeModal(); });
       tc.appendChild(back);
@@ -948,17 +978,27 @@
   }
 
   function closeModal() {
-    if (location.hash) setHash(null);
     if (modalBackdrop) {
       modalBackdrop.hidden = true;
       modalBackdrop.style.top = "";
       document.body.classList.remove("modal-open");
     }
-    closeDetail();
+    // Pop the entry this puck pushed, so the URL + history stay in sync and a
+    // Forward press re-opens it; popstate then runs closeDetail. When there's no
+    // hash (nothing pushed), close directly.
+    if (location.hash) history.back();
+    else closeDetail();
   }
   // Navigating the sidebar (a view/repo/tag/agent) while a puck is open should
   // return to the board — otherwise the board changes behind the still-open puck.
-  function exitPuckView() { if (document.body.classList.contains("viewing-puck")) closeModal(); }
+  // Unlike closeModal (which pops one entry), this normalizes straight to the board:
+  // history.back() would only return to the *previous* puck in a board→A→B stack and
+  // reopen it over the newly-picked view, so close in place and strip the hash.
+  function exitPuckView() {
+    if (!document.body.classList.contains("viewing-puck")) return;
+    closeDetail();
+    if (location.hash) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {} }
+  }
   function closeDetail() {
     paneRefs();
     selectedId = null;
@@ -967,7 +1007,9 @@
     highlightSelected();
   }
 
-  // A compact list row — denser than a card, one vertical column, tap → modal.
+  // A table row — full-width, aligned columns (Name · Priority · Agent · Repo ·
+  // Updated), Linear-style. Grid tracks are shared across rows so the columns
+  // line up; on mobile the extra columns fold away (see styles.css). Tap → modal.
   function listRow(item) {
     var sig = signalMessages(item);
     var r = el("div", "list-row" + (sig.length ? " flagged" : "") + (item.id === selectedId ? " sel" : ""));
@@ -975,21 +1017,39 @@
     r.style.setProperty("--repo", item.repoColor);
     r.title = item.repoName;
     r.appendChild(puckGlyph(item));
-    // title + meta share a wrapping row: inline (date right) on desktop, stacked
-    // (date on its own line below the title) on mobile.
-    var body = el("div", "list-body");
-    body.appendChild(el("span", "list-title", item.title));
-    var meta = el("div", "list-meta");
+
+    // Name: title (truncates) + inline drift/blocked badges.
+    var name = el("div", "list-name");
+    name.appendChild(el("span", "list-title", item.title));
     if (sig.length) {
       var warn = el("span", "warn-badge", "⚠");
       warn.title = sig.join("\n");
-      meta.appendChild(warn);
+      name.appendChild(warn);
     }
-    if (item.agent) meta.appendChild(agentBadge(item.agent));
-    if ((item.blockedBy || []).length) meta.appendChild(blockBadge(item));
-    if (item.updated) meta.appendChild(dateEl(item.updated, "list-date"));
-    body.appendChild(meta);
-    r.appendChild(body);
+    if ((item.blockedBy || []).length) name.appendChild(blockBadge(item));
+    r.appendChild(name);
+
+    // Priority · Agent · Repo · Updated — each its own aligned cell (empty cells
+    // still hold their track so rows stay in register).
+    var pri = el("div", "list-cell list-pri");
+    if (item.priority) pri.appendChild(priorityBadge(item.priority));
+    r.appendChild(pri);
+
+    var ag = el("div", "list-cell list-agent");
+    if (item.agent) ag.appendChild(agentBadge(item.agent));
+    r.appendChild(ag);
+
+    var rp = el("div", "list-cell list-repo");
+    var dot = el("span", "repo-dot");
+    dot.style.background = item.repoColor;
+    rp.appendChild(dot);
+    rp.appendChild(el("span", "repo-name", item.repoName));
+    r.appendChild(rp);
+
+    var dt = el("div", "list-cell list-dt");
+    if (item.updated) dt.appendChild(dateEl(item.updated, "list-date"));
+    r.appendChild(dt);
+
     r.addEventListener("click", function () { openModal(item); });
     return r;
   }
@@ -1137,10 +1197,22 @@
     if (state.priorityFilter) p.push(PRIORITY_LABEL[state.priorityFilter]);
     return p;
   }
-  function updateViewHeader(shown) {
+  // The full view title, place scope included ("Inbox · Etapp") — the single
+  // source for both the view header and the detail breadcrumb's back label, so a
+  // place-scoped view reads the same whether or not a puck is open.
+  function currentViewTitle() {
     var base = VIEW_TITLES[state.focus] || "All pucks";
     var scope = scopeParts();
-    var title = scope.length ? base + " · " + scope.join(", ") : base;
+    if (!scope.length) return base;
+    // "All pucks" is the default view — when you've navigated into a place (a repo
+    // or agent) the place *is* the context, so lead with it instead of prefixing
+    // the redundant "All pucks ·". A tag/priority *filter* is a refinement, not a
+    // place, so it keeps the view name ("All pucks · #ui"). Named views too.
+    if (state.focus === "all" && placeActive()) return scope.join(", ");
+    return base + " · " + scope.join(", ");
+  }
+  function updateViewHeader(shown) {
+    var title = currentViewTitle();
     var count = shown != null ? String(shown) : "";
     // Desktop: title lives in the view-header. Mobile: in the topbar (fills the
     // otherwise-empty band between the menu and search). CSS shows one per width.
@@ -1151,6 +1223,8 @@
   // ── filter chips ──
   function buildRepoChips() {
     var wrap = document.getElementById("repoFilters");
+    if (!wrap) return;
+    wrap.innerHTML = ""; // idempotent — refreshNav rebuilds this on every nav change
     DATA.sources.forEach(function (s) {
       var chip = el("button", "chip repo");
       chip.dataset.repo = s.repo;
@@ -1162,12 +1236,7 @@
       var n = el("span", "n", String(s.count));
       chip.appendChild(n);
       chip.title = s.blurb + (s.native ? "" : " — adapted from " + s.adapter);
-      chip.addEventListener("click", function () {
-        exitPuckView();
-        pickScope(state.repos, s.repo, wrap, "repo");
-        renderBoard();
-        maybeCloseMenu();
-      });
+      chip.addEventListener("click", function () { goToPlace(state.repos, s.repo); });
       wrap.appendChild(chip);
     });
   }
@@ -1193,7 +1262,7 @@
       chip.appendChild(el("span", "agent-arrow", "→"));
       chip.appendChild(document.createTextNode(agentLabel(a)));
       chip.appendChild(el("span", "n", String(counts[a])));
-      chip.addEventListener("click", function () { exitPuckView(); pickScope(state.agents, a, wrap, "agent"); renderBoard(); maybeCloseMenu(); });
+      chip.addEventListener("click", function () { goToPlace(state.agents, a); });
       wrap.appendChild(chip);
     });
   }
@@ -1205,20 +1274,43 @@
 
   // Sidebar repos/agents are places, not filters: single-select within their own
   // dimension (radio, not checkbox). Clicking a repo scopes to exactly that repo;
-  // clicking the one that's already the sole scope clears it (back to the view).
-  // Repo and agent stay orthogonal, so "Backend, within Etapp" still composes. The
-  // set stays a Set so passesFilters is untouched and the Filter popover can still
-  // offer the same dimensions as multi-select later. `attr` is the dataset key each
-  // chip stores its value under, so siblings refresh their pressed state together.
-  function pickScope(set, key, wrap, attr) {
+  // clicking the one that's already the sole scope clears it (back to All pucks).
+  // Repo and agent stay orthogonal, so "Backend, within Etapp" still composes.
+  function pickScope(set, key) {
     var wasSole = set.size === 1 && set.has(key);
     set.clear();
     if (!wasSole) set.add(key);
-    Array.prototype.forEach.call(wrap.children, function (c) {
-      if (c.dataset && c.dataset[attr] != null) {
-        c.setAttribute("aria-pressed", set.has(c.dataset[attr]) ? "true" : "false");
-      }
-    });
+  }
+  // A place (repo/agent) is active → the sidebar is "in" that place, not in a view.
+  function placeActive() { return state.repos.size > 0 || state.agents.size > 0; }
+  // Rebuild the whole sidebar nav so views + repo + agent pressed states stay in
+  // sync after any navigation (they're one mutually-exclusive dimension now).
+  function refreshNav() {
+    var host = document.getElementById("sideViews") || document.getElementById("filters");
+    if (host) { host.innerHTML = ""; buildFocusControl(); }
+    buildRepoChips();
+    buildAgentChips();
+  }
+  // Go to a view: clear any place so the view is global ("pure"), not still scoped
+  // to the repo/agent you were last in.
+  function goToView(key) {
+    exitPuckView();
+    state.focus = key;
+    state.repos.clear();
+    state.agents.clear();
+    refreshNav();
+    renderBoard();
+    maybeCloseMenu();
+  }
+  // Go to a place: single-select it and reset to its whole board (focus "all"), so a
+  // place always shows the same thing regardless of the view you came from.
+  function goToPlace(set, key) {
+    exitPuckView();
+    pickScope(set, key);
+    state.focus = "all";
+    refreshNav();
+    renderBoard();
+    maybeCloseMenu();
   }
 
   // Views — the primary navigation: All pucks (the committed board) · Ready (the
@@ -1245,39 +1337,26 @@
       { key: "inbox", label: "Inbox", title: "Raw ideas to triage — nothing here is a promise yet" },
     ];
     if (counts.attention) defs.push({ key: "attention", label: "Needs attention", title: "Pucks whose declared status disagrees with reality" });
-    var btns = {};
+    // A view reads as active only when we're not inside a place — otherwise the
+    // sidebar would highlight both "All pucks" and the repo you navigated into.
+    var inPlace = placeActive();
     defs.forEach(function (d) {
-      var b = el("button", "focusbtn focus-" + d.key + (state.focus === d.key ? " on" : ""));
+      var on = state.focus === d.key && !inPlace;
+      var b = el("button", "focusbtn focus-" + d.key + (on ? " on" : ""));
       b.type = "button";
       b.title = d.title;
-      b.setAttribute("aria-pressed", state.focus === d.key ? "true" : "false");
+      b.setAttribute("aria-pressed", on ? "true" : "false");
       b.appendChild(el("span", "focus-label", d.label));
       if (counts[d.key]) b.appendChild(el("span", "focus-n", String(counts[d.key])));
-      b.addEventListener("click", function () {
-        exitPuckView();
-        state.focus = d.key;
-        Object.keys(btns).forEach(function (k) {
-          btns[k].classList.toggle("on", k === d.key);
-          btns[k].setAttribute("aria-pressed", k === d.key ? "true" : "false");
-        });
-        renderBoard();
-        maybeCloseMenu();
-      });
-      btns[d.key] = b;
+      b.addEventListener("click", function () { goToView(d.key); });
       seg.appendChild(b);
     });
     var host = document.getElementById("sideViews") || document.getElementById("filters");
     host.appendChild(seg);
   }
-  // Switch the active view (used by the sidebar rows and the ⌘K palette).
-  function setFocus(key) {
-    exitPuckView();
-    state.focus = key;
-    var host = document.getElementById("sideViews") || document.getElementById("filters");
-    if (host) { host.innerHTML = ""; buildFocusControl(); }
-    renderBoard();
-    maybeCloseMenu();
-  }
+  // Switch the active view (used by the ⌘K palette). Same as a sidebar view click:
+  // clears any place so the view is global.
+  function setFocus(key) { goToView(key); }
 
   // ── theme ──
   var root = document.documentElement;
@@ -1382,6 +1461,7 @@
     cmds.push({ __cmd: true, label: "Go to Inbox", hint: "View", icon: "list", run: function () { setFocus("inbox"); } });
     if (vc.attention) cmds.push({ __cmd: true, label: "Go to Needs attention", hint: "View", icon: "list", run: function () { setFocus("attention"); } });
     cmds.push({ __cmd: true, label: "Settings", hint: "Workspace", icon: "sliders", run: function () { openSettingsPanel(); } });
+    cmds.push({ __cmd: true, label: "Keyboard shortcuts", hint: "Help", icon: "list", run: function () { toggleShortcutHelp(); } });
     cmds.push({ __cmd: true, label: effectiveIsDark() ? "Switch to light" : "Switch to dark", hint: "Theme", icon: effectiveIsDark() ? "sun" : "moon", run: function () { toggleTheme(); } });
     if (signedIn) {
       cmds.push({ __cmd: true, label: "Change token", hint: "Account", icon: "key", run: function () { openTokenPanel(afterAuth); } });
@@ -1416,6 +1496,15 @@
     // Quick-capture: type a line → create an inbox stub straight from ⌘K.
     if (ghToken() && raw) out.push({ __create: true, title: raw });
     return out;
+  }
+
+  // Swallow the very next click at the capture phase (once), so a tap that acted on
+  // pointerdown and closed an overlay can't fall through to whatever is now beneath
+  // the pointer. Self-clears on that click, or after a short window if none fires.
+  function swallowNextClick() {
+    var shield = function (ev) { ev.stopPropagation(); ev.preventDefault(); clearTimeout(t); document.removeEventListener("click", shield, true); };
+    var t = setTimeout(function () { document.removeEventListener("click", shield, true); }, 700);
+    document.addEventListener("click", shield, true);
   }
 
   function renderSuggestions() {
@@ -1457,6 +1546,10 @@
       li.addEventListener("pointerdown", function (e) {
         e.preventDefault();
         chooseSuggestion(it);
+        // Acting on pointerdown hides the overlay before this tap's trailing click
+        // (and iOS's ~300ms ghost click) fires — which would otherwise fall through
+        // to the card/puck now revealed underneath. Swallow that next click once.
+        swallowNextClick();
       });
       if (idx === suggestIndex) li.scrollIntoView({ block: "nearest" });
       suggestEl.appendChild(li);
@@ -1529,17 +1622,143 @@
   }
   cmdkTriggers.forEach(function (t) { if (t) t.addEventListener("click", function () { openCmdk(); maybeCloseMenu(); }); });
   if (cmdkOverlay) cmdkOverlay.addEventListener("mousedown", function (e) { if (e.target === cmdkOverlay) closeCmdk(); });
+
+  // ── keyboard shortcuts (Linear-inspired) ──
+  // A single global keydown layer. Gating: never fire while typing in a field, and
+  // never let a bare key act while a modal/palette owns the keyboard.
+  function isTyping(t) {
+    return !!(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable));
+  }
+  function cmdkVisible() { return !!(cmdkOverlay && !cmdkOverlay.hidden); }
+  function anyModalOpen() {
+    // The New/Settings panels + prompts add .modal-open; the puck detail never does
+    // (it uses .viewing-puck), so this is true exactly when such a panel owns the
+    // screen — including when it was launched over an already-open puck.
+    return document.body.classList.contains("modal-open");
+  }
+  function detailOpen() { return document.body.classList.contains("viewing-puck"); }
+  function helpOpen() { return !!document.querySelector(".shortcut-help"); }
+
+  // Click the editable control of a detail property row (status/priority/agent/labels).
+  function triggerField(field) {
+    if (!detailOpen()) return false;
+    var row = document.querySelector('.prop[data-field="' + field + '"]');
+    if (!row) return false;
+    var btn = row.querySelector(".prop-v .pick-chip.editable, .prop-v .linklike");
+    if (!btn) return false;
+    btn.click();
+    return true;
+  }
+
+  // "G then <letter>" jumps to a view, Linear-style. A short-lived pending flag.
+  var gPending = false, gTimer = null;
+  function armG() { gPending = true; clearTimeout(gTimer); gTimer = setTimeout(function () { gPending = false; }, 1200); }
+  function clearG() { gPending = false; clearTimeout(gTimer); }
+
   document.addEventListener("keydown", function (e) {
     var k = e.key.toLowerCase();
-    if ((e.metaKey || e.ctrlKey) && k === "k") { e.preventDefault(); cmdkOverlay && cmdkOverlay.hidden ? openCmdk() : closeCmdk(); return; }
-    // "/" opens search when not already typing in a field
-    if (k === "/" && !e.metaKey && !e.ctrlKey) {
-      var t = e.target;
-      var typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
-      if (!typing) { e.preventDefault(); openCmdk(); return; }
+
+    // ⌘K / Ctrl-K toggles the palette from anywhere (even while typing).
+    if ((e.metaKey || e.ctrlKey) && k === "k") { e.preventDefault(); cmdkVisible() ? closeCmdk() : openCmdk(); return; }
+
+    // Escape unwinds exactly one layer: help → palette → (else) the puck detail,
+    // which the modal-backdrop's own Escape listener closes. Consume the event for
+    // the layers we handle so that later listener can't also fire and unwind two.
+    if (k === "escape") {
+      if (helpOpen()) { closeShortcutHelp(); e.stopImmediatePropagation(); return; }
+      if (cmdkVisible()) { closeCmdk(); e.stopImmediatePropagation(); return; }
+      // An open property picker (status/priority/agent/labels) is the top layer —
+      // dismiss it first instead of letting the backdrop listener close the puck.
+      var openPick = document.querySelector(".pick-menu");
+      if (openPick) { openPick.remove(); e.stopImmediatePropagation(); e.preventDefault(); return; }
+      return; // a bare puck: let the backdrop listener run closeModal()
     }
-    if (k === "escape" && cmdkOverlay && !cmdkOverlay.hidden) { closeCmdk(); }
+
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    // While the shortcut-help overlay is open it owns the keyboard: only "?" (to
+    // toggle it back off) does anything; every other bare key is swallowed.
+    if (helpOpen()) {
+      if (k === "?") { e.preventDefault(); closeShortcutHelp(); }
+      return;
+    }
+
+    // Suppress bare commands while typing, while the palette is open, or while a
+    // modal panel (New/Settings/prompt) owns the screen — including over an open puck.
+    if (isTyping(e.target) || cmdkVisible() || anyModalOpen()) return;
+
+    // "G <letter>" view jumps.
+    if (gPending) {
+      var jumped = true;
+      if (k === "a") setFocus("all");
+      else if (k === "r") setFocus("ready");
+      else if (k === "i") setFocus("inbox");
+      else if (k === "t") setFocus("attention");
+      else jumped = false;
+      clearG();
+      if (jumped) { e.preventDefault(); return; }
+    }
+
+    // Field shortcuts only make sense with a puck open.
+    if (detailOpen()) {
+      if (k === "s") { if (triggerField("status")) e.preventDefault(); return; }
+      if (k === "p") { if (triggerField("priority")) e.preventDefault(); return; }
+      if (k === "a") { if (triggerField("agent")) e.preventDefault(); return; }
+      if (k === "l") { if (triggerField("labels")) e.preventDefault(); return; }
+    }
+
+    // Global commands.
+    if (k === "c") { e.preventDefault(); openNewPuckPanel(); return; }
+    if (k === "/") { e.preventDefault(); openCmdk(); return; }
+    if (k === "g") { e.preventDefault(); armG(); return; }
+    if (k === "?") { e.preventDefault(); toggleShortcutHelp(); return; }
   });
+
+  // ── shortcut help overlay ("?") ──
+  var SHORTCUTS = [
+    { keys: ["C"], desc: "Capture a new puck" },
+    { keys: ["/"], desc: "Search / command palette" },
+    { keys: ["⌘", "K"], desc: "Command palette" },
+    { keys: ["G", "then", "A"], desc: "Go to All pucks" },
+    { keys: ["G", "then", "R"], desc: "Go to Ready" },
+    { keys: ["G", "then", "I"], desc: "Go to Inbox" },
+    { keys: ["G", "then", "T"], desc: "Go to Needs attention" },
+    { keys: ["S"], desc: "Set status (open puck)" },
+    { keys: ["P"], desc: "Set priority (open puck)" },
+    { keys: ["A"], desc: "Set agent (open puck)" },
+    { keys: ["L"], desc: "Edit labels (open puck)" },
+    { keys: ["Esc"], desc: "Close / back out" },
+    { keys: ["?"], desc: "This help" },
+  ];
+  function closeShortcutHelp() { var o = document.querySelector(".shortcut-help"); if (o) o.remove(); }
+  function toggleShortcutHelp() {
+    if (helpOpen()) { closeShortcutHelp(); return; }
+    var overlay = el("div", "shortcut-help");
+    var card = el("div", "sc-card");
+    var head = el("div", "sc-head");
+    head.appendChild(el("h2", "sc-title", "Keyboard shortcuts"));
+    var x = el("button", "sc-close", "✕"); x.type = "button";
+    x.addEventListener("click", closeShortcutHelp);
+    head.appendChild(x);
+    card.appendChild(head);
+    var list = el("div", "sc-list");
+    SHORTCUTS.forEach(function (s) {
+      var row = el("div", "sc-row");
+      var keys = el("div", "sc-keys");
+      s.keys.forEach(function (kk) {
+        if (kk === "then") keys.appendChild(el("span", "sc-then", "then"));
+        else keys.appendChild(el("kbd", "sc-key", kk));
+      });
+      row.appendChild(keys);
+      row.appendChild(el("div", "sc-desc", s.desc));
+      list.appendChild(row);
+    });
+    card.appendChild(list);
+    overlay.appendChild(card);
+    // Click the backdrop (not the card) to dismiss. Esc is handled globally.
+    overlay.addEventListener("mousedown", function (e) { if (e.target === overlay) closeShortcutHelp(); });
+    document.body.appendChild(overlay);
+  }
 
   var searchClear = document.getElementById("searchClear");
   var cmdkHint = document.getElementById("cmdkHint");
@@ -2656,11 +2875,35 @@
     else { copyText(url, function () { toast("✓ Link copied"); }); }
   });
 
-  var deepItem = itemFromHash();
-  if (deepItem) openModal(deepItem);
-  window.addEventListener("hashchange", function () {
+  // Reflect the URL into the view without touching history (used by Back/Forward
+  // and manual hash edits). Idempotent so popstate + hashchange firing together
+  // for one navigation doesn't double-render.
+  function syncHash() {
     var it = itemFromHash();
-    if (it) openModal(it);
-    else closeModal();
-  });
+    if (it) {
+      if (!(currentDetailItem && currentDetailItem.id === it.id && document.body.classList.contains("viewing-puck"))) openDetail(it);
+    } else if (document.body.classList.contains("viewing-puck")) {
+      closeDetail();
+    }
+  }
+  var deepItem = itemFromHash();
+  if (deepItem) {
+    if (history.state && history.state.puck === deepItem.id) {
+      // Reload of a puck we opened earlier — the board entry is already behind it,
+      // so just re-show it. (Synthesizing again would stack board → board → #puck
+      // and make the first Back appear to do nothing.)
+      openDetail(deepItem);
+    } else {
+      // Genuine direct deep link: put a board entry behind, then a marked puck entry,
+      // so Back returns to the board and a later reload takes the branch above.
+      try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
+      openModal(deepItem);
+    }
+  } else if (location.hash) {
+    // A hash pointing at a deleted/unknown puck: normalize to the board URL now, so
+    // opening a puck later doesn't pushState over a stale hash that Back would restore.
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
+  }
+  window.addEventListener("popstate", syncHash);
+  window.addEventListener("hashchange", syncHash);
 })();
