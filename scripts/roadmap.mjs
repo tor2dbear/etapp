@@ -149,14 +149,14 @@ async function cmdNew() {
     `created: ${TODAY}`,
     "---",
     "",
-    "## Mål",
+    "## Goal",
     "",
     "",
     "## Research",
     "",
     "",
-    "## Öppna frågor",
-    "- ",
+    "## Open questions",
+    "",
     "",
   ].join("\n");
 

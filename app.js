@@ -2127,7 +2127,11 @@
     save.type = "button"; cancel.type = "button";
     actions.appendChild(save); actions.appendChild(cancel);
     bodyEl.innerHTML = ""; bodyEl.appendChild(ta); bodyEl.appendChild(actions);
+    // Auto-grow so the whole body is visible without an inner scrollbar (nicer on mobile).
+    function autoGrow() { ta.style.height = "auto"; ta.style.height = Math.max(200, ta.scrollHeight + 2) + "px"; }
+    ta.addEventListener("input", autoGrow);
     ta.focus();
+    setTimeout(autoGrow, 0);
     function restore(md) { bodyEl.innerHTML = renderMd(md || "(no details)"); editBtn.style.display = ""; }
     cancel.addEventListener("click", function () { restore(item.body); });
     save.addEventListener("click", function () {
@@ -2160,13 +2164,28 @@
   }
 
   // The new-puck file body — mirrors `roadmap new` in scripts/roadmap.mjs.
+  // New-puck body skeleton: a spiked-but-driftable structure. Config-driven via
+  // board.config.json `sections` (array or comma string); default English trio.
+  // Set it to [] for an empty body (let the AI fill it in the refine step).
+  function templateSections() {
+    var s = CFG.sections;
+    if (Array.isArray(s)) return s.filter(Boolean);
+    if (typeof s === "string") return s.split(",").map(function (x) { return x.trim(); }).filter(Boolean);
+    return ["Goal", "Research", "Open questions"];
+  }
+  function puckBody() {
+    var secs = templateSections();
+    if (!secs.length) return "";
+    return secs.map(function (name) { return "## " + name + "\n\n"; }).join("\n");
+  }
   function puckTemplate(title, status, tags, agent) {
     var t = /[:#]/.test(title) ? JSON.stringify(title) : title;
     var lines = ["---", "title: " + t, "status: " + status];
     if (tags.length) lines.push("tags: [" + tags.join(", ") + "]");
     if (agent) lines.push("agent: " + agent);
-    lines.push("updated: " + today(), "created: " + today(), "---", "", "## Mål", "", "", "## Research", "", "", "## Öppna frågor", "- ", "");
-    return lines.join("\n");
+    lines.push("updated: " + today(), "created: " + today(), "---", "");
+    var body = puckBody();
+    return lines.join("\n") + (body ? "\n" + body : "");
   }
 
   // Where a repo keeps its pucks + which branch — derived from an existing item
@@ -2206,7 +2225,7 @@
     var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0] || {};
     var meta = sourceMeta(repo);
     var path = meta.dir + "/" + slug + ".md";
-    var body = "## Mål\n\n\n## Research\n\n\n## Öppna frågor\n- ";
+    var body = puckBody();
     var item = {
       id: id, repo: repo, repoName: src.name || short, repoColor: src.color || "#888888",
       issueState: null, slug: slug, title: title, status: status, tags: tags, updated: today(),
@@ -2526,6 +2545,7 @@
         var cfg = {};
         try { cfg = JSON.parse(b64decode(info.content)); } catch (e) {}
         cfg.title = next.title; cfg.description = next.description; cfg.repoUrl = next.repoUrl;
+        if (next.sections) cfg.sections = next.sections;
         var out = JSON.stringify(cfg, null, 2) + "\n";
         return fetch(api, {
           method: "PUT",
@@ -2551,11 +2571,13 @@
     var title = settingsField(p, "Name (organisation / workspace)", CFG.title || "");
     var desc = settingsField(p, "Description", CFG.description || "");
     var url = settingsField(p, "Source URL", CFG.repoUrl || "");
+    var sections = settingsField(p, "New-puck sections", templateSections().join(", "));
+    p.appendChild(el("p", "set-note", "Headings a fresh puck starts with (comma-separated). Leave empty for a blank body the AI fills in."));
     if (!ghToken()) {
-      [title, desc, url].forEach(function (i) { i.disabled = true; });
+      [title, desc, url, sections].forEach(function (i) { i.disabled = true; });
       p.appendChild(el("p", "set-note warn", "Sign in to edit these."));
     } else if (repo && readOnlyRepos.has(repo)) {
-      [title, desc, url].forEach(function (i) { i.disabled = true; });
+      [title, desc, url, sections].forEach(function (i) { i.disabled = true; });
       p.appendChild(el("p", "set-note warn", "Read-only — your token has no write access to " + repo + "."));
     }
 
@@ -2577,11 +2599,12 @@
     save.disabled = !canGit;
     save.addEventListener("click", function () {
       if (!canGit) { close(); return; }
-      var next = { title: title.value.trim(), description: desc.value.trim(), repoUrl: url.value.trim() };
+      var next = { title: title.value.trim(), description: desc.value.trim(), repoUrl: url.value.trim(),
+        sections: sections.value.split(",").map(function (x) { return x.trim(); }).filter(Boolean) };
       save.disabled = true; toast("Saving…");
       commitConfig(repo, next)
         .then(function () {
-          CFG.title = next.title; CFG.description = next.description; CFG.repoUrl = next.repoUrl;
+          CFG.title = next.title; CFG.description = next.description; CFG.repoUrl = next.repoUrl; CFG.sections = next.sections;
           if (next.title) { document.title = next.title; var h1 = document.querySelector(".brand h1"); if (h1) h1.textContent = next.title; }
           var sl = document.getElementById("sourceLink"); if (sl && next.repoUrl) sl.href = next.repoUrl;
           toast("✓ Saved — live after next sync"); close();
