@@ -77,7 +77,7 @@ order: 10
 | `issue`   | no       | The working issue number in the repo, when the puck is in progress. |
 | `order`   | no       | Manual order **within** a status column (lower = higher up). Falls back to `updated`. |
 | `parent`  | no       | The etapp this puck belongs to: another puck's slug in the same repo, or `owner/repo#slug` anywhere on the board. One line pointing **up** — the level above is a puck with children, not a new file type. Set with `roadmap parent <slug> <parent-slug>` (`--clear` to take it out). |
-| `depends` | no       | Inline array of same-repo puck slugs this one is blocked by, e.g. `[deploy-simplification]`. The board shows ⛔ until every listed puck is `done`. |
+| `depends` | no       | Inline array of the pucks this one is blocked by — a slug in the same repo, or `owner/repo#slug` anywhere on the board, e.g. `[deploy-simplification, tor2dbear/pia-terminal#vfs]`. The board shows ⛔ until every listed puck is settled. Set with `roadmap depends <slug> +<ref> -<ref>`. |
 | `owner`   | no       | GitHub handle of the owner, e.g. `octocat`. Renders as an avatar on the card and a profile link in the modal. A field, not an assignee database. |
 | `agent`   | no       | Discipline this puck is routed to (`backend`, `design`, `research`, …) — the PO-layer's routing state. A handle, not an orchestrator: a runner reads it from git and picks the matching `agents/<name>.md` profile. Set with `roadmap agent <slug> <name>`. |
 
@@ -176,6 +176,33 @@ ever rewritten for you.
 This is deliberately *not* sprints, story points or capacity planning — those stay
 off the roadmap. It is one optional field that answers "when, roughly?".
 
+### Dependencies (`depends`)
+
+`depends:` is the sequencing axis: *what has to land before this one can start.*
+Same reference form as `parent` — a slug at home, `owner/repo#slug` across repos,
+which is the whole point of a cross-repo board:
+
+```yaml
+depends: [deploy-simplification, tor2dbear/pia-terminal#vfs]
+```
+
+Only the blocked puck stores anything. The harvester resolves the list into
+`blockedBy` — everything declared that isn't settled yet, so **empty means ready** —
+and the reverse edge `blocks` (what this puck holds up), which is its exact mirror.
+There is deliberately no `blocks:` field to author: two fields pointing at each other
+is a second source of truth in miniature. A `done` or `cancelled` puck waits for
+nothing and holds nothing up, so its edges count in neither direction.
+
+A dependency that names nothing keeps blocking and is flagged `depends-missing`.
+That matters: dropping it would call the puck ready while its author believes it is
+blocked — an unknown blocker is not a finished one. A loop is flagged
+`dependency-cycle` on every puck in it; unlike an etapp parent, no single link can be
+cut to fix it, so the edges stand and a human decides. A puck depending on itself is
+the same error with one node, kept rather than quietly discarded.
+
+Set it with `roadmap depends <slug> +<ref> -<ref>` (`--clear` empties it), or from
+the puck's **Blocked by** row on the board.
+
 ### The level above (`parent`)
 
 Linear has projects *and* issues; here there is one shape. A puck that other pucks
@@ -215,6 +242,7 @@ roadmap tag <slug> +add -remove
 roadmap priority <slug> <level>    # urgent|high|medium|low (--clear to remove)
 roadmap target <slug> 2026-11      # the horizon; a month = its last day
 roadmap parent <slug> <etapp-slug> # put it in an etapp (--clear to take it out)
+roadmap depends <slug> +a -b       # edit blockers (--clear to remove all)
 roadmap list                       # overview
 roadmap install-hook               # auto-bump `updated` on every commit
 ```

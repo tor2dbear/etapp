@@ -67,7 +67,7 @@ function daysSince(dateStr, nowMs) {
 // DISCRETE type — never a day count — so the payload only changes when a flag
 // actually flips, which keeps the harvest idempotent. The board turns a `stale`
 // flag into a live "N days" string for display.
-function computeSignals(item, nowMs, cycles) {
+function computeSignals(item, nowMs, cycles, depCycles) {
   const out = [];
   const ds = daysSince(item.updated, nowMs);
   if ((item.status === "now" || item.status === "next") && ds != null && ds > STALE_DAYS[item.status]) {
@@ -78,6 +78,11 @@ function computeSignals(item, nowMs, cycles) {
   if (item.parent && !item.parentRef) {
     out.push({ type: cycles.has(item) ? "parent-cycle" : "parent-missing" });
   }
+  // A dependency that names nothing is a broken promise: the board would show the
+  // puck as ready when its author thinks it's blocked. Same split as the etapp
+  // links — a typo and a loop are two different fixes.
+  if ((item.missingDepends || []).length) out.push({ type: "depends-missing" });
+  if (depCycles.has(item)) out.push({ type: "dependency-cycle" });
   if (item.issueState === "closed" && !TERMINAL.has(item.status)) out.push({ type: "issue-closed" });
   if (item.issueState === "open" && item.status === "done") out.push({ type: "issue-open" });
   // The horizon has passed and the puck hasn't landed. Same shape as the others —
@@ -91,8 +96,8 @@ function computeSignals(item, nowMs, cycles) {
 
 // One reference form for every puck-to-puck link. A bare slug means "in my own
 // repo"; `owner/repo#slug` names one anywhere on the board. Both `parent` and
-// (later) cross-repo `depends` resolve through here, so there is one thing to
-// learn and one thing to get right.
+// `depends` resolve through here, so there is one thing to learn and one thing to
+// get right.
 //
 // The separator is written escaped on purpose: a literal NUL in the source makes
 // git and ripgrep treat the whole file as binary and hide its diff.
@@ -108,17 +113,68 @@ function indexByRef(items) {
   return byKey;
 }
 
-// Resolve each puck's `depends` to the subset that isn't done yet — the pucks
-// actually blocking it. Discrete like the other signals, so the payload only
-// changes when a blocker flips to/from done (idempotency holds).
+// Resolve each puck's `depends` into `blockedBy` — everything it declared that
+// isn't settled yet, so **empty means ready** and one field answers "what can I
+// start?". Resolved blockers appear as ids; a reference that names nothing stays
+// as written, because an unknown blocker is not a settled one: dropping it would
+// advertise the puck as ready while its author believes it's blocked.
+//
+// `blocks` is the exact mirror — x.blocks contains y iff y.blockedBy contains x —
+// derived rather than authored so no `blocks:` field can ever disagree with a
+// `depends:` one. A settled puck waits for nothing, so its edges count in neither
+// direction.
+//
+// Cycles are found over the *authored* graph (status-independent, so a loop is a
+// loop whatever the pucks' states) and flagged, never cut: unlike an etapp parent
+// no single link is the wrong one, so a human picks. A puck that depends on itself
+// is that same error with one node — kept, so it blocks itself and shows up.
 function resolveBlockedBy(items) {
   const byKey = indexByRef(items);
+  const edges = new Map();   // puck → the pucks it depends on, resolved
+  const unknown = new Map(); // puck → the references that named nothing
+
   for (const it of items) {
-    it.blockedBy = (it.depends || []).filter((dep) => {
+    it.blocks = [];
+    it.missingDepends = [];
+    const deps = [];
+    for (const dep of it.depends || []) {
       const d = byKey.get(refKey(dep, it.repo));
-      return d && d.status !== "done";
-    });
+      if (!d) it.missingDepends.push(dep);
+      else deps.push(d);
+    }
+    edges.set(it, deps);
+    unknown.set(it, it.missingDepends);
   }
+  for (const it of items) {
+    if (TERMINAL.has(it.status)) { it.blockedBy = []; continue; } // landed: waits for nothing
+    const live = edges.get(it).filter((d) => !TERMINAL.has(d.status));
+    it.blockedBy = live.map((d) => d.id).concat(unknown.get(it));
+    for (const d of live) d.blocks.push(it.id);
+  }
+  for (const it of items) it.blocks.sort();
+
+  // Depth-first walk over the dependency edges; every puck on a back edge is in a
+  // cycle. Colour: 1 = on the current path, 2 = finished.
+  const colour = new Map();
+  const cycles = new Set();
+  const walk = (it, path) => {
+    colour.set(it, 1);
+    path.push(it);
+    for (const d of edges.get(it)) {
+      if (colour.get(d) === 1) {
+        for (let i = path.length - 1; i >= 0; i--) {
+          cycles.add(path[i]);
+          if (path[i] === d) break;
+        }
+      } else if (!colour.has(d)) {
+        walk(d, path);
+      }
+    }
+    path.pop();
+    colour.set(it, 2);
+  };
+  for (const it of items) if (!colour.has(it)) walk(it, []);
+  return cycles;
 }
 
 // Resolve `parent` into the derived half of the hierarchy: who my children are,
@@ -260,10 +316,10 @@ async function main() {
   }
 
   // Resolve the cross-item relations first, then derive drift signals once.
-  resolveBlockedBy(items);
+  const depCycles = resolveBlockedBy(items);
   const cycles = resolveHierarchy(items);
   const nowMs = Date.parse(BUILT_AT) || Date.now();
-  for (const it of items) it.signals = computeSignals(it, nowMs, cycles);
+  for (const it of items) it.signals = computeSignals(it, nowMs, cycles, depCycles);
   const flaggedCount = items.filter((it) => it.signals.length).length;
   if (flaggedCount) console.error(`  · ${flaggedCount} item(s) need attention`);
 
@@ -352,6 +408,8 @@ function renderDigest(payload) {
     : s.type === "target-passed" ? `target ${it.target} passed`
     : s.type === "parent-missing" ? `parent "${it.parent}" not found`
     : s.type === "parent-cycle" ? `parent "${it.parent}" closes a loop`
+    : s.type === "depends-missing" ? `depends on ${it.missingDepends.map((d) => `"${d}"`).join(", ")}, which doesn't exist`
+    : s.type === "dependency-cycle" ? "in a dependency loop"
     : s.type;
   const flagged = payload.items.filter((it) => (it.signals || []).length);
   if (flagged.length) {

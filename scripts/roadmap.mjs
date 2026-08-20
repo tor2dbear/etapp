@@ -65,10 +65,9 @@ function frontmatterRange(lines) {
 }
 
 function formatValue(key, value) {
-  if (key === "tags") {
-    const arr = Array.isArray(value) ? value : [];
-    return `[${arr.join(", ")}]`;
-  }
+  // Inline arrays (tags, depends) — one shape for every list field.
+  if (Array.isArray(value)) return `[${value.join(", ")}]`;
+  if (key === "tags") return "[]";
   const s = String(value);
   if (key === "title" && /[:#]/.test(s)) return JSON.stringify(s);
   return s;
@@ -191,6 +190,72 @@ async function cmdTag() {
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
   console.log(`✓ ${slug} tags: [${[...set].join(", ")}]  (updated ${TODAY})`);
+}
+
+// Dependencies. Same `+add -remove` shape as `tag`, because it's the same kind of
+// edit — a list field on one puck. A reference is a slug in this repo or
+// `owner/repo#slug` anywhere on the board (the form `parent` already uses).
+async function cmdDepends() {
+  const slug = pos.shift();
+  if (!slug) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
+  const { path: p, text } = await readPuckOrFail(slug);
+  const cur = getField(text, "depends");
+  const list = (cur ? cur.replace(/^\[|\]$/g, "").split(",") : [])
+    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+  const set = new Set(list);
+
+  if (opts.clear) {
+    set.clear();
+  } else {
+    if (pos.length === 0) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
+    for (const op of pos) {
+      if (op.startsWith("-")) { set.delete(op.slice(1)); continue; }
+      const ref = op.replace(/^\+/, "").trim();
+      if (!ref) continue;
+      if (ref === slug) fail("a puck can't depend on itself");
+      // A same-repo reference is checked here; a cross-repo one can only be verified
+      // at harvest, where the whole board is in hand (it flags one that misses).
+      if (!ref.includes("#") && !puckPath(ref)) {
+        fail(`no puck "${ref}" to depend on — create it first, or use owner/repo#slug`);
+      }
+      if (!ref.includes("#")) {
+        const loop = await dependencyPath(ref, slug);
+        if (loop) fail(`that would make a dependency loop (${[slug, ...loop].join(" → ")})`);
+      }
+      set.add(ref);
+    }
+  }
+
+  let out = set.size ? setField(text, "depends", [...set]) : removeField(text, "depends");
+  out = setField(out, "updated", TODAY);
+  await writeFile(p, out);
+  console.log(
+    set.size
+      ? `✓ ${slug} depends: [${[...set].join(", ")}]  (updated ${TODAY})`
+      : `✓ ${slug} depends cleared  (updated ${TODAY})`,
+  );
+}
+
+// Walk the local dependency graph from `from`, looking for `target`. Returns the
+// path that reaches it, or null. Cross-repo edges stop the walk — only the board
+// can follow those, and it flags the loop it finds.
+async function dependencyPath(from, target, seen) {
+  seen = seen || new Set();
+  if (seen.has(from)) return null;
+  seen.add(from);
+  if (from === target) return [from];
+  const p = puckPath(from);
+  if (!p) return null;
+  const raw = getField(await readFile(p, "utf8"), "depends") || "";
+  const deps = raw.replace(/^\[|\]$/g, "").split(",")
+    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
+    .filter((x) => x && !x.includes("#"));
+  for (const d of deps) {
+    const rest = await dependencyPath(d, target, seen);
+    if (rest) return [from, ...rest];
+  }
+  return null;
 }
 
 async function cmdIssue() {
@@ -594,6 +659,7 @@ async function main() {
     case "inbox": return setStatus(pos.shift(), "inbox");
     case "status": { const s = pos.shift(); const st = pos.shift(); return setStatus(s, st); }
     case "tag": return cmdTag();
+    case "depends": case "deps": return cmdDepends();
     case "issue": return cmdIssue();
     case "owner": return cmdOwner();
     case "priority": case "prio": return cmdPriority();
@@ -626,6 +692,7 @@ function printHelp() {
   roadmap priority <slug> <level>                     set priority (--clear to remove)
   roadmap target <slug> <YYYY-MM-DD|YYYY-MM>          set the horizon (--clear to remove)
   roadmap parent <slug> <parent-slug>                 put it in an etapp (--clear to remove)
+  roadmap depends <slug> +<ref> -<ref> …              edit blockers (--clear to remove all)
   roadmap move <slug> --before|--after <slug>         rank within the status column
   roadmap renumber [--status now]                     tidy order back to 10, 20, 30 …
   roadmap agent <slug> <discipline>                   route to an agent (--clear to remove)

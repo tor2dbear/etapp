@@ -98,22 +98,40 @@
     return Math.floor((Date.now() - t) / 86400000);
   }
   function isFlagged(item) { return (item.signals || []).length > 0; }
-  // Resolve an item's blockedBy slugs to the actual (same-repo) puck objects.
-  function blockerItems(item) {
-    return (item.blockedBy || []).map(function (slug) {
-      for (var i = 0; i < DATA.items.length; i++) {
-        if (DATA.items[i].repo === item.repo && DATA.items[i].slug === slug) return DATA.items[i];
-      }
-      return null;
-    }).filter(Boolean);
-  }
-  // The hierarchy, resolved. `parentRef`/`children` are ids the harvester derived
-  // from the `parent:` fields — never a stored second copy, so a lookup is all the
-  // board needs.
   function itemById(id) {
     for (var i = 0; i < DATA.items.length; i++) if (DATA.items[i].id === id) return DATA.items[i];
     return null;
   }
+  // Dependencies, resolved. The harvester hands over ids (cross-repo included), so
+  // both directions are a lookup: `blockedBy` = what still blocks me, `blocks` =
+  // what I hold up. Only `depends:` is authored — `blocks` is the reverse edge.
+  function blockerItems(item) { return (item.blockedBy || []).map(itemById).filter(Boolean); }
+  function blockedItems(item) { return (item.blocks || []).map(itemById).filter(Boolean); }
+  // One reference form for every puck-to-puck link, mirroring refKey() in the
+  // harvester: a bare slug means "in my own repo", `owner/repo#slug` names one
+  // anywhere on the board.
+  function resolveRef(from, ref) {
+    var s = String(ref || "").trim();
+    var at = s.indexOf("#");
+    var repo = at === -1 ? from.repo : s.slice(0, at);
+    var slug = at === -1 ? s : s.slice(at + 1);
+    for (var i = 0; i < DATA.items.length; i++) {
+      if (DATA.items[i].repo === repo && DATA.items[i].slug === slug) return DATA.items[i];
+    }
+    return null;
+  }
+  function refFor(from, target) {
+    return target.repo === from.repo ? target.slug : target.repo + "#" + target.slug;
+  }
+  // The authored list, resolved — every declared blocker, landed ones included.
+  // `blockedBy` is the *unfinished* subset, so editing has to work from this one:
+  // you can't remove a dependency the board never showed you.
+  function dependsItems(item) {
+    return (item.depends || []).map(function (r) { return resolveRef(item, r); }).filter(Boolean);
+  }
+  // The hierarchy, resolved. `parentRef`/`children` are ids the harvester derived
+  // from the `parent:` fields — never a stored second copy, so a lookup is all the
+  // board needs.
   function parentItem(item) { return item.parentRef ? itemById(item.parentRef) : null; }
   function childItems(item) { return (item.children || []).map(itemById).filter(Boolean); }
   function signalMessages(item) {
@@ -130,6 +148,10 @@
         var dt = daysSince(item.target);
         return "Target " + item.target + " has passed" + (dt != null ? " (" + dt + " days ago)" : "") + " — move the horizon or land it?";
       }
+      if (s.type === "depends-missing") {
+        return "Depends on " + (item.missingDepends || []).join(", ") + ", which doesn’t exist — typo, or the puck was renamed?";
+      }
+      if (s.type === "dependency-cycle") return "In a dependency loop — these pucks wait for each other, so none of them is ready.";
       if (s.type === "parent-missing") return 'Etapp "' + item.parent + '" doesn’t exist — typo, or the puck was renamed?';
       if (s.type === "parent-cycle") return 'Etapp "' + item.parent + '" closes a loop — the link is ignored.';
       return s.type;
@@ -265,6 +287,7 @@
     done: function (i) { return !!TERMINAL[i.status]; }, // done *or* cancelled — the archive
     // The hierarchy, as states rather than fields: a puck with children *is* the
     // etapp, and one with neither parent nor children stands outside every etapp.
+    blocking: function (i) { return !!(i.blocks || []).length; },
     etapp: function (i) { return !!(i.children || []).length; },
     orphan: function (i) { return !i.parentRef && !(i.children || []).length; },
   };
@@ -658,6 +681,7 @@
     b.appendChild(icon("slash"));
     var names = blockerItems(item).map(function (x) { return x.title; });
     b.title = "Blocked by: " + (names.join(", ") || item.blockedBy.join(", "));
+    if ((item.blocks || []).length) b.title += "  ·  blocks " + item.blocks.length;
     b.setAttribute("aria-label", b.title);
     return b;
   }
@@ -1156,21 +1180,24 @@
       props.appendChild(kidsRow);
     }
 
-    if ((item.blockedBy || []).length) {
-      var blkV = el("div", "prop-blockers");
-      var blockers = blockerItems(item);
-      if (blockers.length) {
-        blockers.forEach(function (b, i) {
-          var a = el("a", "blocker-link", b.title);
-          a.href = "#" + b.id;
-          a.addEventListener("click", function (e) { e.preventDefault(); openModal(b); });
-          blkV.appendChild(a);
-          if (i < blockers.length - 1) blkV.appendChild(document.createTextNode(", "));
-        });
-      } else {
-        blkV.appendChild(document.createTextNode(item.blockedBy.join(", ")));
-      }
-      props.appendChild(propRow("Blocked by", blkV, "blocked"));
+    // Blocked by: the authored `depends` list, editable. It shows landed blockers
+    // too (struck through) — `blockedBy` hides them, and you can't remove a
+    // dependency the board never showed you.
+    if (editable || (item.depends || []).length) {
+      props.appendChild(propRow("Blocked by", dependsValue(item, editable), "blocked"));
+    }
+
+    // …and the other direction, derived: what this puck is holding up.
+    if ((item.blocks || []).length) {
+      var blocksV = el("div", "prop-blockers");
+      blockedItems(item).forEach(function (b, i, arr) {
+        var a = el("a", "blocker-link" + (TERMINAL[b.status] ? " done" : ""), b.title);
+        a.href = "#" + b.id;
+        a.addEventListener("click", function (e) { e.preventDefault(); openModal(b); });
+        blocksV.appendChild(a);
+        if (i < arr.length - 1) blocksV.appendChild(document.createTextNode(", "));
+      });
+      props.appendChild(propRow("Blocks", blocksV, "blocked"));
     }
 
     if (item.created) props.appendChild(propRow("Created", el("span", "prop-date", item.created)));
@@ -2653,6 +2680,7 @@
         return [
           { value: "ready", label: "Ready" },
           { value: "blocked", label: "Blocked" },
+          { value: "blocking", label: "Blocking others" },
           { value: "flagged", label: "Needs attention" },
           { value: "stale", label: "Stale" },
           { value: "adapted", label: "Adapted source" },
@@ -3511,6 +3539,119 @@
     recountEtapp(parentId);
   }
 
+  // ── dependencies (`depends`) ────────────────────────────────────────────────
+  // Only `depends:` is authored, on the blocked puck. `blockedBy` (what still
+  // holds me up) and `blocks` (what I hold up) are both derived — here as well as
+  // at harvest, so an optimistic edit can't leave the two directions disagreeing.
+  function recomputeDeps() {
+    DATA.items.forEach(function (it) { it.blocks = []; it.missingDepends = []; it.blockedBy = []; });
+    DATA.items.forEach(function (it) {
+      var unresolved = [];
+      var live = [];
+      (it.depends || []).forEach(function (ref) {
+        var d = resolveRef(it, ref);
+        if (!d) { it.missingDepends.push(ref); unresolved.push(ref); return; }
+        if (!TERMINAL[d.status]) live.push(d);
+      });
+      if (TERMINAL[it.status]) return; // landed: waits for nothing, holds up nothing
+      // An unknown blocker is not a settled one — it stays in `blockedBy` as
+      // written, so the puck doesn't read as ready while its author thinks it is
+      // blocked. `blocks` is the exact mirror of the resolved half.
+      it.blockedBy = live.map(function (d) { return d.id; }).concat(unresolved);
+      live.forEach(function (d) { d.blocks.push(it.id); });
+    });
+    DATA.items.forEach(function (it) { it.blocks.sort(); });
+  }
+  // Would depending on `target` close a loop? Walk the *authored* graph, since a
+  // landed blocker still counts as an edge.
+  function wouldDependLoop(item, target) {
+    var seen = {}, stack = [target];
+    while (stack.length) {
+      var cur = stack.pop();
+      if (cur === item) return true;
+      if (seen[cur.id]) continue;
+      seen[cur.id] = 1;
+      dependsItems(cur).forEach(function (d) { stack.push(d); });
+    }
+    return false;
+  }
+  function commitDepends(item, refs, message) {
+    return commitFields(item, { depends: refs.length ? "[" + refs.join(", ") + "]" : null }, message);
+  }
+  // `refs` is the whole new list — one field, one commit, like every other write.
+  function changeDepends(item, refs, message) {
+    if (!ghToken()) return;
+    var prev = item.depends, prevU = item.updated;
+    item.depends = refs;
+    item.updated = today();
+    recomputeDeps();
+    renderBoard(); reopenIfOpen(item);
+    toast("Saving…");
+    commitDepends(item, refs, message)
+      .then(function () { toast("✓ Saved — live in ~1 min"); })
+      .catch(function (err) {
+        item.depends = prev; item.updated = prevU;
+        recomputeDeps();
+        noteWriteError(item, err);
+        renderBoard(); reopenIfOpen(item);
+        toast("✗ " + err.message, true);
+      });
+  }
+  function removeDepend(item, ref) {
+    changeDepends(item, (item.depends || []).filter(function (r) { return r !== ref; }),
+      "roadmap: " + item.slug + " no longer blocked by " + ref);
+  }
+  // Ask for a blocker the way the CLI takes one: a slug in this repo, or
+  // `owner/repo#slug` anywhere on the board.
+  function promptDepend(item) {
+    var val = window.prompt(
+      "Blocked by which puck? A slug in " + item.repoName + ", or owner/repo#slug.", "");
+    if (val === null) return;
+    val = val.trim();
+    if (!val) return;
+    var target = resolveRef(item, val);
+    if (!target) { toast('✗ No puck "' + val + '" on the board', true); return; }
+    if (target === item) { toast("✗ A puck can’t depend on itself", true); return; }
+    var ref = refFor(item, target);
+    if ((item.depends || []).indexOf(ref) !== -1) return;
+    if (wouldDependLoop(item, target)) { toast("✗ That would make a dependency loop", true); return; }
+    changeDepends(item, (item.depends || []).concat([ref]),
+      "roadmap: " + item.slug + " blocked by " + ref);
+  }
+  // The Blocked by cell: every *declared* blocker (landed ones struck through, so
+  // they can still be removed), each with a ✕ when writable, plus "Add".
+  function dependsValue(item, editable) {
+    var wrap = el("div", "prop-blockers");
+    (item.depends || []).forEach(function (ref) {
+      var d = resolveRef(item, ref);
+      var chip = el("span", "dep-chip");
+      if (d) {
+        var a = el("a", "blocker-link" + (TERMINAL[d.status] ? " done" : ""), d.title);
+        a.href = "#" + d.id;
+        a.addEventListener("click", function (e) { e.preventDefault(); openModal(d); });
+        chip.appendChild(a);
+      } else {
+        chip.appendChild(el("span", "prop-muted", ref)); // unresolved — the ⚠ says why
+      }
+      if (editable) {
+        var x = el("button", "dep-x", "✕");
+        x.type = "button";
+        x.setAttribute("aria-label", "Remove blocker " + (d ? d.title : ref));
+        x.addEventListener("click", function () { removeDepend(item, ref); });
+        chip.appendChild(x);
+      }
+      wrap.appendChild(chip);
+    });
+    if (!(item.depends || []).length) wrap.appendChild(el("span", "prop-muted", "Nothing"));
+    if (editable) {
+      var add = el("button", "linklike", "Add");
+      add.type = "button";
+      add.addEventListener("click", function () { promptDepend(item); });
+      wrap.appendChild(add);
+    }
+    return wrap;
+  }
+
   function commitParent(item, raw) {
     return commitFields(item, { parent: raw },
       "roadmap: " + item.slug + (raw ? " → etapp " + raw : " out of its etapp"));
@@ -3824,7 +3965,7 @@
       id: id, repo: repo, repoName: src.name || short, repoColor: src.color || "#888888",
       issueState: null, slug: slug, title: title, status: status, tags: tags, updated: today(),
       created: today(), issue: null, order: 0, depends: [], owner: null, agent: agent || null, body: body,
-      parent: null, parentRef: null, children: [], progress: null,
+      parent: null, parentRef: null, children: [], progress: null, blocks: [], missingDepends: [],
       sourcePath: path, sourceUrl: "https://github.com/" + repo + "/blob/" + meta.branch + "/" + path,
       adapter: "pucks", native: true, blockedBy: [], signals: [],
     };

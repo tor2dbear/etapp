@@ -1237,6 +1237,17 @@ body.preload * { transition: none !important; }
 .disc-body pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .disc-body a { color: var(--accent); }
 
+/* ── dependencies: the Blocked by / Blocks rows ─────────────────────────────── */
+/* `depends:` is the only authored half; the row edits it in place, one chip per
+   declared blocker (landed ones struck through so they can still be removed). */
+.prop-blockers { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.dep-chip { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; }
+.dep-x {
+  font: inherit; font-size: 10px; line-height: 1; background: none; border: 0; padding: 1px 2px;
+  color: var(--ink-3); cursor: pointer; flex: none;
+}
+@media (hover: hover) { .dep-x:hover { color: var(--ink); } }
+
 /* ── etapp: the level above a puck (rollup badge + membership chip) ─────────── */
 /* An etapp is a puck with children, so its marks live on the same card meta row
    as every other badge — no second card type, no second visual language. */

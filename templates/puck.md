@@ -7,6 +7,7 @@ updated: 2026-01-01
 # order: 10       # optional — manual order within the status column (lower = higher)
 # target: 2026-11-30  # optional — the horizon: roughly when this should land
 # parent: etapp-slug # optional — the etapp above this puck (or owner/repo#slug)
+# depends: [other-slug]  # optional — pucks that must land first (or owner/repo#slug)
 ---
 
 ## Goal
