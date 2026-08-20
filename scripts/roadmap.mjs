@@ -242,6 +242,49 @@ async function cmdTarget() {
   );
 }
 
+// The level above a puck. A bare slug means a puck in this repo; a full
+// `owner/repo#slug` names one anywhere on the board. A puck with children *is*
+// the etapp — there is no separate epic file to create.
+async function cmdParent() {
+  const slug = pos.shift();
+  const ref = pos.shift();
+  if (!slug) fail("usage: roadmap parent <slug> <parent-slug|owner/repo#slug>   (--clear to remove)");
+  const { path: p, text } = await readPuckOrFail(slug);
+  const clearing = opts.clear || ref === "none" || ref === "-";
+  let out;
+  if (clearing) {
+    out = removeField(text, "parent");
+  } else {
+    const v = String(ref || "").trim();
+    if (!v) fail("usage: roadmap parent <slug> <parent-slug|owner/repo#slug>   (--clear to remove)");
+    if (v === slug) fail("a puck can't be its own etapp");
+    // Same-repo references are checked here; a cross-repo one can only be verified
+    // at harvest, where the whole board is in hand (it flags an unresolved parent).
+    const local = !v.includes("#");
+    if (local && !puckPath(v)) fail(`no puck "${v}" to be the etapp — create it first, or use owner/repo#slug`);
+    if (local) {
+      // Walk up locally to refuse the obvious cycle before it reaches the board.
+      const seen = new Set([slug]);
+      let cur = v;
+      while (cur && !cur.includes("#")) {
+        if (seen.has(cur)) fail(`that would make a cycle (${[...seen].join(" → ")} → ${cur})`);
+        seen.add(cur);
+        const path2 = puckPath(cur);
+        if (!path2) break;
+        cur = getField(await readFile(path2, "utf8"), "parent");
+      }
+    }
+    out = setField(text, "parent", v);
+  }
+  out = setField(out, "updated", TODAY);
+  await writeFile(p, out);
+  console.log(
+    clearing
+      ? `✓ ${slug} parent cleared  (updated ${TODAY})`
+      : `✓ ${slug} parent ${ref}  (updated ${TODAY})`,
+  );
+}
+
 async function cmdOwner() {
   const slug = pos.shift();
   const handle = pos.shift();
@@ -555,6 +598,7 @@ async function main() {
     case "owner": return cmdOwner();
     case "priority": case "prio": return cmdPriority();
     case "target": return cmdTarget();
+    case "parent": case "etapp": return cmdParent();
     case "move": return cmdMove();
     case "renumber": return cmdRenumber();
     case "agent": case "route": return cmdAgent();
@@ -581,6 +625,7 @@ function printHelp() {
   roadmap owner <slug> <handle>                       set owner (--clear to remove)
   roadmap priority <slug> <level>                     set priority (--clear to remove)
   roadmap target <slug> <YYYY-MM-DD|YYYY-MM>          set the horizon (--clear to remove)
+  roadmap parent <slug> <parent-slug>                 put it in an etapp (--clear to remove)
   roadmap move <slug> --before|--after <slug>         rank within the status column
   roadmap renumber [--status now]                     tidy order back to 10, 20, 30 …
   roadmap agent <slug> <discipline>                   route to an agent (--clear to remove)

@@ -107,6 +107,15 @@
       return null;
     }).filter(Boolean);
   }
+  // The hierarchy, resolved. `parentRef`/`children` are ids the harvester derived
+  // from the `parent:` fields — never a stored second copy, so a lookup is all the
+  // board needs.
+  function itemById(id) {
+    for (var i = 0; i < DATA.items.length; i++) if (DATA.items[i].id === id) return DATA.items[i];
+    return null;
+  }
+  function parentItem(item) { return item.parentRef ? itemById(item.parentRef) : null; }
+  function childItems(item) { return (item.children || []).map(itemById).filter(Boolean); }
   function signalMessages(item) {
     return (item.signals || []).map(function (s) {
       if (s.type === "stale") {
@@ -121,6 +130,8 @@
         var dt = daysSince(item.target);
         return "Target " + item.target + " has passed" + (dt != null ? " (" + dt + " days ago)" : "") + " — move the horizon or land it?";
       }
+      if (s.type === "parent-missing") return 'Etapp "' + item.parent + '" doesn’t exist — typo, or the puck was renamed?';
+      if (s.type === "parent-cycle") return 'Etapp "' + item.parent + '" closes a loop — the link is ignored.';
       return s.type;
     });
   }
@@ -225,11 +236,22 @@
     tag: { vals: function (i) { return i.tags || []; } },
     repo: { vals: function (i) { return [i.repo, shortRepo(i.repo), i.repoName]; } },
     issue: { vals: function (i) { return i.issue == null ? [] : [String(i.issue)]; } },
+    // The etapp a puck sits in. Matches whatever names it: the raw `parent:` value
+    // as written, the resolved id, or the parent's bare slug — so `parent:auth`
+    // works from a card, a URL or an agent that only knows the slug.
+    parent: {
+      vals: function (i) {
+        if (!i.parentRef && !i.parent) return [];
+        var out = i.parent ? [i.parent] : [];
+        if (i.parentRef) out.push(i.parentRef, String(i.parentRef).split("/").pop());
+        return out;
+      },
+    },
     updated: { dateOf: function (i) { return i.updated; } },
     created: { dateOf: function (i) { return i.created; } },
     target: { dateOf: function (i) { return i.target; } },
   };
-  var FIELD_ALIAS = { label: "tag", labels: "tag", tags: "tag", repos: "repo", prio: "priority", discipline: "agent" };
+  var FIELD_ALIAS = { label: "tag", labels: "tag", tags: "tag", repos: "repo", prio: "priority", discipline: "agent", etapp: "parent", epic: "parent" };
 
   // `is:` is the namespace for states that aren't fields — they're derived from the
   // data (by the harvester or here), so giving each its own field would invent a
@@ -241,6 +263,10 @@
     stale: function (i) { return (i.signals || []).some(function (s) { return s.type === "stale"; }); },
     adapted: function (i) { return !i.native; },
     done: function (i) { return !!TERMINAL[i.status]; }, // done *or* cancelled — the archive
+    // The hierarchy, as states rather than fields: a puck with children *is* the
+    // etapp, and one with neither parent nor children stands outside every etapp.
+    etapp: function (i) { return !!(i.children || []).length; },
+    orphan: function (i) { return !i.parentRef && !(i.children || []).length; },
   };
 
   // Split on whitespace, but keep "quoted phrases" whole so free text can contain spaces.
@@ -636,6 +662,29 @@
     return b;
   }
 
+  // Rollup badge for a puck that *is* an etapp: how many of its children have
+  // landed. Derived at harvest from the children's own statuses, so an etapp can't
+  // claim progress its pucks don't have.
+  function progressBadge(item) {
+    var p = item.progress;
+    var b = el("span", "rollup" + (p.done === p.total ? " full" : ""));
+    b.appendChild(icon("merge"));
+    b.appendChild(el("span", "rollup-n", p.done + "/" + p.total));
+    b.title = "Etapp: " + p.done + " of " + p.total + " pucks done";
+    b.setAttribute("aria-label", b.title);
+    return b;
+  }
+  // Membership chip on a child card: which etapp this puck belongs to.
+  function etappChip(item) {
+    var p = parentItem(item);
+    var c = el("span", "etapp-chip");
+    c.appendChild(icon("merge"));
+    c.appendChild(el("span", "etapp-name", p ? p.title : item.parentRef));
+    c.title = "Etapp: " + (p ? p.title : item.parentRef);
+    c.setAttribute("aria-label", c.title);
+    return c;
+  }
+
   // The puck's identity mark: a git-commit glyph tinted with the repo colour —
   // like Linear's project icon, which is coloured by the project's identity (not
   // status). It's the single colour marker, so the meta shows just the repo name.
@@ -688,6 +737,10 @@
     }
     if (item.priority) meta.appendChild(priorityBadge(item.priority));
     if (item.agent) meta.appendChild(agentBadge(item.agent));
+    if (item.progress) meta.appendChild(progressBadge(item));
+    // Membership is worth showing everywhere except in the etapp columns, where the
+    // column header already says it.
+    if (item.parentRef && state.group !== "parent") meta.appendChild(etappChip(item));
     if ((item.blockedBy || []).length) meta.appendChild(blockBadge(item));
     if (item.owner) meta.appendChild(ownerEl(item.owner));
     var dc = dateCell(item);
@@ -1080,6 +1133,29 @@
       props.appendChild(propRow("Labels", labelsValue(item, editable)));
     }
 
+    // Etapp: the level above. One pointer up, so the row is a link + an edit —
+    // there is no epic record to open, just another puck.
+    if (editable || item.parentRef || item.parent) {
+      props.appendChild(propRow("Etapp", parentValue(item, editable)));
+    }
+
+    // …and the level below, when this puck *is* an etapp: its pucks, with the
+    // rollup the harvester counted.
+    if ((item.children || []).length) {
+      var kidsV = el("div", "prop-blockers");
+      childItems(item).forEach(function (k, i) {
+        var ka = el("a", "blocker-link" + (TERMINAL[k.status] ? " done" : ""), k.title);
+        ka.href = "#" + k.id;
+        ka.addEventListener("click", function (e) { e.preventDefault(); openModal(k); });
+        kidsV.appendChild(ka);
+        if (i < item.children.length - 1) kidsV.appendChild(document.createTextNode(", "));
+      });
+      var kidsRow = propRow("Pucks", kidsV, "blocked");
+      if (item.progress) kidsRow.querySelector(".prop-k").appendChild(
+        el("span", "prop-muted", " " + item.progress.done + "/" + item.progress.total));
+      props.appendChild(kidsRow);
+    }
+
     if ((item.blockedBy || []).length) {
       var blkV = el("div", "prop-blockers");
       var blockers = blockerItems(item);
@@ -1396,6 +1472,8 @@
       warn.title = sig.join("\n");
       name.appendChild(warn);
     }
+    if (item.progress) name.appendChild(progressBadge(item));
+    if (item.parentRef && state.group !== "parent") name.appendChild(etappChip(item));
     if ((item.blockedBy || []).length) name.appendChild(blockBadge(item));
     r.appendChild(name);
 
@@ -1491,6 +1569,35 @@
       labelOf: function (k) { return k === NO_VALUE ? "No target" : monthLabel(k); },
       write: function (item, k) { changeTarget(item, k === NO_VALUE ? null : endOfMonth(k)); },
     },
+    // The etapp board: one column per etapp, plus the pucks that stand outside
+    // every etapp. Same renderer again — the level above a puck is a grouping, not
+    // a second card type, which is exactly why it costs one registry entry.
+    parent: {
+      label: "Etapp",
+      field: "parent",
+      keyOf: function (i) { return i.parentRef || NO_VALUE; },
+      keys: function (items) {
+        var order = {};
+        DATA.items.forEach(function (it, i) { order[it.id] = i; }); // etapps in board order
+        return presentKeys(items, this.keyOf, function (k) { return order[k] == null ? 1e9 : order[k]; });
+      },
+      labelOf: function (k) {
+        if (k === NO_VALUE) return "No etapp";
+        var p = itemById(k);
+        return p ? p.title : k;
+      },
+      tint: function (k) {
+        var p = k === NO_VALUE ? null : itemById(k);
+        return p && p.repoColor;
+      },
+      write: function (item, k) { changeParent(item, k === NO_VALUE ? null : k); },
+      // The etapp's own rollup in the column header — counted over all its pucks,
+      // not just the ones the current filter left on screen.
+      headExtra: function (k) {
+        var p = k === NO_VALUE ? null : itemById(k);
+        return p && p.progress ? progressBadge(p) : null;
+      },
+    },
     priority: {
       label: "Priority",
       field: "priority",
@@ -1531,6 +1638,7 @@
       head.appendChild(el("span", "swatch"));
       head.appendChild(el("h2", null, grp.label));
       head.appendChild(el("span", "count", String(grp.items.length)));
+      if (g.headExtra) { var hx = g.headExtra(grp.key); if (hx) head.appendChild(hx); }
       col.appendChild(head);
       var cards = el("div", "cards");
       if (grp.items.length === 0) cards.appendChild(el("div", "empty", "—"));
@@ -1617,6 +1725,7 @@
       head.appendChild(el("span", "swatch"));
       head.appendChild(el("h2", null, grp.label));
       head.appendChild(el("span", "count", String(grp.items.length)));
+      if (g.headExtra) { var hx = g.headExtra(grp.key); if (hx) head.appendChild(hx); }
       section.appendChild(head);
       grp.items.forEach(function (it) { section.appendChild(listRow(it)); });
       board.appendChild(section);
@@ -2520,6 +2629,16 @@
       },
     },
     {
+      // Etapp: a real field (unlike repo/agent, which are places), so it filters
+      // here. Only pucks that actually *are* etapps are offered — a value that
+      // matches nothing would be a trap.
+      key: "parent", label: "Etapp", search: "Filter etapps…",
+      values: function () {
+        return DATA.items.filter(function (it) { return (it.children || []).length; })
+          .map(function (it) { return { value: it.id, label: it.title }; });
+      },
+    },
+    {
       key: "owner", label: "Owner",
       values: function () {
         var seen = {};
@@ -2537,6 +2656,8 @@
           { value: "flagged", label: "Needs attention" },
           { value: "stale", label: "Stale" },
           { value: "adapted", label: "Adapted source" },
+          { value: "etapp", label: "Is an etapp" },
+          { value: "orphan", label: "Outside every etapp" },
         ];
       },
     },
@@ -3101,12 +3222,14 @@
     if (status === item.status || !ghToken()) return;
     var prevS = item.status, prevU = item.updated;
     item.status = status; item.updated = today();
+    recountEtapp(item.parentRef); // the etapp's rollup follows its pucks
     renderBoard(); reopenIfOpen(item);
     toast("Saving…");
     commitStatus(item, status)
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
         item.status = prevS; item.updated = prevU;
+        recountEtapp(item.parentRef);
         noteWriteError(item, err);
         renderBoard(); reopenIfOpen(item);
         toast("✗ " + err.message, true);
@@ -3331,6 +3454,135 @@
       var edit = el("button", "linklike", item.target ? "Change" : "Set target");
       edit.type = "button";
       edit.addEventListener("click", function () { promptTarget(item); });
+      wrap.appendChild(edit);
+    }
+    return wrap;
+  }
+
+  // ── etapp (`parent`) ────────────────────────────────────────────────────────
+  // The level above a puck is one frontmatter line pointing *up*; `children` and
+  // `progress` are derived at harvest. So the write is a single field on a single
+  // file — no epic record to keep in sync, and dragging a card between etapp
+  // columns is the same one-file commit a status flip is.
+
+  // How this repo would name that puck: a bare slug at home, `owner/repo#slug`
+  // across repos. Matches refKey() in the harvester.
+  function parentRefFor(item, target) {
+    return target.repo === item.repo ? target.slug : target.repo + "#" + target.slug;
+  }
+  // Would this link close a loop? Walk up from the proposed parent; meeting the
+  // puck itself means the etapp would contain its own ancestor. The harvester cuts
+  // such a link anyway — refusing here keeps a nonsense line out of git.
+  function wouldLoop(item, parentId) {
+    var seen = {}, cur = parentId;
+    while (cur) {
+      if (cur === item.id || seen[cur]) return true;
+      seen[cur] = 1;
+      var p = itemById(cur);
+      cur = p && p.parentRef;
+    }
+    return false;
+  }
+  // Recount one etapp from its children's current statuses. The board mutates
+  // status optimistically, so the rollup has to follow locally or an etapp would
+  // read stale until the next harvest.
+  function recountEtapp(id) {
+    var p = id && itemById(id);
+    if (!p) return;
+    var kids = childItems(p);
+    p.progress = kids.length
+      ? { done: kids.filter(function (k) { return !!TERMINAL[k.status]; }).length, total: kids.length }
+      : null;
+  }
+  // Move a puck between etapps locally (the same derivation the harvester does).
+  function relink(item, parentId, raw) {
+    var old = item.parentRef;
+    if (old) {
+      var op = itemById(old);
+      if (op) op.children = (op.children || []).filter(function (id) { return id !== item.id; });
+    }
+    item.parentRef = parentId;
+    item.parent = raw;
+    if (parentId) {
+      var np = itemById(parentId);
+      if (np && (np.children || []).indexOf(item.id) === -1) np.children = (np.children || []).concat([item.id]);
+    }
+    recountEtapp(old);
+    recountEtapp(parentId);
+  }
+
+  function commitParent(item, raw) {
+    return commitFields(item, { parent: raw },
+      "roadmap: " + item.slug + (raw ? " → etapp " + raw : " out of its etapp"));
+  }
+  // `parentId` is a board id ("repo/slug") or null to take the puck out.
+  function changeParent(item, parentId) {
+    parentId = parentId || null;
+    if (!ghToken()) return;
+    // Clearing looks at the *raw* field, not the resolved one: a broken link
+    // (parent-missing / parent-cycle) has a `parent:` line but no `parentRef`, and
+    // removing it is precisely what the flag asks for.
+    if (parentId ? parentId === item.parentRef : !item.parentRef && !item.parent) return;
+    var target = parentId ? itemById(parentId) : null;
+    if (parentId && !target) return;
+    if (parentId === item.id) { toast("✗ A puck can’t be its own etapp", true); return; }
+    if (wouldLoop(item, parentId)) { toast("✗ That would make an etapp loop", true); return; }
+    var raw = target ? parentRefFor(item, target) : null;
+    var prevRef = item.parentRef, prevRaw = item.parent, prevU = item.updated;
+    relink(item, parentId, raw);
+    item.updated = today();
+    renderBoard(); reopenIfOpen(item);
+    toast("Saving…");
+    commitParent(item, raw)
+      .then(function () { toast(raw ? "✓ In etapp " + target.title + " — live in ~1 min" : "✓ Out of its etapp — live in ~1 min"); })
+      .catch(function (err) {
+        relink(item, prevRef, prevRaw);
+        item.updated = prevU;
+        noteWriteError(item, err);
+        renderBoard(); reopenIfOpen(item);
+        toast("✗ " + err.message, true);
+      });
+  }
+  // Ask for an etapp the way the CLI takes one: a slug in this repo, or
+  // `owner/repo#slug` anywhere on the board. Blank takes the puck out.
+  function promptParent(item) {
+    var cur = parentItem(item);
+    var val = window.prompt(
+      "Etapp for this puck — a puck slug in " + item.repoName + ", or owner/repo#slug.\nLeave blank to take it out of its etapp.",
+      item.parent || "");
+    if (val === null) return;
+    val = val.trim();
+    if (val === "") { if (item.parentRef || item.parent) changeParent(item, null); return; }
+    var hash = val.indexOf("#");
+    var repo = hash === -1 ? item.repo : val.slice(0, hash);
+    var slug = hash === -1 ? val : val.slice(hash + 1);
+    var target = null;
+    for (var i = 0; i < DATA.items.length; i++) {
+      if (DATA.items[i].repo === repo && DATA.items[i].slug === slug) { target = DATA.items[i]; break; }
+    }
+    if (!target) { toast('✗ No puck "' + val + '" on the board', true); return; }
+    if (target === cur) return;
+    changeParent(item, target.id);
+  }
+  // The Etapp cell in the rail: a link to the etapp when set, plus an edit
+  // affordance. Same inline shape as Issue and Target.
+  function parentValue(item, editable) {
+    var wrap = el("span", "issue-cell");
+    var p = parentItem(item);
+    if (p) {
+      var a = el("a", "blocker-link", p.title);
+      a.href = "#" + p.id;
+      a.addEventListener("click", function (e) { e.preventDefault(); openModal(p); });
+      wrap.appendChild(a);
+    } else if (item.parent) {
+      wrap.appendChild(el("span", "prop-muted", item.parent)); // named but unresolved — the flag says why
+    } else {
+      wrap.appendChild(el("span", "prop-muted", "No etapp"));
+    }
+    if (editable) {
+      var edit = el("button", "linklike", item.parent ? "Change" : "Set etapp");
+      edit.type = "button";
+      edit.addEventListener("click", function () { promptParent(item); });
       wrap.appendChild(edit);
     }
     return wrap;
@@ -3572,6 +3824,7 @@
       id: id, repo: repo, repoName: src.name || short, repoColor: src.color || "#888888",
       issueState: null, slug: slug, title: title, status: status, tags: tags, updated: today(),
       created: today(), issue: null, order: 0, depends: [], owner: null, agent: agent || null, body: body,
+      parent: null, parentRef: null, children: [], progress: null,
       sourcePath: path, sourceUrl: "https://github.com/" + repo + "/blob/" + meta.branch + "/" + path,
       adapter: "pucks", native: true, blockedBy: [], signals: [],
     };

@@ -23,11 +23,17 @@ it's the wrong shape — use a GitHub primitive instead (see below).
 
 `data/roadmap.json` = `{ generatedAt, config, statuses, counts, total, sources[],
 items[] }`. Each item: `{ id, repo, slug, title, status, tags[], updated, created,
-target, issue, issueState, order, depends[], blockedBy[], signals[], sourceUrl, … }`.
+target, issue, issueState, order, depends[], blockedBy[], parent, parentRef,
+children[], progress, signals[], sourceUrl, … }`.
 
 - `signals[]` — drift flags (`stale` / `issue-closed` / `issue-open` /
-  `target-passed`): the declared status disagrees with reality.
+  `target-passed` / `parent-missing` / `parent-cycle`): the declared status
+  disagrees with reality.
 - `blockedBy[]` — same-repo dependencies not yet `done`. **Empty = unblocked.**
+- `parent` — the etapp as *written* (`slug`, or `owner/repo#slug`); `parentRef` is
+  it resolved to an id, or `null` when it doesn't resolve. `children[]` and
+  `progress` (`{done,total}`) are derived from the children's `parent:` lines —
+  a puck with children **is** the etapp.
 
 **"What should I work on?"** — unblocked active pucks:
 
@@ -54,6 +60,7 @@ owner:tor2dbear        the owner field
 priority:high          urgent | high | medium | low
 issue:42               the linked issue number
 target:<=2026-11-30    the horizon (updated/created take the same operators)
+parent:auth            the etapp — slug, id or owner/repo#slug (alias: etapp)
 "grep context"         free text over title, body, tags and repo name
 ```
 
@@ -68,6 +75,8 @@ field of its own would invent a second truth:
 | `is:stale` | its signals include `stale` |
 | `is:adapted` | the source isn't native pucks |
 | `is:done` | `done` **or** `cancelled` (the archive) |
+| `is:etapp` | the puck has children — it *is* an etapp |
+| `is:orphan` | neither a parent nor children: outside every etapp |
 
 The board's own views are just queries — `Ready` is `is:ready`, `Needs attention`
 is `is:flagged` — so anything a view shows, a query can name.
@@ -104,6 +113,7 @@ roadmap priority <slug> <level>     # urgent|high|medium|low (--clear to remove)
 roadmap target <slug> 2026-11       # horizon: a date, or a month = its last day
 roadmap move <slug> --before <slug> # manual rank within the status column
 roadmap renumber [--status now]     # tidy order back to 10, 20, 30 …
+roadmap parent <slug> <etapp-slug>  # put it in an etapp (--clear to take it out)
 roadmap agent <slug> <discipline>   # route to a discipline agent (--clear to remove)
 roadmap list [--status now]         # overview
 ```
@@ -117,6 +127,16 @@ Declare `depends: [slug, …]` (same-repo slugs) in frontmatter. The board shows
 until every listed puck is `done`; agents read the resolved `blockedBy[]` to know
 what's ready. Use it to sequence work.
 
+## Etapps (the level above)
+
+`parent: <slug>` (or `owner/repo#slug`) puts a puck in an etapp. Only the child
+stores anything — the etapp is just the puck being pointed at, and its
+`children[]`/`progress` are derived at harvest. So there is no epic record to create,
+nothing to keep in sync, and a whole etapp of work is `?q=parent:<slug>`.
+
+A `parent:` that names nothing, or that closes a loop, is flagged
+(`parent-missing` / `parent-cycle`) and ignored — never silently repaired.
+
 ## Closing gaps the right way (GitHub primitives, not new stores)
 
 - **Discussion** → the linked `issue:` (GitHub comments/notifications).
@@ -127,6 +147,8 @@ what's ready. Use it to sequence work.
 
 - Never hand-edit `data/roadmap.json`, `data/roadmap.js`, `ROADMAP.md`.
 - Never add a second source of truth.
+- The hierarchy points **up only**: a child names its `parent`. Never write a
+  `children:` field — it's derived, and a stored copy could disagree.
 - Four orthogonal axes, never conflated: `status` = which column (`inbox →
   now/next/later → done`), `order` = the place in it (manual rank, lower first,
   unset sinks to the bottom), `priority` = how much it matters (a label to filter

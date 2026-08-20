@@ -1237,6 +1237,27 @@ body.preload * { transition: none !important; }
 .disc-body pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .disc-body a { color: var(--accent); }
 
+/* ── etapp: the level above a puck (rollup badge + membership chip) ─────────── */
+/* An etapp is a puck with children, so its marks live on the same card meta row
+   as every other badge — no second card type, no second visual language. */
+.rollup {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  font-family: var(--mono); font-size: 10.5px; color: var(--ink-2);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px;
+  cursor: help;
+}
+.rollup .icn { width: 11px; height: 11px; }
+.rollup.full { color: var(--done); border-color: color-mix(in oklab, var(--done) 40%, var(--line)); }
+.rollup-n { font-variant-numeric: tabular-nums; }
+.etapp-chip {
+  display: inline-flex; align-items: center; gap: 3px; min-width: 0; flex: 0 1 auto;
+  font-size: 11px; color: var(--ink-3); cursor: help;
+}
+.etapp-chip .icn { width: 11px; height: 11px; flex: none; }
+.etapp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-head .rollup, .list-head .rollup { margin-left: 4px; }
+.blocker-link.done { color: var(--ink-3); text-decoration: line-through; }
+
 /* ── PO-layer: agent routing (card badge + sidebar queues) ──────────────────── */
 .agent-badge {
   display: inline-flex; align-items: center; gap: 3px; flex: none;

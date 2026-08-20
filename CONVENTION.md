@@ -76,6 +76,7 @@ order: 10
 | `tags`    | no       | Areas, e.g. `[editor]`, `[auth]`. Inline array. Used for filtering. |
 | `issue`   | no       | The working issue number in the repo, when the puck is in progress. |
 | `order`   | no       | Manual order **within** a status column (lower = higher up). Falls back to `updated`. |
+| `parent`  | no       | The etapp this puck belongs to: another puck's slug in the same repo, or `owner/repo#slug` anywhere on the board. One line pointing **up** — the level above is a puck with children, not a new file type. Set with `roadmap parent <slug> <parent-slug>` (`--clear` to take it out). |
 | `depends` | no       | Inline array of same-repo puck slugs this one is blocked by, e.g. `[deploy-simplification]`. The board shows ⛔ until every listed puck is `done`. |
 | `owner`   | no       | GitHub handle of the owner, e.g. `octocat`. Renders as an avatar on the card and a profile link in the modal. A field, not an assignee database. |
 | `agent`   | no       | Discipline this puck is routed to (`backend`, `design`, `research`, …) — the PO-layer's routing state. A handle, not an orchestrator: a runner reads it from git and picks the matching `agents/<name>.md` profile. Set with `roadmap agent <slug> <name>`. |
@@ -175,6 +176,32 @@ ever rewritten for you.
 This is deliberately *not* sprints, story points or capacity planning — those stay
 off the roadmap. It is one optional field that answers "when, roughly?".
 
+### The level above (`parent`)
+
+Linear has projects *and* issues; here there is one shape. A puck that other pucks
+point at **is** the etapp — the level above is a relationship, not a second record
+type. That keeps the rule intact: one file per item, and no field that has to agree
+with a field somewhere else.
+
+```yaml
+# roadmap/logga-in.md
+parent: auth          # a slug in this repo …
+parent: tor2dbear/pia-terminal#auth   # … or a puck anywhere on the board
+```
+
+Only the child stores anything. `children` and the rollup ("3/7 done") are derived
+at harvest from the `parent:` lines pointing at a puck — a stored `children:` list
+could disagree with them, and two truths is the one thing this product doesn't do.
+The rollup counts children's real statuses, so an etapp can't claim progress its
+pucks don't have.
+
+Depth isn't limited, but two levels is the point: an etapp with its pucks. A link
+that names a puck that doesn't exist, or that closes a loop, is flagged (⚠) and
+ignored rather than half-applied — the board never rewrites your file to fix it.
+
+On the board it's a grouping like any other: **Display → Grouping → Etapp** turns the
+columns into etapps, and dragging a card between them writes that one `parent:` line.
+
 ---
 
 ## Authoring helper
@@ -187,6 +214,7 @@ roadmap start|next|later|done <slug>
 roadmap tag <slug> +add -remove
 roadmap priority <slug> <level>    # urgent|high|medium|low (--clear to remove)
 roadmap target <slug> 2026-11      # the horizon; a month = its last day
+roadmap parent <slug> <etapp-slug> # put it in an etapp (--clear to take it out)
 roadmap list                       # overview
 roadmap install-hook               # auto-bump `updated` on every commit
 ```
