@@ -66,17 +66,26 @@
     showDone: false,
     priorityFilter: null, // null = any; else one of PRIORITIES
     focus: "all", // "all" | "ready" (unblocked now/next) | "inbox" (triage) | "attention" (flagged)
-    view: "board", // "board" (kanban columns) | "list" (one column, grouped by status)
+    view: "board", // "board" (kanban columns) | "list" (one column, grouped)
     sort: "default", // see SORTS below
+    group: "status", // which field becomes the columns — see GROUPS
+    showEmpty: true, // board only: keep a column that has no pucks (it's a drop target)
   };
-  var SORTS = ["default", "priority", "updated-asc", "created-desc", "created-asc", "title"];
+  var SORTS = ["default", "updated-desc", "priority", "target", "updated-asc", "created-desc", "created-asc", "title"];
   var PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
+  // Display preferences persist (they're settings, not a transient filter); a URL
+  // that names them wins over these on load — see readUrl().
   try {
     var savedView = localStorage.getItem("roadmap-view");
     if (savedView === "list" || savedView === "board") state.view = savedView;
     var savedSort = localStorage.getItem("roadmap-sort");
     if (SORTS.indexOf(savedSort) !== -1) state.sort = savedSort;
+    var savedGroup = localStorage.getItem("roadmap-group");
+    if (savedGroup) state.group = savedGroup; // validated after GROUPS is defined
+    state.showDone = localStorage.getItem("roadmap-done") === "1";
+    if (localStorage.getItem("roadmap-empty") === "0") state.showEmpty = false;
   } catch (e) {}
+  function saveDisplay(key, value) { try { localStorage.setItem("roadmap-" + key, value); } catch (e) {} }
 
   // ── auto-status ──
   // The harvester computes the flags (item.signals, discrete types) so the JSON,
@@ -108,6 +117,10 @@
       }
       if (s.type === "issue-closed") return "Issue #" + item.issue + " is closed — mark done?";
       if (s.type === "issue-open") return "Marked done but issue #" + item.issue + " is still open.";
+      if (s.type === "target-passed") {
+        var dt = daysSince(item.target);
+        return "Target " + item.target + " has passed" + (dt != null ? " (" + dt + " days ago)" : "") + " — move the horizon or land it?";
+      }
       return s.type;
     });
   }
@@ -192,34 +205,246 @@
     return out.join("\n");
   }
 
-  function matches(item) {
-    // Views: Ready = unblocked now/next; Inbox = triage (its own space); Attention
-    // = flagged (drift); All = the committed board (now/next/later/done), no inbox.
-    if (state.focus === "ready") {
-      if (item.status !== "now" && item.status !== "next") return false;
-      if ((item.blockedBy || []).length) return false;
-    } else if (state.focus === "inbox") {
-      if (item.status !== "inbox") return false; // dedicated triage surface
-    } else if (state.focus === "attention") {
-      if (!isFlagged(item)) return false; // flagged done surfaces even if "show done" is off
+  // ── query model ──────────────────────────────────────────────────────────────
+  // What's on screen is one list of predicates. The search box, the sidebar places,
+  // the filter popover and the URL are four *faces* of that list — never four
+  // sources: the controls hold the state, this projects it, and one evaluator runs
+  // it. A term is { field, op, values, neg }: AND between terms, OR within a term's
+  // values (`status:now,next` = now or next). Grammar is GitHub-shaped so nobody has
+  // to learn it, and it is the same string an agent or a saved view writes.
+  function lower(s) { return String(s).toLowerCase(); }
+  function shortRepo(r) { return String(r).split("/").pop(); }
+
+  // Fields are what a puck actually carries. `dateOf` marks the ones that compare
+  // with >=/<=/>/< instead of matching a value.
+  var FIELDS = {
+    status: { vals: function (i) { return [i.status]; } },
+    priority: { vals: function (i) { return i.priority ? [i.priority] : []; } },
+    agent: { vals: function (i) { return i.agent ? [i.agent] : []; } },
+    owner: { vals: function (i) { return i.owner ? [i.owner] : []; } },
+    tag: { vals: function (i) { return i.tags || []; } },
+    repo: { vals: function (i) { return [i.repo, shortRepo(i.repo), i.repoName]; } },
+    issue: { vals: function (i) { return i.issue == null ? [] : [String(i.issue)]; } },
+    updated: { dateOf: function (i) { return i.updated; } },
+    created: { dateOf: function (i) { return i.created; } },
+    target: { dateOf: function (i) { return i.target; } },
+  };
+  var FIELD_ALIAS = { label: "tag", labels: "tag", tags: "tag", repos: "repo", prio: "priority", discipline: "agent" };
+
+  // `is:` is the namespace for states that aren't fields — they're derived from the
+  // data (by the harvester or here), so giving each its own field would invent a
+  // second truth. Negate with `-is:blocked`.
+  var IS_STATES = {
+    ready: function (i) { return (i.status === "now" || i.status === "next") && !(i.blockedBy || []).length; },
+    blocked: function (i) { return !!(i.blockedBy || []).length; },
+    flagged: function (i) { return isFlagged(i); },
+    stale: function (i) { return (i.signals || []).some(function (s) { return s.type === "stale"; }); },
+    adapted: function (i) { return !i.native; },
+    done: function (i) { return !!TERMINAL[i.status]; }, // done *or* cancelled — the archive
+  };
+
+  // Split on whitespace, but keep "quoted phrases" whole so free text can contain spaces.
+  function tokenize(str) {
+    var out = [], cur = "", quote = null;
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charAt(i);
+      if (quote) { if (c === quote) quote = null; else cur += c; continue; }
+      if (c === '"' || c === "'") { quote = c; continue; }
+      if (/\s/.test(c)) { if (cur) { out.push(cur); cur = ""; } continue; }
+      cur += c;
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
+  // Anything that isn't a known field or `is:` state stays free text, so a typo
+  // narrows the search instead of silently disappearing.
+  function parseQuery(str) {
+    var terms = [];
+    tokenize(String(str || "")).forEach(function (tok) {
+      var neg = false;
+      if (tok.charAt(0) === "-" && tok.length > 1) { neg = true; tok = tok.slice(1); }
+      var c = tok.indexOf(":");
+      if (c > 0) {
+        var name = lower(tok.slice(0, c));
+        var rest = tok.slice(c + 1);
+        name = FIELD_ALIAS[name] || name;
+        if (name === "is" && IS_STATES[lower(rest)]) {
+          terms.push({ field: "is", op: "is", values: [lower(rest)], neg: neg });
+          return;
+        }
+        if (FIELDS[name] && rest) {
+          if (FIELDS[name].dateOf) {
+            var m = /^(>=|<=|>|<|=)?(.+)$/.exec(rest);
+            terms.push({ field: name, op: m[1] || "=", values: [m[2]], neg: neg });
+          } else {
+            terms.push({ field: name, op: "in", values: rest.split(",").map(lower).filter(Boolean), neg: neg });
+          }
+          return;
+        }
+      }
+      terms.push({ field: "text", op: "has", values: [lower(tok)], neg: neg });
+    });
+    return terms;
+  }
+
+  function quoted(v) { return /\s/.test(v) ? '"' + v + '"' : v; }
+  function serializeTerms(terms) {
+    return terms.map(function (t) {
+      var p = t.neg ? "-" : "";
+      if (t.field === "text") return p + quoted(t.values[0]);
+      if (t.field === "is") return p + "is:" + t.values[0];
+      if (t.op !== "in" && t.op !== "=") return p + t.field + ":" + t.op + t.values[0];
+      return p + t.field + ":" + t.values.map(quoted).join(",");
+    }).join(" ");
+  }
+
+  // ISO dates compare as strings, so no parsing is needed.
+  function cmpDate(a, op, b) {
+    if (!a) return false; // no value → never matches a date question
+    if (op === ">") return a > b;
+    if (op === "<") return a < b;
+    if (op === ">=") return a >= b;
+    if (op === "<=") return a <= b;
+    return a === b;
+  }
+
+  function termMatches(item, t) {
+    var hit;
+    if (t.field === "text") {
+      var hay = lower(item.title + " " + item.body + " " + (item.tags || []).join(" ") + " " + item.repoName);
+      hit = hay.indexOf(t.values[0]) !== -1;
+    } else if (t.field === "is") {
+      hit = !!IS_STATES[t.values[0]](item);
     } else {
-      // "all" = the board of committed work; inbox lives in its own view.
-      if (item.status === "inbox") return false;
-      if (!state.showDone && TERMINAL[item.status]) return false;
+      var f = FIELDS[t.field];
+      if (f.dateOf) hit = cmpDate(f.dateOf(item), t.op, t.values[0]);
+      else {
+        var vals = f.vals(item).filter(Boolean).map(lower);
+        hit = t.values.some(function (v) { return vals.indexOf(v) !== -1; });
+      }
     }
-    if (state.priorityFilter && item.priority !== state.priorityFilter) return false;
-    if (state.agents.size && !state.agents.has(item.agent)) return false;
-    if (state.repos.size && !state.repos.has(item.repo)) return false;
-    if (state.tags.size) {
-      var hit = item.tags.some(function (t) { return state.tags.has(t); });
-      if (!hit) return false;
-    }
-    if (state.query) {
-      var q = state.query.toLowerCase();
-      var hay = (item.title + " " + item.body + " " + item.tags.join(" ") + " " + item.repoName).toLowerCase();
-      if (hay.indexOf(q) === -1) return false;
-    }
+    return t.neg ? !hit : hit;
+  }
+  function runQuery(item, terms) {
+    for (var i = 0; i < terms.length; i++) if (!termMatches(item, terms[i])) return false;
     return true;
+  }
+
+  // The sidebar views are queries, not special cases in the filter — the same
+  // strings a saved view or an agent would write. ("all" = the committed board;
+  // inbox has its own space, and the archive is added below unless it's shown.)
+  var VIEWS = { all: "-status:inbox", ready: "is:ready", inbox: "status:inbox", attention: "is:flagged" };
+  var NOT_DONE = { field: "is", op: "is", values: ["done"], neg: true };
+
+  // Places and the filter popover, projected into terms. A place is just a filter
+  // the navigation happens to have set to exactly one value.
+  function controlTerms() {
+    var t = [];
+    function fromSet(field, set, map) {
+      if (!set.size) return;
+      var vals = [];
+      set.forEach(function (v) { vals.push(map ? map(v) : v); });
+      t.push({ field: field, op: "in", values: vals, neg: false });
+    }
+    fromSet("repo", state.repos, shortRepo);
+    fromSet("agent", state.agents);
+    fromSet("tag", state.tags);
+    if (state.priorityFilter) t.push({ field: "priority", op: "in", values: [state.priorityFilter], neg: false });
+    return t;
+  }
+  // The filter half of the view — what goes in ?q= and, later, on the chip row.
+  function filterTerms() { return controlTerms().concat(parseQuery(state.query)); }
+  function activeTerms() {
+    var t = parseQuery(VIEWS[state.focus] || VIEWS.all);
+    if (state.focus === "all" && !state.showDone) t.push(NOT_DONE);
+    return t.concat(filterTerms());
+  }
+
+  // Recomputed once per render (renderBoard) so the query isn't parsed per item.
+  var activeQuery = null;
+  function matches(item) { return runQuery(item, activeQuery || activeTerms()); }
+
+  // The free-text half of the search box — what suggestions and quick-capture use,
+  // so typing `status:now` filters instead of offering to create a puck called that.
+  function queryText() {
+    return parseQuery(state.query).filter(function (t) { return t.field === "text" && !t.neg; })
+      .map(function (t) { return t.values[0]; }).join(" ");
+  }
+
+  // ── the URL: the query's third face ─────────────────────────────────────────
+  // `?view=` names the view (a shorthand for its query, so the sidebar can still
+  // highlight a row), `?q=` carries the filter on top of it, `?done=1` is display
+  // state — the archive toggle is not a filter. The puck hash is left alone, and
+  // writes always replace: the board URL describes where you are, it isn't a step
+  // in history.
+  function viewParams() {
+    var p = [];
+    if (state.focus !== "all") p.push("view=" + state.focus);
+    var q = serializeTerms(filterTerms());
+    if (q) p.push("q=" + encodeURIComponent(q).replace(/%20/g, "+"));
+    // Display state rides along so a shared link arrives looking the way you left
+    // it — but only when it differs from default, so a plain board keeps a clean URL.
+    if (state.group !== DISPLAY_DEFAULTS.group) p.push("group=" + state.group);
+    if (state.view !== DISPLAY_DEFAULTS.view) p.push("layout=" + state.view);
+    if (state.sort !== DISPLAY_DEFAULTS.sort) p.push("sort=" + state.sort);
+    if (state.showDone) p.push("done=1");
+    if (!state.showEmpty) p.push("empty=0");
+    return p.length ? "?" + p.join("&") : "";
+  }
+  function writeUrl() {
+    var next = viewParams();
+    if (next === location.search) return; // nothing moved — don't churn history
+    try { history.replaceState(history.state, "", location.pathname + next + location.hash); } catch (e) {}
+  }
+  // A repo can be written short (`pia-terminal`), full (`owner/pia-terminal`) or by
+  // display name (`PIA`) — resolve any of them to the id the state holds.
+  function resolveRepo(v) {
+    var want = lower(v), hit = null;
+    DATA.sources.forEach(function (s) {
+      if (hit) return;
+      if (lower(s.repo) === want || lower(shortRepo(s.repo)) === want || lower(s.name) === want) hit = s.repo;
+    });
+    return hit;
+  }
+  function readUrl() {
+    var s = location.search.replace(/^\?/, "");
+    if (!s) return;
+    var got = {};
+    s.split("&").forEach(function (kv) {
+      var i = kv.indexOf("=");
+      got[i < 0 ? kv : kv.slice(0, i)] = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
+    });
+    // A link's display choices win over the saved preferences, but aren't saved
+    // themselves — someone else's view shouldn't quietly become yours.
+    if (got.done === "1") state.showDone = true;
+    if (got.empty === "0") state.showEmpty = false;
+    if (GROUPS[got.group]) state.group = got.group;
+    if (got.layout === "list" || got.layout === "board") state.view = got.layout;
+    if (SORTS.indexOf(got.sort) !== -1) state.sort = got.sort;
+    if (VIEWS[got.view]) state.focus = got.view;
+    if (!got.q) return;
+    // Hand each incoming term back to the control that owns it, so the sidebar and
+    // the filter popover show what the link describes; the rest stays as text in the
+    // search box. This is controlTerms() run backwards — one model, two directions.
+    var rest = [];
+    parseQuery(got.q).forEach(function (t) {
+      if (!t.neg && t.op === "in") {
+        if (t.field === "repo") {
+          var ids = t.values.map(resolveRepo).filter(Boolean);
+          if (ids.length === t.values.length) { ids.forEach(function (r) { state.repos.add(r); }); return; }
+        } else if (t.field === "agent") {
+          t.values.forEach(function (v) { state.agents.add(v); }); return;
+        } else if (t.field === "tag") {
+          t.values.forEach(function (v) { state.tags.add(v); }); return;
+        } else if (t.field === "priority" && t.values.length === 1 && PRIORITY_RANK[t.values[0]] != null) {
+          state.priorityFilter = t.values[0]; return;
+        }
+      }
+      rest.push(t);
+    });
+    state.query = serializeTerms(rest);
+    if (searchInput) { searchInput.value = state.query; updateSearchClear(); }
   }
 
   function el(tag, cls, text) {
@@ -236,6 +461,41 @@
     var d = el("span", cls || "card-date", date);
     d.title = "Last updated";
     d.setAttribute("aria-label", "Last updated " + date);
+    return d;
+  }
+
+  // ── the horizon ─────────────────────────────────────────────────────────────
+  // `target` is stored exact (it has to sort and compare) but shown coarse: a card
+  // shouting "30 NOV" reads as a deadline promise, "Nov 2026" reads as a horizon.
+  // Close in, the countdown is the useful part, so that wins.
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function monthLabel(ym) { // "2026-11" → "Nov 2026"
+    var p = String(ym).split("-");
+    return (MONTHS[Number(p[1]) - 1] || p[1]) + " " + p[0];
+  }
+  function targetLabel(date) {
+    var d = daysSince(date); // positive = the horizon has passed
+    if (d != null && d >= 0 && d <= 1) return d === 0 ? "today" : "yesterday";
+    if (d != null && d < 0 && d >= -21) return "in " + -d + " day" + (d === -1 ? "" : "s");
+    return monthLabel(String(date).slice(0, 7));
+  }
+  // A real calendar date, not just the right shape: Date rolls "2026-02-31" into
+  // March, so only a value that survives the round-trip counts. Mirrors
+  // normalizeDate() in the harvester, so the board and the pipeline agree.
+  function realDate(s) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    var d = new Date(s + "T00:00:00Z");
+    return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }
+  function endOfMonth(ym) { // "2026-11" → "2026-11-30"
+    var p = String(ym).split("-");
+    return new Date(Date.UTC(Number(p[0]), Number(p[1]), 0)).toISOString().slice(0, 10);
+  }
+  function targetEl(date, cls) {
+    var passed = daysSince(date) > 0;
+    var d = el("span", (cls || "card-date") + " target-date" + (passed ? " past" : ""), "◷ " + targetLabel(date));
+    d.title = "Target " + date + (passed ? " — horizon passed" : "");
+    d.setAttribute("aria-label", d.title);
     return d;
   }
 
@@ -325,6 +585,21 @@
 
   // A card is a compact summary; tapping it opens the full detail in a modal
   // (fullscreen on mobile) so long bodies don't blow up the column height.
+  // Which date a card shows: the one the ordering is actually about. Sorting by
+  // "Newest created" and then showing `updated` made the column look shuffled.
+  function cardDateField() {
+    if (state.sort === "target" || state.group === "target") return "target";
+    return (state.sort === "created-desc" || state.sort === "created-asc") ? "created" : "updated";
+  }
+  // The date cell for a card/row: the field the view is about, rendered in that
+  // field's own language. A puck with no target falls back to `updated` rather than
+  // leaving a hole where the others have a date.
+  function dateCell(item, cls) {
+    var f = cardDateField();
+    if (f === "target") return item.target ? targetEl(item.target, cls) : (item.updated ? dateEl(item.updated, cls) : null);
+    return item[f] ? dateEl(item[f], cls) : null;
+  }
+
   function card(item) {
     var sig = signalMessages(item);
     var c = el("div", "card" + (item.native ? "" : " adapted") + (sig.length ? " flagged" : "") + (item.id === selectedId ? " sel" : ""));
@@ -351,7 +626,8 @@
     if (item.agent) meta.appendChild(agentBadge(item.agent));
     if ((item.blockedBy || []).length) meta.appendChild(blockBadge(item));
     if (item.owner) meta.appendChild(ownerEl(item.owner));
-    if (item.updated) meta.appendChild(dateEl(item.updated));
+    var dc = dateCell(item);
+    if (dc) meta.appendChild(dc);
     c.appendChild(meta);
 
     // Row 3: tags (static badges).
@@ -380,6 +656,30 @@
   function clearDropTargets() {
     var els = document.querySelectorAll(".column.drop-target");
     Array.prototype.forEach.call(els, function (e) { e.classList.remove("drop-target"); });
+    var lines = document.querySelectorAll(".drop-line");
+    Array.prototype.forEach.call(lines, function (e) { if (e.parentNode) e.parentNode.removeChild(e); });
+  }
+
+  // Where a drop would land: the cards under the pointer, minus the one being
+  // dragged (it's about to leave its old slot, so it must not count as a neighbour).
+  function dropPointAt(container, y, items, moving) {
+    var kids = Array.prototype.filter.call(container.querySelectorAll(".card"), function (c) {
+      return c.getAttribute("data-id") !== moving.id;
+    });
+    var idx = kids.length;
+    for (var i = 0; i < kids.length; i++) {
+      var r = kids[i].getBoundingClientRect();
+      if (y < r.top + r.height / 2) { idx = i; break; }
+    }
+    var byId = {};
+    items.forEach(function (it) { byId[it.id] = it; });
+    var seq = kids.map(function (c) { return byId[c.getAttribute("data-id")]; }).filter(Boolean);
+    return { before: kids[idx] || null, prev: seq[idx - 1] || null, next: seq[idx] || null };
+  }
+  function showDropLine(container, before) {
+    var line = container.querySelector(".drop-line") || el("div", "drop-line");
+    if (before) container.insertBefore(line, before);
+    else container.appendChild(line);
   }
 
   function linkEl(text, href) {
@@ -675,6 +975,12 @@
         },
         onPick: function (v) { changePriority(item, v); },
       })));
+    }
+
+    // Target: the horizon. Shown when editable or when the puck declares one —
+    // most pucks won't, and an empty row on every card would be noise.
+    if (editable || item.target) {
+      props.appendChild(propRow("Target", targetValue(item, editable)));
     }
 
     props.appendChild(propRow("Assignee", item.owner
@@ -1047,75 +1353,217 @@
     r.appendChild(rp);
 
     var dt = el("div", "list-cell list-dt");
-    if (item.updated) dt.appendChild(dateEl(item.updated, "list-date"));
+    var ldc = dateCell(item, "list-date");
+    if (ldc) dt.appendChild(ldc);
     r.appendChild(dt);
 
     r.addEventListener("click", function () { openModal(item); });
     return r;
   }
 
-  function renderColumns(visible, statuses) {
-    statuses.forEach(function (status) {
-      var group = visible.filter(function (it) { return it.status === status; });
-      var col = el("div", "column col-status-" + status);
+  // ── grouping ────────────────────────────────────────────────────────────────
+  // Which field becomes the columns is a variable, not a hard-coded status axis. A
+  // group supplies: keyOf (puck → key), keys (the ordered keys to draw), labelOf, an
+  // optional column class, and — where the field is writable — a `write`, so
+  // dropping a card into a column *sets that field*. Grouping by agent is then the
+  // PO console and grouping by repo the fleet view, out of one renderer.
+  //
+  // `status` has a fixed domain (the ladder), so its columns stand even when empty:
+  // an empty column is a real drop target. Open domains (agent, repo, priority) list
+  // only the values actually on screen, so they can't produce phantom columns.
+  var NO_VALUE = "\u0000"; // the "none" bucket — a key no real value can collide with
+  function presentKeys(items, keyOf, rank) {
+    var seen = {}, out = [];
+    items.forEach(function (it) { var k = keyOf(it); if (!seen[k]) { seen[k] = 1; out.push(k); } });
+    return out.sort(function (a, b) {
+      if (a === NO_VALUE) return 1; // "none" always sits last
+      if (b === NO_VALUE) return -1;
+      return rank ? rank(a) - rank(b) : a.localeCompare(b);
+    });
+  }
+  var GROUPS = {
+    status: {
+      label: "Status",
+      field: "status",
+      fixed: true,
+      keyOf: function (i) { return i.status; },
+      keys: function () { return columnsForFocus(); },
+      labelOf: function (k) { return STATUS_LABEL[k] || k; },
+      cls: function (k) { return "col-status-" + k; },
+      write: function (item, k) { changeStatus(item, k); },
+      preset: function (k) { return { status: k }; },
+    },
+    agent: {
+      label: "Agent",
+      field: "agent",
+      keyOf: function (i) { return i.agent || NO_VALUE; },
+      keys: function (items) { return presentKeys(items, this.keyOf); },
+      labelOf: function (k) { return k === NO_VALUE ? "Unrouted" : agentLabel(k); },
+      write: function (item, k) { changeAgent(item, k === NO_VALUE ? null : k); },
+    },
+    repo: {
+      label: "Repo",
+      keyOf: function (i) { return i.repo; },
+      keys: function (items) {
+        var order = {};
+        DATA.sources.forEach(function (s, i) { order[s.repo] = i; });
+        return presentKeys(items, this.keyOf, function (k) { return order[k] == null ? 999 : order[k]; });
+      },
+      labelOf: function (k) { return repoNameOf(k); },
+      tint: function (k) {
+        var s = DATA.sources.filter(function (x) { return x.repo === k; })[0];
+        return s && s.color; // a repo column wears its own colour, like its cards
+      },
+    },
+    // The timeline: columns are months, so it's the same renderer as the board.
+    // Dropping a card into a month sets the horizon to that month's last day —
+    // the same "by the end of it" reading `roadmap target <slug> 2026-11` uses.
+    target: {
+      label: "Target",
+      field: "target",
+      toValue: function (k) { return k === NO_VALUE ? null : endOfMonth(k); },
+      keyOf: function (i) { return i.target ? i.target.slice(0, 7) : NO_VALUE; },
+      keys: function (items) { return presentKeys(items, this.keyOf); },
+      labelOf: function (k) { return k === NO_VALUE ? "No target" : monthLabel(k); },
+      write: function (item, k) { changeTarget(item, k === NO_VALUE ? null : endOfMonth(k)); },
+    },
+    priority: {
+      label: "Priority",
+      field: "priority",
+      keyOf: function (i) { return i.priority || NO_VALUE; },
+      keys: function (items) {
+        return presentKeys(items, this.keyOf, function (k) { return PRIORITY_RANK[k]; });
+      },
+      labelOf: function (k) { return k === NO_VALUE ? "No priority" : (PRIORITY_LABEL[k] || k); },
+      write: function (item, k) { changePriority(item, k === NO_VALUE ? null : k); },
+    },
+  };
+  function activeGroup() { return GROUPS[state.group] || GROUPS.status; }
+  // "Manual" is the only ordering where a hand-placed position means anything —
+  // every other mode derives it from a field (see sortComparator).
+  function manualRank() { return state.sort === "default"; }
+
+  // Bucket the visible pucks by the active grouping. Returns [{ key, label, items }]
+  // in the group's own order — the one thing both renderers consume.
+  function groupsOf(visible) {
+    var g = activeGroup();
+    var keys = g.keys(visible);
+    var byKey = {};
+    keys.forEach(function (k) { byKey[k] = []; });
+    visible.forEach(function (it) {
+      var k = g.keyOf(it);
+      if (byKey[k]) byKey[k].push(it); // a key outside the list (e.g. a filtered status) is dropped
+    });
+    return keys.map(function (k) { return { key: k, label: g.labelOf(k), items: byKey[k] }; });
+  }
+
+  function renderColumns(groups) {
+    var g = activeGroup();
+    groups.forEach(function (grp) {
+      if (!grp.items.length && !state.showEmpty) return;
+      var col = el("div", "column" + (g.cls ? " " + g.cls(grp.key) : " col-plain"));
+      if (g.tint && g.tint(grp.key)) col.style.setProperty("--tint", g.tint(grp.key));
       var head = el("div", "col-head");
       head.appendChild(el("span", "swatch"));
-      head.appendChild(el("h2", null, STATUS_LABEL[status] || status));
-      head.appendChild(el("span", "count", String(group.length)));
+      head.appendChild(el("h2", null, grp.label));
+      head.appendChild(el("span", "count", String(grp.items.length)));
       col.appendChild(head);
       var cards = el("div", "cards");
-      if (group.length === 0) {
-        cards.appendChild(el("div", "empty", "—"));
-      } else {
-        group.forEach(function (it) { cards.appendChild(card(it)); });
-      }
+      if (grp.items.length === 0) cards.appendChild(el("div", "empty", "—"));
+      else grp.items.forEach(function (it) { cards.appendChild(card(it)); });
       col.appendChild(cards);
-      // in-column "+" — create a puck already in this column (Linear-style)
-      if (ghToken()) {
+      // in-column "+" — only where "new puck already in this column" is expressible
+      if (ghToken() && g.preset) {
         var add = el("button", "col-add", "");
         add.type = "button";
         add.appendChild(icon("plus"));
-        add.setAttribute("aria-label", "New puck in " + (STATUS_LABEL[status] || status));
-        add.addEventListener("click", function () { openNewPuckPanel({ status: status }); });
+        add.setAttribute("aria-label", "New puck in " + grp.label);
+        add.addEventListener("click", function () { openNewPuckPanel(g.preset(grp.key)); });
         col.appendChild(add);
       }
-      // drop target for drag-to-restatus
-      col.addEventListener("dragover", function (e) {
-        if (!dragItem || dragItem.status === status) return;
-        e.preventDefault();
-        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-        col.classList.add("drop-target");
-      });
-      col.addEventListener("dragleave", function (e) { if (e.target === col || !col.contains(e.relatedTarget)) col.classList.remove("drop-target"); });
-      col.addEventListener("drop", function (e) {
-        col.classList.remove("drop-target");
-        if (!dragItem || dragItem.status === status) return;
-        e.preventDefault();
-        changeStatus(dragItem, status);
-        dragItem = null;
-      });
+      // Manual ordering: dropping *between* cards writes `order` (and the status
+      // too, when the card also changed column — one move, one commit).
+      //
+      // Two conditions, both about honesty. The ordering must be Manual, because
+      // every other mode derives the position from a field and hand-placing would
+      // be a lie. And the grouping must be `status`, because `order` is defined as
+      // the rank *within a status column* — placing a card among agent- or
+      // priority-grouped neighbours would compute a number against pucks from other
+      // statuses and quietly reshuffle the real board. Those groupings keep the
+      // plain column drop below, which writes their own field.
+      if (manualRank() && ghToken() && state.group === "status") {
+        cards.addEventListener("dragover", function (e) {
+          if (!dragItem) return;
+          e.preventDefault();
+          e.stopPropagation(); // the column's own handler must not also claim this
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          col.classList.remove("drop-target");
+          // Only offer a position we can actually write — refusing after the drop
+          // would be worse than not inviting it.
+          var over = dropPointAt(cards, e.clientY, grp.items, dragItem);
+          if (orderBetween(over.prev, over.next) == null) { clearDropTargets(); return; }
+          showDropLine(cards, over.before);
+        });
+        cards.addEventListener("drop", function (e) {
+          if (!dragItem) return;
+          e.preventDefault();
+          e.stopPropagation();
+          var moving = dragItem;
+          dragItem = null;
+          var at = dropPointAt(cards, e.clientY, grp.items, moving);
+          clearDropTargets();
+          var order = orderBetween(at.prev, at.next);
+          if (order == null) {
+            toast("✗ Can’t place below an unranked puck — run `roadmap renumber` first", true);
+            return;
+          }
+          var moved = g.keyOf(moving) !== grp.key;
+          changeOrder(moving, order, moved ? grp.key : null, g);
+        });
+      }
+
+      // Drop = write the grouped field. No writer (repo) → no drop target.
+      if (g.write) {
+        col.addEventListener("dragover", function (e) {
+          if (!dragItem || g.keyOf(dragItem) === grp.key) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          col.classList.add("drop-target");
+        });
+        col.addEventListener("dragleave", function (e) { if (e.target === col || !col.contains(e.relatedTarget)) col.classList.remove("drop-target"); });
+        col.addEventListener("drop", function (e) {
+          col.classList.remove("drop-target");
+          if (!dragItem || g.keyOf(dragItem) === grp.key) return;
+          e.preventDefault();
+          g.write(dragItem, grp.key);
+          dragItem = null;
+        });
+      }
       board.appendChild(col);
     });
   }
 
-  function renderList(visible, statuses) {
-    statuses.forEach(function (status) {
-      var group = visible.filter(function (it) { return it.status === status; });
-      if (group.length === 0) return; // no "—" placeholders in the flat list
-      var section = el("section", "list-group col-status-" + status);
+  function renderList(groups) {
+    var g = activeGroup();
+    groups.forEach(function (grp) {
+      if (!grp.items.length) return; // a flat list has no drop targets, so no empty headers
+      var section = el("section", "list-group" + (g.cls ? " " + g.cls(grp.key) : " col-plain"));
+      if (g.tint && g.tint(grp.key)) section.style.setProperty("--tint", g.tint(grp.key));
       var head = el("div", "list-head");
       head.appendChild(el("span", "swatch"));
-      head.appendChild(el("h2", null, STATUS_LABEL[status] || status));
-      head.appendChild(el("span", "count", String(group.length)));
+      head.appendChild(el("h2", null, grp.label));
+      head.appendChild(el("span", "count", String(grp.items.length)));
       section.appendChild(head);
-      group.forEach(function (it) { section.appendChild(listRow(it)); });
+      grp.items.forEach(function (it) { section.appendChild(listRow(it)); });
       board.appendChild(section);
     });
   }
 
-  // Client-side sort. "default" mirrors the harvester (manual `order` first, then
-  // freshest `updated`, then title) so the board looks the same until you pick
-  // another mode; the explicit modes drop `order` since the choice is deliberate.
+  // Client-side sort. "default" is the *manual* order — it mirrors the harvester
+  // (manual `order` first, then freshest `updated`, then title) and is labelled
+  // "Manual" in the menu; "updated-desc" is the same freshness sort without `order`,
+  // for when the hand-ranking should step aside. Every explicit mode drops `order`
+  // since the choice is deliberate.
   // Sort by a nullable date field, always pushing items that lack it to the end.
   // dir: 1 = oldest first (ascending), -1 = newest first (descending).
   function byDate(field, dir) {
@@ -1137,6 +1585,8 @@
         return (b.updated || "").localeCompare(a.updated || "") || a.title.localeCompare(b.title);
       };
     }
+    if (state.sort === "target") return byDate("target", 1); // nearest horizon first, undated last
+    if (state.sort === "updated-desc") return byDate("updated", -1);
     if (state.sort === "updated-asc") return byDate("updated", 1);
     if (state.sort === "created-desc") return byDate("created", -1);
     if (state.sort === "created-asc") return byDate("created", 1);
@@ -1157,14 +1607,17 @@
     var queue = state.focus === "ready" || state.focus === "inbox";
     var layout = queue ? "list" : state.view;
     board.classList.toggle("as-list", layout === "list");
+    activeQuery = activeTerms();
     var visible = DATA.items.filter(matches).sort(sortComparator());
-    var statuses = columnsForFocus();
+    var groups = groupsOf(visible);
 
-    if (layout === "list") renderList(visible, statuses);
-    else renderColumns(visible, statuses);
+    if (layout === "list") renderList(groups);
+    else renderColumns(groups);
 
     var shown = visible.length;
     updateViewHeader(shown);
+    refreshDisplayDot();
+    writeUrl(); // every render reflects the view into the URL, so it stays shareable
     document.getElementById("footmeta").textContent =
       shown + " of " + DATA.total + " shown · generated " + DATA.generatedAt.slice(0, 16).replace("T", " ") + " UTC · ";
   }
@@ -1317,12 +1770,16 @@
   // actionable queue) · Inbox (triage of raw ideas, its own space) · ⚠ Needs
   // attention (drift). Each is a nav row with a live count and a clear active state.
   function viewCounts() {
-    var c = { all: 0, ready: 0, inbox: 0, attention: 0 };
+    var c = {}, qs = {};
+    // Counted with the views' own queries, so a row's number can never drift from
+    // what clicking it shows. "All pucks" always excludes the archive, whatever the
+    // toggle says, so the count doesn't jump when you show done.
+    Object.keys(VIEWS).forEach(function (k) {
+      c[k] = 0;
+      qs[k] = parseQuery(VIEWS[k]).concat(k === "all" ? [NOT_DONE] : []);
+    });
     DATA.items.forEach(function (it) {
-      if (it.status === "inbox") c.inbox++;
-      else if (!TERMINAL[it.status]) c.all++;
-      if ((it.status === "now" || it.status === "next") && !(it.blockedBy || []).length) c.ready++;
-      if (isFlagged(it)) c.attention++;
+      Object.keys(qs).forEach(function (k) { if (runQuery(it, qs[k])) c[k]++; });
     });
     return c;
   }
@@ -1405,33 +1862,122 @@
   applyThemeColor();
   updateThemeButton();
 
-  // ── view toggle (board ⇄ list, remembered) ──
-  var viewBtn = document.getElementById("viewToggle");
-  function updateViewButton() {
-    var isList = state.view === "list";
-    // Icon = the current view (no persistent .active highlight — it read as a
-    // stuck focus ring); the title says what a tap does.
-    viewBtn.innerHTML = "";
-    viewBtn.appendChild(icon(isList ? "grid" : "list"));
-    viewBtn.title = isList ? "Switch to board view" : "Switch to list view";
-    viewBtn.setAttribute("aria-label", viewBtn.title);
+  // ── Display: layout · grouping · ordering · what's included wholesale ────────
+  // One menu for *how* the chosen pucks are presented, so a new display option is
+  // a row here instead of another button in the header. Filter stays next door and
+  // answers *which* pucks — the two never overlap. Filter shows what it's doing
+  // with chips/a count; Display shows a dot when anything differs from default,
+  // because "showing more" must never read as "you have narrowed something".
+  var SORT_LABEL = {
+    default: "Manual", "updated-desc": "Recently updated", priority: "Priority (high→low)",
+    target: "Target (soonest)",
+    "updated-asc": "Oldest updated", "created-desc": "Newest created",
+    "created-asc": "Oldest created", title: "Title A–Z",
+  };
+  var DISPLAY_DEFAULTS = { view: "board", sort: "default", group: "status", showDone: false, showEmpty: true };
+  if (!GROUPS[state.group]) state.group = DISPLAY_DEFAULTS.group; // a stale saved value
+  var displayBtn = document.getElementById("displayBtn");
+  var displayDot = document.getElementById("displayDot");
+  function displayDirty() {
+    for (var k in DISPLAY_DEFAULTS) if (state[k] !== DISPLAY_DEFAULTS[k]) return true;
+    return false;
   }
-  viewBtn.addEventListener("click", function () {
-    state.view = state.view === "board" ? "list" : "board";
-    try { localStorage.setItem("roadmap-view", state.view); } catch (e) {}
-    updateViewButton();
+  function refreshDisplayDot() { if (displayDot) displayDot.hidden = !displayDirty(); }
+  function setDisplay(key, value, storeAs) {
+    state[key] = value;
+    saveDisplay(storeAs || key, typeof value === "boolean" ? (value ? "1" : "0") : value);
+    refreshDisplayDot();
     renderBoard();
-    viewBtn.blur(); // drop focus so no ring lingers after the tap
-  });
+  }
+  function dpRow(labelText, control) {
+    var row = el("div", "dp-row");
+    row.appendChild(el("span", "dp-label", labelText));
+    row.appendChild(control);
+    return row;
+  }
+  function toggleDisplayMenu() {
+    var wrap = displayBtn && displayBtn.parentNode;
+    if (!wrap) return;
+    var open = wrap.querySelector(".filter-pop");
+    if (open) { open.remove(); displayBtn.setAttribute("aria-expanded", "false"); return; }
+    var pop = el("div", "filter-pop display-pop");
 
-  // ── sort (in the filter panel, remembered) ──
-  var sortSelect = document.getElementById("sortSelect");
-  sortSelect.value = state.sort;
-  sortSelect.addEventListener("change", function () {
-    state.sort = sortSelect.value;
-    try { localStorage.setItem("roadmap-sort", state.sort); } catch (e) {}
-    renderBoard();
-  });
+    // Layout — a segmented control, because it's one choice among a few, not a
+    // toggle that has to be pressed twice to learn what it does.
+    var seg = el("div", "dp-seg");
+    [["list", "list", "List"], ["board", "grid", "Board"]].forEach(function (o) {
+      var b = el("button", "dp-segbtn" + (state.view === o[0] ? " on" : ""));
+      b.type = "button";
+      b.appendChild(icon(o[1]));
+      b.appendChild(el("span", null, o[2]));
+      b.setAttribute("aria-pressed", state.view === o[0] ? "true" : "false");
+      b.addEventListener("click", function () {
+        setDisplay("view", o[0]);
+        Array.prototype.forEach.call(seg.children, function (c) {
+          var on = c === b;
+          c.classList.toggle("on", on);
+          c.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+      });
+      seg.appendChild(b);
+    });
+    pop.appendChild(seg);
+
+    // Grouping — the columns' field. This is the row that turns one board into an
+    // agent queue, a fleet view or (once `target` exists) a timeline.
+    var groupSel = selectEl("np-select", Object.keys(GROUPS).map(function (k) {
+      return { value: k, label: GROUPS[k].label };
+    }), state.group);
+    groupSel.addEventListener("change", function () { setDisplay("group", groupSel.value); });
+    pop.appendChild(dpRow("Grouping", groupSel));
+
+    // Ordering — inside a group. "Manual" is `order` from the puck; every other
+    // mode deliberately ignores it.
+    var sortSel = selectEl("np-select", SORTS.map(function (s) {
+      return { value: s, label: SORT_LABEL[s] || s };
+    }), state.sort);
+    sortSel.addEventListener("change", function () { setDisplay("sort", sortSel.value); });
+    pop.appendChild(dpRow("Ordering", sortSel));
+
+    pop.appendChild(el("div", "dp-rule"));
+
+    // Wholesale inclusion — not filters: these say how complete the list is.
+    var doneRow = el("label", "fp-toggle");
+    var doneCb = document.createElement("input"); doneCb.type = "checkbox"; doneCb.checked = state.showDone;
+    doneCb.addEventListener("change", function () { setDisplay("showDone", doneCb.checked, "done"); });
+    doneRow.appendChild(doneCb); doneRow.appendChild(el("span", null, "Show done & cancelled"));
+    pop.appendChild(doneRow);
+
+    var emptyRow = el("label", "fp-toggle");
+    var emptyCb = document.createElement("input"); emptyCb.type = "checkbox"; emptyCb.checked = state.showEmpty;
+    emptyCb.addEventListener("change", function () { setDisplay("showEmpty", emptyCb.checked, "empty"); });
+    emptyRow.appendChild(emptyCb); emptyRow.appendChild(el("span", null, "Show empty columns"));
+    emptyRow.title = "Board only — an empty column is still a drop target. A list never shows empty groups.";
+    pop.appendChild(emptyRow);
+
+    pop.appendChild(el("div", "dp-rule"));
+    var reset = el("button", "dp-reset", "Reset to default");
+    reset.type = "button";
+    reset.addEventListener("click", function () {
+      for (var k in DISPLAY_DEFAULTS) state[k] = DISPLAY_DEFAULTS[k];
+      saveDisplay("view", state.view); saveDisplay("sort", state.sort); saveDisplay("group", state.group);
+      saveDisplay("done", "0"); saveDisplay("empty", "1");
+      refreshDisplayDot();
+      renderBoard();
+      toggleDisplayMenu();
+    });
+    pop.appendChild(reset);
+
+    wrap.appendChild(pop);
+    displayBtn.setAttribute("aria-expanded", "true");
+    setTimeout(function () {
+      document.addEventListener("click", function closer(e) {
+        if (!wrap.contains(e.target)) { pop.remove(); displayBtn.setAttribute("aria-expanded", "false"); document.removeEventListener("click", closer); }
+      });
+    }, 0);
+  }
+  if (displayBtn) displayBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleDisplayMenu(); });
+  refreshDisplayDot();
 
   // ── search + title suggestions ──
   var searchInput = document.getElementById("search");
@@ -1460,6 +2006,13 @@
     cmds.push({ __cmd: true, label: "Go to Ready", hint: "View", icon: "list", run: function () { setFocus("ready"); } });
     cmds.push({ __cmd: true, label: "Go to Inbox", hint: "View", icon: "list", run: function () { setFocus("inbox"); } });
     if (vc.attention) cmds.push({ __cmd: true, label: "Go to Needs attention", hint: "View", icon: "list", run: function () { setFocus("attention"); } });
+    // Display options belong in the palette too — the palette is the extensibility
+    // surface, so a new display choice never has to become another button.
+    Object.keys(GROUPS).forEach(function (k) {
+      if (k === state.group) return;
+      cmds.push({ __cmd: true, label: "Group by " + GROUPS[k].label.toLowerCase(), hint: "Display", icon: "sliders", run: function () { setDisplay("group", k); } });
+    });
+    cmds.push({ __cmd: true, label: state.view === "list" ? "Layout: board" : "Layout: list", hint: "Display", icon: state.view === "list" ? "grid" : "list", run: function () { setDisplay("view", state.view === "list" ? "board" : "list"); } });
     cmds.push({ __cmd: true, label: "Settings", hint: "Workspace", icon: "sliders", run: function () { openSettingsPanel(); } });
     cmds.push({ __cmd: true, label: "Keyboard shortcuts", hint: "Help", icon: "list", run: function () { toggleShortcutHelp(); } });
     cmds.push({ __cmd: true, label: effectiveIsDark() ? "Switch to light" : "Switch to dark", hint: "Theme", icon: effectiveIsDark() ? "sun" : "moon", run: function () { toggleTheme(); } });
@@ -1559,7 +2112,7 @@
   }
 
   function updateSuggestions() {
-    suggestItems = computeSuggestions(state.query);
+    suggestItems = computeSuggestions(queryText()); // field terms filter; only text suggests
     // Spotlight-style: highlight the top row so Enter runs it immediately.
     suggestIndex = suggestItems.length ? 0 : -1;
     renderSuggestions();
@@ -1824,10 +2377,12 @@
   document.addEventListener("click", function (e) {
     if (swallowClick) { swallowClick = false; e.preventDefault(); e.stopPropagation(); }
   }, true);
-  // ── Filter popover (view-header) — refinements: Show done · Priority · Disciplines.
+  // ── Filter popover (view-header) — refinements: Show done · Priority · Labels.
   // Sidebar = places (views/agents/repos); this popover = what narrows the view.
+  // Only things that actually narrow the set count here — the archive toggle is
+  // display state and lives in that menu, behind a dot.
   function activeFilterCount() {
-    return (state.showDone ? 1 : 0) + (state.priorityFilter ? 1 : 0) + state.tags.size;
+    return (state.priorityFilter ? 1 : 0) + state.tags.size;
   }
   function refreshFilterBadge() {
     var badge = document.getElementById("filterCount");
@@ -1846,12 +2401,9 @@
     if (open) { open.remove(); filterBtn.setAttribute("aria-expanded", "false"); return; }
     var pop = el("div", "filter-pop");
 
-    // Show done
-    var doneRow = el("label", "fp-toggle");
-    var cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = state.showDone;
-    cb.addEventListener("change", function () { state.showDone = cb.checked; renderBoard(); refreshFilterBadge(); });
-    doneRow.appendChild(cb); doneRow.appendChild(el("span", null, "Show done & cancelled"));
-    pop.appendChild(doneRow);
+    // (The archive toggle lives in Display, not here: it says how complete the list
+    // is, not which pucks were chosen — and counting it as a filter made the button
+    // light up when you'd just shown *more*.)
 
     // Priority
     pop.appendChild(el("div", "fp-label", "Priority"));
@@ -1870,10 +2422,12 @@
     });
     pop.appendChild(prow);
 
-    // Disciplines (labels) — scoped to the current place (repo/agent), ranked by
-    // use, with the long singleton tail collapsed behind "Show all" (a search
-    // reveals everything). Folksonomies sprawl; this keeps the useful few in view.
-    pop.appendChild(el("div", "fp-label", "Disciplines"));
+    // Labels — scoped to the current place (repo/agent), ranked by use, with the
+    // long singleton tail collapsed behind "Show all" (a search reveals
+    // everything). Folksonomies sprawl; this keeps the useful few in view.
+    // ("Discipline" is reserved for `agent:` — the sidebar's queues — so the tags
+    // are labels here, matching this section's own search field and More button.)
+    pop.appendChild(el("div", "fp-label", "Labels"));
     var scopePass = function (it) {
       return (!state.repos.size || state.repos.has(it.repo)) && (!state.agents.size || state.agents.has(it.agent));
     };
@@ -1962,10 +2516,10 @@
   }
 
   buildModal();
+  readUrl(); // a shared link decides the view before anything paints it
   buildRepoChips();
   buildAgentChips();
   buildFocusControl();
-  updateViewButton();
   renderBoard();
 
   // ── mobile drawer: the sidebar slides in over a scrim ──
@@ -1976,6 +2530,7 @@
   // Inject the Feather glyphs into the chrome buttons (label buttons get the icon
   // first, icon-only buttons just get it). Kept in JS so all icons share ICONS.
   [["sideSearch", "search", true], ["sideNew", "plus", true], ["filterBtn", "filter", true],
+   ["displayBtn", "sliders", true],
    ["topSearch", "search", false], ["topNew", "plus", false]].forEach(function (spec) {
     var elm = document.getElementById(spec[0]);
     if (!elm) return;
@@ -2070,6 +2625,33 @@
     return lines.join(nl);
   }
 
+  // Write several frontmatter fields in ONE commit (a null value removes the key).
+  // Dragging a card to another column *and* a position is one move, so it should be
+  // one commit — two would make the history read like two decisions.
+  function commitFields(item, fields, message) {
+    var token = ghToken();
+    var apiPath = item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + apiPath;
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { assertOk(r, item); return r.json(); })
+      .then(function (info) {
+        var out = b64decode(info.content);
+        for (var k in fields) {
+          out = fields[k] == null ? removeFrontmatter(out, k) : editFrontmatter(out, k, String(fields[k]));
+          if (out == null) throw new Error("no frontmatter");
+        }
+        out = editFrontmatter(out, "updated", today());
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: message, content: b64encode(out), sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { assertOk(r, item); });
+  }
+
   // Commit a status change via the GitHub Contents API (read sha → PUT commit).
   function commitStatus(item, status) {
     var token = ghToken();
@@ -2091,6 +2673,60 @@
         });
       })
       .then(function (r) { assertOk(r, item); });
+  }
+
+  // ── manual rank ─────────────────────────────────────────────────────────────
+  // `order` is the puck's place inside its column. Dropping between two cards
+  // writes ONE file: the moved puck gets a value between its new neighbours.
+  // Sparse steps (10) leave room; when a gap closes, the midpoint goes decimal
+  // rather than renumbering the neighbours, because renumbering a column from the
+  // browser would mean N commits that can half-fail. `roadmap renumber` tidies a
+  // column back to 10, 20, 30 in one local pass when you want round numbers.
+  // A column renders as [ranked by `order`][unranked, by `updated`]. One write can
+  // therefore only express a position whose *upper* neighbour is ranked (or absent
+  // — the very top). Drop below an unranked card and no single `order` puts the
+  // card there: any value at all lifts it into the ranked block, above every
+  // unranked puck. Rather than land it somewhere the pointer never was, refuse and
+  // point at `roadmap renumber`, which ranks the column in one local pass.
+  var ORDER_STEP = 10;
+  function orderBetween(prev, next) {
+    var b = next && next.order != null ? next.order : null;
+    if (prev == null) return b == null ? ORDER_STEP : b - ORDER_STEP; // the very top
+    if (prev.order == null) return null;                // below an unranked card
+    var a = prev.order;
+    if (b == null) return a + ORDER_STEP;               // below every ranked card
+    var mid = (a + b) / 2;
+    return mid === a || mid === b ? null : mid;         // gap exhausted (float limit)
+  }
+  function changeOrder(item, order, alsoKey, group) {
+    if (!ghToken()) return;
+    var fields = { order: order };
+    var label = "reordered";
+    var prevOrder = item.order, prevU = item.updated, prevKey = null, keyField = null;
+    if (alsoKey && group && group.field) {
+      keyField = group.field;
+      prevKey = item[keyField];
+      // A group key isn't always the stored value (a month bucket is a date), so
+      // the group converts it.
+      // NB: not `valueOf` — that name is inherited from Object.prototype, so every
+      // group would look like it had a converter.
+      var value = group.toValue ? group.toValue(alsoKey) : (alsoKey === NO_VALUE ? null : alsoKey);
+      fields[keyField] = value;
+      item[keyField] = value;
+      label = keyField + " " + (value == null ? "cleared" : value);
+    }
+    item.order = order; item.updated = today();
+    renderBoard();
+    toast("Saving…");
+    commitFields(item, fields, "roadmap: " + item.slug + " " + label)
+      .then(function () { toast("✓ Moved — live in ~1 min"); })
+      .catch(function (err) {
+        item.order = prevOrder; item.updated = prevU;
+        if (keyField) item[keyField] = prevKey;
+        noteWriteError(item, err);
+        renderBoard();
+        toast("✗ " + err.message, true);
+      });
   }
 
   // Optimistic: flip in-memory + re-render now, commit in the background, revert on failure.
@@ -2156,14 +2792,14 @@
     if (priority === (item.priority || null) || !ghToken()) return;
     var prevP = item.priority, prevU = item.updated;
     item.priority = priority; item.updated = today();
-    renderBoard(); openModal(item);
+    renderBoard(); reopenIfOpen(item);
     toast("Saving…");
     commitPriority(item, priority)
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
         item.priority = prevP; item.updated = prevU;
         noteWriteError(item, err);
-        renderBoard(); openModal(item);
+        renderBoard(); reopenIfOpen(item);
         toast("✗ " + err.message, true);
       });
   }
@@ -2194,14 +2830,14 @@
     if (agent === (item.agent || null) || !ghToken()) return;
     var prevA = item.agent, prevU = item.updated;
     item.agent = agent; item.updated = today();
-    renderBoard(); buildAgentChips(); openModal(item);
+    renderBoard(); buildAgentChips(); reopenIfOpen(item);
     toast("Saving…");
     commitAgent(item, agent)
       .then(function () { toast(agent ? "✓ Routed to " + agent + " — live in ~1 min" : "✓ Unassigned — live in ~1 min"); })
       .catch(function (err) {
         noteWriteError(item, err);
         item.agent = prevA; item.updated = prevU;
-        renderBoard(); buildAgentChips(); openModal(item);
+        renderBoard(); buildAgentChips(); reopenIfOpen(item);
         toast("✗ " + err.message, true);
       });
   }
@@ -2254,17 +2890,88 @@
     if (!ghToken() || tags.join(",") === (item.tags || []).join(",")) return;
     var prev = item.tags, prevU = item.updated;
     item.tags = tags; item.updated = today();
-    renderBoard(); openModal(item);
+    renderBoard(); reopenIfOpen(item);
     toast("Saving…");
     commitTags(item, tags)
       .then(function () { toast("✓ Labels saved — live in ~1 min"); })
       .catch(function (err) {
         item.tags = prev; item.updated = prevU;
         noteWriteError(item, err);
-        renderBoard(); openModal(item);
+        renderBoard(); reopenIfOpen(item);
         toast("✗ " + err.message, true);
       });
   }
+  // Write the horizon by rewriting the `target:` frontmatter line (null removes it).
+  function commitTarget(item, date) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + item.repo + "/contents/" + item.sourcePath.split("/").map(encodeURIComponent).join("/");
+    var branch = branchOf(item);
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
+      .then(function (r) { assertOk(r, item); return r.json(); })
+      .then(function (info) {
+        var text = b64decode(info.content);
+        var out = date ? editFrontmatter(text, "target", date) : removeFrontmatter(text, "target");
+        if (out == null) throw new Error("no frontmatter");
+        out = editFrontmatter(out, "updated", today());
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "roadmap: " + item.slug + (date ? " target " + date : " clear target"), content: b64encode(out), sha: info.sha, branch: branch }),
+        });
+      })
+      .then(function (r) { assertOk(r, item); });
+  }
+  function changeTarget(item, date) {
+    date = date || null;
+    if (date === (item.target || null) || !ghToken()) return;
+    var prevT = item.target, prevU = item.updated;
+    item.target = date; item.updated = today();
+    renderBoard(); reopenIfOpen(item);
+    toast("Saving…");
+    commitTarget(item, date)
+      .then(function () { toast(date ? "✓ Target " + date + " — live in ~1 min" : "✓ Target cleared — live in ~1 min"); })
+      .catch(function (err) {
+        item.target = prevT; item.updated = prevU;
+        noteWriteError(item, err);
+        renderBoard(); reopenIfOpen(item);
+        toast("✗ " + err.message, true);
+      });
+  }
+  // Ask for a horizon in the same shape the CLI takes: a date, or a month meaning
+  // "by the end of it". Blank clears it.
+  function promptTarget(item) {
+    var val = window.prompt("Target horizon for this puck — YYYY-MM-DD, or YYYY-MM for the end of that month.\nLeave blank to clear.", item.target || "");
+    if (val === null) return;
+    val = val.trim();
+    if (val === "") { if (item.target) changeTarget(item, null); return; }
+    var m = /^(\d{4})-(\d{2})$/.exec(val);
+    if (m && (Number(m[2]) < 1 || Number(m[2]) > 12)) { toast("✗ " + val + " is not a real month", true); return; }
+    var date = m ? endOfMonth(val) : val;
+    // Round-trip, like the CLI and the harvester: "2026-02-31" parses fine and
+    // silently becomes March, which would store a horizon nobody typed.
+    if (!realDate(date)) { toast("✗ Use a real date: YYYY-MM-DD or YYYY-MM", true); return; }
+    changeTarget(item, date);
+  }
+  // The Target cell in the rail: the horizon, shown exact here (the detail view is
+  // where precision belongs) with an edit affordance when writable.
+  function targetValue(item, editable) {
+    var wrap = el("span", "issue-cell"); // same inline row shape as the Issue cell
+    if (item.target) {
+      wrap.appendChild(targetEl(item.target, "prop-date"));
+      wrap.appendChild(el("span", "prop-muted", item.target));
+    } else {
+      wrap.appendChild(el("span", "prop-muted", "No target"));
+    }
+    if (editable) {
+      var edit = el("button", "linklike", item.target ? "Change" : "Set target");
+      edit.type = "button";
+      edit.addEventListener("click", function () { promptTarget(item); });
+      wrap.appendChild(edit);
+    }
+    return wrap;
+  }
+
   function changeIssue(item, number) {
     number = number || null;
     if (number === (item.issue || null) || !ghToken()) return;
@@ -2272,14 +2979,14 @@
     item.issue = number;
     if (number == null) item.issueState = null; // unknown until reharvest
     item.updated = today();
-    renderBoard(); openModal(item);
+    renderBoard(); reopenIfOpen(item);
     toast("Saving…");
     commitIssue(item, number)
       .then(function () { toast(number ? "✓ Linked issue #" + number + " — live in ~1 min" : "✓ Unlinked — live in ~1 min"); })
       .catch(function (err) {
         item.issue = prevI; item.issueState = prevState; item.updated = prevU;
         noteWriteError(item, err);
-        renderBoard(); openModal(item);
+        renderBoard(); reopenIfOpen(item);
         toast("✗ " + err.message, true);
       });
   }
@@ -2870,7 +3577,10 @@
   if (topShareBtn) topShareBtn.appendChild(icon("share"));
   if (topShareBtn) topShareBtn.addEventListener("click", function () {
     if (!currentDetailItem) return;
-    var url = location.origin + location.pathname + "#" + currentDetailItem.id;
+    // Carry the board you're standing on into the link: `?q=`/`?view=`/display
+    // params + `#puck` compose (see AGENTS.md), so the recipient lands on the same
+    // puck *and* backs out to the same board instead of a default one.
+    var url = location.origin + location.pathname + viewParams() + "#" + currentDetailItem.id;
     if (navigator.share) { navigator.share({ title: currentDetailItem.title, url: url }).catch(function () {}); }
     else { copyText(url, function () { toast("✓ Link copied"); }); }
   });

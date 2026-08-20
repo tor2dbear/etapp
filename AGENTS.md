@@ -23,10 +23,10 @@ it's the wrong shape — use a GitHub primitive instead (see below).
 
 `data/roadmap.json` = `{ generatedAt, config, statuses, counts, total, sources[],
 items[] }`. Each item: `{ id, repo, slug, title, status, tags[], updated, created,
-issue, issueState, order, depends[], blockedBy[], signals[], sourceUrl, … }`.
+target, issue, issueState, order, depends[], blockedBy[], signals[], sourceUrl, … }`.
 
-- `signals[]` — drift flags (`stale` / `issue-closed` / `issue-open`): the
-  declared status disagrees with reality.
+- `signals[]` — drift flags (`stale` / `issue-closed` / `issue-open` /
+  `target-passed`): the declared status disagrees with reality.
 - `blockedBy[]` — same-repo dependencies not yet `done`. **Empty = unblocked.**
 
 **"What should I work on?"** — unblocked active pucks:
@@ -37,6 +37,44 @@ console.log(d.items.filter(i=>['now','next'].includes(i.status) && !(i.blockedBy
 ```
 
 **"What needs attention?"** — items where `signals.length > 0`.
+
+## Query grammar
+
+The board reads the same query language, so you can answer with a **link** instead
+of a list: `<board-url>/?q=<query>`. Terms are ANDed; values inside one term are
+ORed; `-` negates.
+
+```
+status:now,next        field match — a value list means "or"
+-status:done           negation
+repo:pia-terminal      short name, owner/name or display name all work
+tag:ui  label:ui       tags (aliases: label, labels, tags)
+agent:backend          discipline routing (alias: discipline)
+owner:tor2dbear        the owner field
+priority:high          urgent | high | medium | low
+issue:42               the linked issue number
+target:<=2026-11-30    the horizon (updated/created take the same operators)
+"grep context"         free text over title, body, tags and repo name
+```
+
+`is:` is the namespace for states that are **derived**, not stored — giving each a
+field of its own would invent a second truth:
+
+| Term | True when |
+|---|---|
+| `is:ready` | `status` is `now`/`next` **and** `blockedBy` is empty |
+| `is:blocked` | `blockedBy` is non-empty |
+| `is:flagged` | the puck has any drift signal |
+| `is:stale` | its signals include `stale` |
+| `is:adapted` | the source isn't native pucks |
+| `is:done` | `done` **or** `cancelled` (the archive) |
+
+The board's own views are just queries — `Ready` is `is:ready`, `Needs attention`
+is `is:flagged` — so anything a view shows, a query can name.
+
+URL parameters: `?q=` is the filter, `?view=` names a view (`all`/`ready`/`inbox`/
+`attention`), `?done=1` shows the archive, and `#<repo>/<slug>` opens one puck.
+They compose: `?q=agent:backend+repo:pia-terminal&view=ready`.
 
 ## Writing
 
@@ -50,6 +88,9 @@ roadmap tag <slug> +a -b            # edit tags
 roadmap issue <slug> 42             # link a working issue
 roadmap owner <slug> <handle>       # set owner (--clear to remove)
 roadmap priority <slug> <level>     # urgent|high|medium|low (--clear to remove)
+roadmap target <slug> 2026-11       # horizon: a date, or a month = its last day
+roadmap move <slug> --before <slug> # manual rank within the status column
+roadmap renumber [--status now]     # tidy order back to 10, 20, 30 …
 roadmap agent <slug> <discipline>   # route to a discipline agent (--clear to remove)
 roadmap list [--status now]         # overview
 ```
@@ -73,6 +114,8 @@ what's ready. Use it to sequence work.
 
 - Never hand-edit `data/roadmap.json`, `data/roadmap.js`, `ROADMAP.md`.
 - Never add a second source of truth.
-- `status` is the *when* ladder (`inbox → now/next/later → done`); `order`
-  fine-tunes within a column; the optional `priority` field is *how much it
-  matters* (`urgent`/`high`/`medium`/`low`), orthogonal to status.
+- Four orthogonal axes, never conflated: `status` = which column (`inbox →
+  now/next/later → done`), `order` = the place in it (manual rank, lower first,
+  unset sinks to the bottom), `priority` = how much it matters (a label to filter
+  and sort by, not the default ordering), `target` = roughly when in the calendar
+  (a horizon, not a deadline). `CONVENTION.md` has the table.

@@ -5,6 +5,7 @@ tags: [area]
 updated: 2026-01-01
 # issue: 123      # optional — the working issue number, once in progress
 # order: 10       # optional — manual order within the status column (lower = higher)
+# target: 2026-11-30  # optional — the horizon: roughly when this should land
 ---
 
 ## Goal

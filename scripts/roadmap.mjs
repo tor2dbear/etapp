@@ -25,7 +25,7 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { STATUSES, PRIORITIES, slugify } from "./lib/adapters.mjs";
+import { STATUSES, PRIORITIES, slugify, normalizeDate } from "./lib/adapters.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -204,6 +204,44 @@ async function cmdIssue() {
   console.log(`✓ ${slug} issue #${num}  (updated ${TODAY})`);
 }
 
+// The horizon. A calendar date so it sorts and compares without a period parser;
+// the board renders it coarsely ("nov 2026") so it reads as a horizon, not a
+// deadline. Accepts a bare month (2026-11) and takes that month's last day.
+async function cmdTarget() {
+  const slug = pos.shift();
+  const when = pos.shift();
+  if (!slug) fail("usage: roadmap target <slug> <YYYY-MM-DD|YYYY-MM>   (--clear to remove)");
+  const { path: p, text } = await readPuckOrFail(slug);
+  const clearing = opts.clear || when === "none" || when === "-";
+  let out, shown = "";
+  if (clearing) {
+    out = removeField(text, "target");
+  } else {
+    const v = String(when || "").trim();
+    const month = /^(\d{4})-(\d{2})$/.exec(v);
+    if (month) {
+      // A month means "by the end of it" — the last day, so `target:<=` questions
+      // about that month include everything in it. Guard the month itself: Date.UTC
+      // rolls `2026-13` over into 2027 instead of complaining.
+      if (+month[2] < 1 || +month[2] > 12) fail(`"${v}" is not a real month`);
+      shown = new Date(Date.UTC(+month[1], +month[2], 0)).toISOString().slice(0, 10);
+    } else {
+      shown = v;
+    }
+    // normalizeDate round-trips, so `2026-02-31` is rejected instead of silently
+    // becoming March — the harvester applies the same rule to hand-written values.
+    if (!normalizeDate(shown)) fail(`target must be a real date: YYYY-MM-DD or YYYY-MM  (or --clear)`);
+    out = setField(text, "target", shown);
+  }
+  out = setField(out, "updated", TODAY);
+  await writeFile(p, out);
+  console.log(
+    clearing
+      ? `✓ ${slug} target cleared  (updated ${TODAY})`
+      : `✓ ${slug} target ${shown}  (updated ${TODAY})`,
+  );
+}
+
 async function cmdOwner() {
   const slug = pos.shift();
   const handle = pos.shift();
@@ -329,6 +367,138 @@ async function listPucks() {
   if (!shown) console.log("(no pucks)");
 }
 
+// ── manual rank (`order`) ───────────────────────────────────────────────────
+// `order` is the puck's place inside its status column (lower = higher up); pucks
+// without one fall to the bottom, sorted by `updated`. You rarely want to pick a
+// number by hand — say where it goes relative to another puck instead.
+async function allPucks() {
+  let entries;
+  try {
+    entries = await readdir(DIR, { withFileTypes: true });
+  } catch {
+    fail(`no ${path.relative(process.cwd(), DIR) || "roadmap"}/ directory here`);
+  }
+  const out = [];
+  for (const e of entries) {
+    let file = null, slug = null;
+    if (e.isFile() && e.name.endsWith(".md") && e.name.toLowerCase() !== "readme.md") {
+      slug = e.name.replace(/\.md$/, "");
+      file = path.join(DIR, e.name);
+    } else if (e.isDirectory() && existsSync(path.join(DIR, e.name, "README.md"))) {
+      slug = e.name;
+      file = path.join(DIR, e.name, "README.md");
+    }
+    if (!file) continue;
+    const text = await readFile(file, "utf8");
+    const raw = getField(text, "order");
+    out.push({
+      slug,
+      path: file,
+      text,
+      status: getField(text, "status") || "inbox",
+      updated: getField(text, "updated") || "",
+      order: raw == null || raw === "" ? null : Number(raw),
+    });
+  }
+  return out;
+}
+// The board's own ordering: `order` first, then freshest, then slug.
+function rankSort(a, b) {
+  const ao = a.order == null ? Infinity : a.order;
+  const bo = b.order == null ? Infinity : b.order;
+  return ao - bo || b.updated.localeCompare(a.updated) || a.slug.localeCompare(b.slug);
+}
+
+// Give a column round numbers in its current on-screen order. `all` decides
+// whether unranked pucks are drawn in too: `renumber` leaves them alone (freezing
+// every puck into a rank nobody asked for would be worse), while `move` needs them
+// ranked to be able to express the position you asked for.
+async function rankColumn(pucks, status, all) {
+  const column = pucks
+    .filter((p) => p.status === status && (all || p.order != null))
+    .sort(rankSort);
+  const changed = [];
+  for (let i = 0; i < column.length; i++) {
+    const want = (i + 1) * 10;
+    if (column[i].order === want) continue;
+    let out = setField(column[i].text, "order", String(want));
+    out = setField(out, "updated", TODAY);
+    await writeFile(column[i].path, out);
+    changed.push(`${column[i].slug} ${column[i].order == null ? "—" : column[i].order} → ${want}`);
+  }
+  return changed;
+}
+
+async function cmdMove() {
+  const slug = pos.shift();
+  const anchor = opts.before || opts.after;
+  if (!slug || !anchor || (opts.before && opts.after)) {
+    fail("usage: roadmap move <slug> --before <slug> | --after <slug>");
+  }
+  const pucks = await allPucks();
+  const me = pucks.find((p) => p.slug === slug);
+  if (!me) fail(`no puck "${slug}" under ${path.relative(process.cwd(), DIR) || "roadmap"}/`);
+  const to = pucks.find((p) => p.slug === anchor);
+  if (!to) fail(`no puck "${anchor}" to move ${opts.before ? "before" : "after"}`);
+  if (to.slug === me.slug) fail("a puck can't move relative to itself");
+  if (to.status !== me.status) {
+    fail(`"${anchor}" is in ${to.status} but "${slug}" is in ${me.status} — order only ranks within a column`);
+  }
+  // Neighbours in the anchor's column, with the moving puck taken out first.
+  const neighbours = (list) => {
+    const column = list.filter((p) => p.status === me.status && p.slug !== me.slug).sort(rankSort);
+    const at = column.findIndex((p) => p.slug === anchor);
+    const idx = opts.before ? at : at + 1;
+    return { prev: column[idx - 1] || null, next: column[idx] || null };
+  };
+  let { prev, next } = neighbours(pucks);
+  // A column renders as [ranked][unranked], so a single `order` can only express a
+  // position whose upper neighbour is ranked. The board refuses here and points at
+  // `renumber`; this command *is* the local bulk tool, so it ranks the column and
+  // says so rather than failing on the common "nothing is ranked yet" case.
+  if (prev && prev.order == null) {
+    const changed = await rankColumn(pucks, me.status, true);
+    if (changed.length) console.log(`  ranked ${me.status} first: ${changed.join(", ")}`);
+    const fresh = await allPucks();
+    Object.assign(me, fresh.find((p) => p.slug === me.slug));
+    ({ prev, next } = neighbours(fresh));
+  }
+  const a = prev && prev.order != null ? prev.order : null;
+  const b = next && next.order != null ? next.order : null;
+  let value;
+  if (prev == null) value = b == null ? 10 : b - 10;
+  else if (b == null) value = a + 10;
+  else {
+    value = (a + b) / 2;
+    if (value === a || value === b) fail(`no room between ${a} and ${b} — run: roadmap renumber --status ${me.status}`);
+  }
+  // Keep it an integer when the gap allows; decimals are legal but ugly in git.
+  if (Number.isInteger(a) && Number.isInteger(b) && Math.abs(b - a) >= 2) value = Math.round(value);
+  let out = setField(me.text, "order", String(value));
+  out = setField(out, "updated", TODAY);
+  await writeFile(me.path, out);
+  console.log(`✓ ${slug} order ${value} (${opts.before ? "before" : "after"} ${anchor})  (updated ${TODAY})`);
+}
+
+// Renumber a column back to 10, 20, 30 … — the local, bulk counterpart to the
+// board's single-file drops, for when midpoints have gone decimal.
+async function cmdRenumber() {
+  const pucks = await allPucks();
+  const statuses = opts.status ? [String(opts.status)] : STATUSES;
+  for (const s of statuses) {
+    if (!STATUSES.includes(s)) fail(`status must be one of: ${STATUSES.join(", ")}`);
+  }
+  // `--all` also ranks the pucks that carry no `order` yet — needed before the
+  // board can place a card below them by hand.
+  let touched = 0;
+  for (const s of statuses) {
+    const changed = await rankColumn(pucks, s, !!opts.all);
+    changed.forEach(function (line) { console.log("  " + line); });
+    touched += changed.length;
+  }
+  console.log(touched ? `✓ renumbered ${touched} puck(s)  (updated ${TODAY})` : "✓ already tidy — nothing to renumber");
+}
+
 const HOOK_MARKER = "# roadmap-auto-updated";
 const HOOK_BODY = `#!/bin/sh
 ${HOOK_MARKER} — bump \`updated:\` on any staged roadmap puck that changed.
@@ -384,6 +554,9 @@ async function main() {
     case "issue": return cmdIssue();
     case "owner": return cmdOwner();
     case "priority": case "prio": return cmdPriority();
+    case "target": return cmdTarget();
+    case "move": return cmdMove();
+    case "renumber": return cmdRenumber();
     case "agent": case "route": return cmdAgent();
     case "touch": return cmdTouch();
     case "list": case "ls": return listPucks();
@@ -407,6 +580,9 @@ function printHelp() {
   roadmap issue <slug> <number>                       link a working issue
   roadmap owner <slug> <handle>                       set owner (--clear to remove)
   roadmap priority <slug> <level>                     set priority (--clear to remove)
+  roadmap target <slug> <YYYY-MM-DD|YYYY-MM>          set the horizon (--clear to remove)
+  roadmap move <slug> --before|--after <slug>         rank within the status column
+  roadmap renumber [--status now]                     tidy order back to 10, 20, 30 …
   roadmap agent <slug> <discipline>                   route to an agent (--clear to remove)
   roadmap touch <slug>                                bump updated only
   roadmap list [--status now]                         overview

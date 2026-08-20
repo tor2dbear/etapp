@@ -802,6 +802,10 @@ body.preload * { transition: none !important; }
 .issue-state.issue-open { color: var(--next); }
 .issue-state.issue-closed { color: var(--done); }
 .prop-date { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+/* The horizon reads as a horizon: quiet by default, warm once it has passed —
+   the ⚠ badge already carries the alarm, so this only needs to be noticeable. */
+.target-date { color: var(--ink-2); }
+.target-date.past { color: var(--now); }
 .prop-v .card-tags { margin: 0; gap: 5px; }
 .prop-status-edit { display: flex; gap: 5px; flex-wrap: wrap; }
 .sect-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 16px 0 6px; }
@@ -980,15 +984,46 @@ body.preload * { transition: none !important; }
   border-radius: 999px; min-width: 16px; text-align: center; padding: 0 4px;
 }
 .filter-count[hidden] { display: none; }
+/* Anchored under its own button (Filter and Display both sit at the left of the
+   view header), so a popover never opens leftward across the sidebar. */
 .filter-pop {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   box-shadow: var(--shadow); padding: 10px; min-width: 232px; max-width: 300px;
   display: flex; flex-direction: column; gap: 8px;
 }
-/* On mobile the Filter button sits on the left → open the popover rightward so it
-   doesn't run off the left edge. */
-@media (max-width: 899px) { .filter-pop { left: 0; right: auto; } }
+/* Display menu — same shell as the filter popover (one popover language), with
+   rows for the choices that shape the presentation. */
+.display-pop { min-width: 260px; }
+.display-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); display: inline-block; }
+.display-dot[hidden] { display: none; }
+.dp-seg { display: flex; gap: 4px; background: var(--sunk, transparent); }
+.dp-segbtn {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 8px; font-size: 12px; cursor: pointer; color: var(--ink-2);
+  background: transparent; border: 1px solid var(--line); border-radius: 8px;
+}
+.dp-segbtn svg { width: 14px; height: 14px; }
+.dp-segbtn:hover { color: var(--ink); border-color: var(--ink-3); }
+.dp-segbtn.on { color: var(--ink); border-color: var(--accent); background: var(--panel-2, transparent); font-weight: 600; }
+.dp-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dp-label { font-size: 13px; color: var(--ink-2); }
+.dp-row select { max-width: 60%; }
+.dp-rule { height: 1px; background: var(--line); margin: 2px 0; }
+.dp-reset {
+  align-self: flex-start; background: none; border: 0; padding: 2px 0;
+  font-size: 12px; color: var(--ink-3); cursor: pointer;
+}
+.dp-reset:hover { color: var(--ink); text-decoration: underline; }
+/* A column grouped by something without its own palette (agent, repo, priority)
+   still gets a swatch — tinted where the field has a colour, neutral otherwise. */
+.col-plain .swatch { background: var(--tint, var(--ink-3)); }
+/* Where a dragged card would land, in Manual ordering. Only drawn while dragging,
+   so it reads as a position and not as a divider. */
+.drop-line {
+  height: 2px; margin: 3px 2px; border-radius: 2px;
+  background: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
 .fp-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; }
 .fp-toggle input { accent-color: var(--accent); cursor: pointer; }
 .fp-label { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin-top: 2px; }

@@ -24,6 +24,17 @@ function normalizePriority(raw) {
   return VALID_PRIORITY.has(v) ? v : null;
 }
 
+// A real calendar date, or null. The shape check isn't enough: `2026-02-31` looks
+// fine and `Date.parse` happily rolls it into March, so the stored horizon would
+// differ from what anyone wrote. Round-trip it and drop what doesn't survive —
+// a half-parsed horizon would sort, compare and flag in a place nobody meant.
+export function normalizeDate(raw) {
+  const v = String(raw == null ? "" : raw).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+  const d = new Date(v + "T00:00:00Z");
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v ? v : null;
+}
+
 export function slugify(s) {
   return s
     .normalize("NFKD")
@@ -88,6 +99,10 @@ async function pucksAdapter(repo, branch, source) {
       tags: Array.isArray(data.tags) ? data.tags : data.tags ? [String(data.tags)] : [],
       updated: data.updated ? String(data.updated) : "",
       created: created || null,
+      // Optional horizon (YYYY-MM-DD) or null. Stored exact so it sorts and
+      // compares as a plain string; the board shows it coarsely ("nov 2026") so a
+      // horizon doesn't read as a deadline promise.
+      target: normalizeDate(data.target),
       issue: data.issue != null && data.issue !== "" ? Number(data.issue) : null,
       order: data.order != null && data.order !== "" ? Number(data.order) : null,
       // Same-repo slugs this puck is blocked by; the harvester resolves them.
@@ -210,6 +225,7 @@ async function checklistAdapter(repo, branch, source) {
       tags,
       updated: "",
       created: null,
+      target: null, // adapted sources have no horizon to read
       depends: [],
       owner: null,
       agent: null,
@@ -241,6 +257,7 @@ async function proseAdapter(repo, branch, source) {
       tags: [],
       updated: "",
       created: null,
+      target: null, // adapted sources have no horizon to read
       depends: [],
       owner: null,
       agent: null,

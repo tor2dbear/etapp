@@ -84,18 +84,15 @@
                 <span id="filterCount" class="filter-count" hidden></span>
               </button>
             </div>
-            <div class="filter-sort">
-              <label for="sortSelect">Sort</label>
-              <select id="sortSelect">
-                <option value="default">Recently updated</option>
-                <option value="priority">Priority (high→low)</option>
-                <option value="updated-asc">Oldest updated</option>
-                <option value="created-desc">Newest created</option>
-                <option value="created-asc">Oldest created</option>
-                <option value="title">Title A–Z</option>
-              </select>
+            <!-- Display owns how the chosen pucks are presented: layout · grouping ·
+                 ordering · what's included wholesale (the archive, empty groups).
+                 Not "View" — the sidebar already owns Views as navigation. -->
+            <div class="filter-wrap">
+              <button id="displayBtn" class="ghost filter-btn display-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Display options">
+                <span>Display</span>
+                <span id="displayDot" class="display-dot" hidden aria-hidden="true"></span>
+              </button>
             </div>
-            <button id="viewToggle" class="ghost" title="Switch to list view" aria-label="Switch to list view">☰</button>
           </div>
         </header>
 

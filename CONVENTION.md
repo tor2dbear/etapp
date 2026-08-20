@@ -72,6 +72,7 @@ order: 10
 | `priority`| no       | One of `urgent`, `high`, `medium`, `low`. Omit for "no priority". Orthogonal to `status` — *when* vs *how much it matters*. Renders as a signal badge; the board can sort by it. |
 | `updated` | yes      | `YYYY-MM-DD`, last touched. The aggregator sorts and shows freshness on it. |
 | `created` | no       | `YYYY-MM-DD`. Usually omit — the aggregator derives it from the file's first commit. `roadmap new` stamps it for you. Set it by hand only to override that. |
+| `target`  | no       | `YYYY-MM-DD` — the horizon: roughly when this should land. Omit for "no horizon" (most pucks). Orthogonal to `status` and `priority`: *when* in the calendar, not *when* in the queue. The board shows it coarsely ("Nov 2026") and flags it once it has passed. Set with `roadmap target <slug> <date>` — a bare month (`2026-11`) means the end of that month. |
 | `tags`    | no       | Areas, e.g. `[editor]`, `[auth]`. Inline array. Used for filtering. |
 | `issue`   | no       | The working issue number in the repo, when the puck is in progress. |
 | `order`   | no       | Manual order **within** a status column (lower = higher up). Falls back to `updated`. |
@@ -138,6 +139,42 @@ Optional and orthogonal to `status`: `status` says *when* (now/next/later),
 Omit the field entirely for "no priority" — most pucks won't need one. Set it
 with `roadmap priority <slug> <level>` (`--clear` to remove).
 
+### The four axes, in one place
+
+They overlap in conversation but never in the data. Written down so nobody has to
+guess which one to reach for:
+
+| Field | Answers | Shape |
+|---|---|---|
+| `status` | *Which column?* | the ladder: `inbox → now/next/later → done`/`cancelled` |
+| `order`  | *Where in that column?* | a number, lower = higher up; unset = below every ranked puck |
+| `priority` | *How much does it matter?* | a label you filter and sort by — **not** the default ordering |
+| `target` | *Roughly when in the calendar?* | a date, optional; a horizon, not a deadline |
+
+`order` is the manual rank. Set it by saying where a puck goes relative to another —
+`roadmap move <slug> --before <other>` — or by dragging a card to a position on the
+board while the ordering is **Manual**. Any other ordering derives the position from
+a field, so hand-placing is switched off there rather than silently ignored.
+
+Gaps are sparse (10, 20, 30 …) so a move can slot between two neighbours by writing
+**one** file. When a gap closes the midpoint goes decimal; `roadmap renumber` tidies
+a column back to round numbers in one local pass.
+
+### The horizon (`target`)
+
+A third, independent axis: `status` is *when in the queue*, `priority` is *how much
+it matters*, `target` is *roughly when in the calendar*. Omit it for "no horizon" —
+most pucks have none, and that is the normal case.
+
+It is stored as an exact date so it sorts and compares (`target:<=2026-11-30`), but
+the board shows it coarsely — "Nov 2026", or a countdown once it's close — because a
+horizon is not a deadline promise. When the date passes and the puck isn't `done`,
+the board flags it (⚠) so a human moves the horizon or lands the work; nothing is
+ever rewritten for you.
+
+This is deliberately *not* sprints, story points or capacity planning — those stay
+off the roadmap. It is one optional field that answers "when, roughly?".
+
 ---
 
 ## Authoring helper
@@ -149,6 +186,7 @@ roadmap new "Title" --tags area   # create a puck in inbox
 roadmap start|next|later|done <slug>
 roadmap tag <slug> +add -remove
 roadmap priority <slug> <level>    # urgent|high|medium|low (--clear to remove)
+roadmap target <slug> 2026-11      # the horizon; a month = its last day
 roadmap list                       # overview
 roadmap install-hook               # auto-bump `updated` on every commit
 ```
