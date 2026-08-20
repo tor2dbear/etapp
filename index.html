@@ -37,6 +37,12 @@
           <div class="side-eyebrow">Views</div>
           <nav class="side-views" id="sideViews" aria-label="Views"></nav>
         </div>
+        <!-- Saved views: named queries from board.config.json (config, not truth);
+             hidden until the instance defines one -->
+        <div class="side-section" id="savedSection" hidden>
+          <div class="side-eyebrow">Saved</div>
+          <nav class="side-views" id="savedViews" aria-label="Saved views"></nav>
+        </div>
         <!-- PO-console: per-discipline agent queues; hidden until pucks are routed -->
         <div class="side-section" id="agentSection" hidden>
           <div class="side-eyebrow">Agents</div>
@@ -95,6 +101,9 @@
             </div>
           </div>
         </header>
+
+        <!-- active filters, one chip per predicate; hidden when nothing is filtered -->
+        <div class="chiprow" id="chipRow" hidden></div>
 
         <div class="work" id="work">
           <main id="board" class="board" aria-live="polite"></main>

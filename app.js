@@ -59,12 +59,12 @@
     return b;
   }
   var state = {
+    // Places — the sidebar's navigation dimension (see goToPlace). Everything else
+    // you can filter by lives in `query`, so a filter has exactly one home.
     repos: new Set(), // empty = all
-    tags: new Set(), // empty = all
     agents: new Set(), // empty = all — PO-layer discipline queues
-    query: "",
+    query: "", // the filter, as text: the store behind the chips and the panel
     showDone: false,
-    priorityFilter: null, // null = any; else one of PRIORITIES
     focus: "all", // "all" | "ready" (unblocked now/next) | "inbox" (triage) | "attention" (flagged)
     view: "board", // "board" (kanban columns) | "list" (one column, grouped)
     sort: "default", // see SORTS below
@@ -349,8 +349,6 @@
     }
     fromSet("repo", state.repos, shortRepo);
     fromSet("agent", state.agents);
-    fromSet("tag", state.tags);
-    if (state.priorityFilter) t.push({ field: "priority", op: "in", values: [state.priorityFilter], neg: false });
     return t;
   }
   // The filter half of the view — what goes in ?q= and, later, on the chip row.
@@ -365,6 +363,51 @@
   var activeQuery = null;
   function matches(item) { return runQuery(item, activeQuery || activeTerms()); }
 
+  // ── editing the filter ──────────────────────────────────────────────────────
+  // The query string is the store for every filter that isn't a place, so the chip
+  // row and the panel don't keep their own copies: they parse it, change a term,
+  // and serialize it back. One representation, three ways to touch it.
+  // The store, not the input: writing the whole query into the search box would
+  // put the active filters inside a field the palette selects-all on open, where
+  // the next keystroke would wipe them.
+  function setQueryTerms(terms) {
+    state.query = serializeTerms(terms);
+    renderBoard();
+  }
+  // `is:` holds one state per term (that's its grammar), so it toggles whole terms;
+  // every other field merges values into one term (`status:now,next`).
+  function sameField(t, field, neg) {
+    return t.field === field && !!t.neg === !!neg && t.field !== "text";
+  }
+  function filterValues(field, neg) {
+    var out = [];
+    parseQuery(state.query).forEach(function (t) {
+      if (sameField(t, field, neg)) out = out.concat(t.values);
+    });
+    return out;
+  }
+  function toggleFilterValue(field, value, neg) {
+    var terms = parseQuery(state.query), hit = -1;
+    if (field === "is") {
+      for (var i = 0; i < terms.length; i++) {
+        if (sameField(terms[i], "is", neg) && terms[i].values[0] === value) { hit = i; break; }
+      }
+      if (hit >= 0) terms.splice(hit, 1);
+      else terms.push({ field: "is", op: "is", values: [value], neg: !!neg });
+      return setQueryTerms(terms);
+    }
+    for (var j = 0; j < terms.length; j++) if (sameField(terms[j], field, neg)) { hit = j; break; }
+    if (hit < 0) {
+      terms.push({ field: field, op: "in", values: [value], neg: !!neg });
+    } else {
+      var vals = terms[hit].values.slice();
+      var at = vals.indexOf(value);
+      if (at >= 0) vals.splice(at, 1); else vals.push(value);
+      if (vals.length) terms[hit].values = vals; else terms.splice(hit, 1);
+    }
+    setQueryTerms(terms);
+  }
+
   // The free-text half of the search box — what suggestions and quick-capture use,
   // so typing `status:now` filters instead of offering to create a puck called that.
   function queryText() {
@@ -378,18 +421,28 @@
   // state — the archive toggle is not a filter. The puck hash is left alone, and
   // writes always replace: the board URL describes where you are, it isn't a step
   // in history.
+  // The view as data: the same keys the URL uses and a saved view stores, so a
+  // link, a config entry and the live board are three encodings of one thing.
+  // Only non-defaults are included, so a plain board keeps a clean URL.
+  function viewParamObject() {
+    var o = {};
+    if (state.focus !== "all") o.view = state.focus;
+    var q = serializeTerms(filterTerms());
+    if (q) o.q = q;
+    if (state.group !== DISPLAY_DEFAULTS.group) o.group = state.group;
+    if (state.view !== DISPLAY_DEFAULTS.view) o.layout = state.view;
+    if (state.sort !== DISPLAY_DEFAULTS.sort) o.sort = state.sort;
+    if (state.showDone) o.done = "1";
+    if (!state.showEmpty) o.empty = "0";
+    return o;
+  }
   function viewParams() {
     var p = [];
-    if (state.focus !== "all") p.push("view=" + state.focus);
-    var q = serializeTerms(filterTerms());
-    if (q) p.push("q=" + encodeURIComponent(q).replace(/%20/g, "+"));
-    // Display state rides along so a shared link arrives looking the way you left
-    // it — but only when it differs from default, so a plain board keeps a clean URL.
-    if (state.group !== DISPLAY_DEFAULTS.group) p.push("group=" + state.group);
-    if (state.view !== DISPLAY_DEFAULTS.view) p.push("layout=" + state.view);
-    if (state.sort !== DISPLAY_DEFAULTS.sort) p.push("sort=" + state.sort);
-    if (state.showDone) p.push("done=1");
-    if (!state.showEmpty) p.push("empty=0");
+    var o = viewParamObject();
+    ["view", "q", "group", "layout", "sort", "done", "empty"].forEach(function (k) {
+      if (o[k] == null) return;
+      p.push(k + "=" + (k === "q" ? encodeURIComponent(o[k]).replace(/%20/g, "+") : o[k]));
+    });
     return p.length ? "?" + p.join("&") : "";
   }
   function writeUrl() {
@@ -415,6 +468,22 @@
       var i = kv.indexOf("=");
       got[i < 0 ? kv : kv.slice(0, i)] = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
     });
+    applyParams(got);
+  }
+  // Apply a view's params to the board. `reset` makes them authoritative (a saved
+  // view is a complete description); the boot path leaves untouched keys alone
+  // because there is nothing to reset yet.
+  function applyParams(got, reset) {
+    if (reset) {
+      state.repos.clear(); state.agents.clear();
+      state.query = "";
+      state.focus = "all";
+      state.showDone = DISPLAY_DEFAULTS.showDone;
+      state.showEmpty = DISPLAY_DEFAULTS.showEmpty;
+      state.group = DISPLAY_DEFAULTS.group;
+      state.view = DISPLAY_DEFAULTS.view;
+      state.sort = DISPLAY_DEFAULTS.sort;
+    }
     // A link's display choices win over the saved preferences, but aren't saved
     // themselves — someone else's view shouldn't quietly become yours.
     if (got.done === "1") state.showDone = true;
@@ -435,16 +504,11 @@
           if (ids.length === t.values.length) { ids.forEach(function (r) { state.repos.add(r); }); return; }
         } else if (t.field === "agent") {
           t.values.forEach(function (v) { state.agents.add(v); }); return;
-        } else if (t.field === "tag") {
-          t.values.forEach(function (v) { state.tags.add(v); }); return;
-        } else if (t.field === "priority" && t.values.length === 1 && PRIORITY_RANK[t.values[0]] != null) {
-          state.priorityFilter = t.values[0]; return;
         }
       }
       rest.push(t);
     });
     state.query = serializeTerms(rest);
-    if (searchInput) { searchInput.value = state.query; updateSearchClear(); }
   }
 
   function el(tag, cls, text) {
@@ -1616,6 +1680,8 @@
 
     var shown = visible.length;
     updateViewHeader(shown);
+    renderChips();
+    buildSavedViews(); // its "active" state tracks the board, like the view rows
     refreshDisplayDot();
     writeUrl(); // every render reflects the view into the URL, so it stays shareable
     document.getElementById("footmeta").textContent =
@@ -1645,9 +1711,7 @@
   function scopeParts() {
     var p = [];
     state.repos.forEach(function (r) { p.push(repoNameOf(r)); });
-    state.tags.forEach(function (t) { p.push("#" + t); });
     state.agents.forEach(function (a) { p.push("→ " + agentLabel(a)); });
-    if (state.priorityFilter) p.push(PRIORITY_LABEL[state.priorityFilter]);
     return p;
   }
   // The full view title, place scope included ("Inbox · Etapp") — the single
@@ -1741,6 +1805,7 @@
   function refreshNav() {
     var host = document.getElementById("sideViews") || document.getElementById("filters");
     if (host) { host.innerHTML = ""; buildFocusControl(); }
+    buildSavedViews();
     buildRepoChips();
     buildAgentChips();
   }
@@ -1956,6 +2021,14 @@
     pop.appendChild(emptyRow);
 
     pop.appendChild(el("div", "dp-rule"));
+    // "Save as view" is Linear's "Set default for everyone", git-native: it writes
+    // board.config.json, and repo permissions decide who may.
+    if (ghToken()) {
+      var save = el("button", "dp-reset dp-save", "Save as view…");
+      save.type = "button";
+      save.addEventListener("click", function () { toggleDisplayMenu(); saveCurrentView(); });
+      pop.appendChild(save);
+    }
     var reset = el("button", "dp-reset", "Reset to default");
     reset.type = "button";
     reset.addEventListener("click", function () {
@@ -2034,7 +2107,7 @@
     var tagCounts = {};
     DATA.items.forEach(function (it) { it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
     var tags = Object.keys(tagCounts)
-      .filter(function (t) { return t.indexOf(q) !== -1 && !state.tags.has(t); })
+      .filter(function (t) { return t.indexOf(q) !== -1 && filterValues("tag", false).indexOf(t) === -1; })
       .sort(function (a, b) { return tagCounts[b] - tagCounts[a] || a.localeCompare(b); })
       .slice(0, 3)
       .map(function (t) { return { __tag: t, count: tagCounts[t] }; });
@@ -2141,10 +2214,11 @@
       return;
     }
     if (it.__tag) {
-      // Discipline shortcut → apply it as a filter and return to the board.
+      // Label shortcut → apply it as a filter and return to the board. closeCmdk
+      // drops the typed text but keeps the term we just added.
       exitPuckView();
-      state.tags.add(it.__tag);
-      closeCmdk(); // resets the query and re-renders with the tag now active
+      toggleFilterValue("tag", it.__tag, false);
+      closeCmdk();
       refreshFilterBadge();
     } else {
       closeCmdk();
@@ -2157,10 +2231,19 @@
   // where the sidebar is behind the menu) — both are plain buttons, not fake inputs.
   var cmdkOverlay = document.getElementById("cmdkOverlay");
   var cmdkTriggers = [document.getElementById("sideSearch"), document.getElementById("topSearch")];
+  // What the palette edits: the free text, on top of whatever predicates are
+  // already active. Those are captured when it opens and re-applied on every
+  // keystroke, so searching for a title can't quietly drop the filters behind it.
+  // Type `status:now` here and it still becomes a filter — it just replaces that
+  // field rather than everything.
+  var paletteBase = [];
   function openCmdk() {
     if (!cmdkOverlay) return;
     cmdkOverlay.hidden = false;
     document.body.classList.add("cmdk-open");
+    paletteBase = parseQuery(state.query).filter(function (t) { return t.field !== "text"; });
+    searchInput.value = queryText();
+    updateSearchClear();
     searchInput.focus();
     searchInput.select();
     updateSuggestions();
@@ -2169,8 +2252,15 @@
     if (!cmdkOverlay || cmdkOverlay.hidden) return;
     cmdkOverlay.hidden = true;
     document.body.classList.remove("cmdk-open");
-    // Palette is navigation, not a lingering board filter — reset the query on close.
-    if (searchInput.value) { searchInput.value = ""; state.query = ""; updateSearchClear(); renderBoard(); }
+    // The palette is navigation, not a lingering board filter — its free text is
+    // dropped on close, as before. Field terms are different: `status:now` typed
+    // here is a *filter*, indistinguishable from one built in the panel, so it
+    // stays and shows up as a chip. Text goes, predicates remain.
+    if (searchInput.value) {
+      searchInput.value = "";
+      setQueryTerms(parseQuery(state.query).filter(function (t) { return t.field !== "text"; }));
+      updateSearchClear();
+    }
     hideSuggestions();
   }
   cmdkTriggers.forEach(function (t) { if (t) t.addEventListener("click", function () { openCmdk(); maybeCloseMenu(); }); });
@@ -2318,8 +2408,12 @@
   function updateSearchClear() { searchClear.hidden = !searchInput.value; if (cmdkHint) cmdkHint.hidden = !!searchInput.value; }
 
   searchInput.addEventListener("input", function (e) {
-    state.query = e.target.value.trim();
-    renderBoard();
+    var typed = parseQuery(e.target.value.trim());
+    var typedFields = {};
+    typed.forEach(function (t) { if (t.field !== "text") typedFields[t.field + (t.neg ? "!" : "")] = 1; });
+    // Predicates you didn't touch survive; a field you typed replaces that field.
+    var kept = paletteBase.filter(function (t) { return !typedFields[t.field + (t.neg ? "!" : "")]; });
+    setQueryTerms(kept.concat(typed));
     updateSuggestions();
     updateSearchClear();
   });
@@ -2379,10 +2473,10 @@
   }, true);
   // ── Filter popover (view-header) — refinements: Show done · Priority · Labels.
   // Sidebar = places (views/agents/repos); this popover = what narrows the view.
-  // Only things that actually narrow the set count here — the archive toggle is
-  // display state and lives in that menu, behind a dot.
+  // The chip row *is* the filter's display, so the button only needs to say whether
+  // anything is on. Places are counted too: they narrow the board just as much.
   function activeFilterCount() {
-    return (state.priorityFilter ? 1 : 0) + state.tags.size;
+    return chipsData().length;
   }
   function refreshFilterBadge() {
     var badge = document.getElementById("filterCount");
@@ -2394,93 +2488,362 @@
     btn.classList.toggle("on", !!n);
   }
   var filterBtn = document.getElementById("filterBtn");
+  // ── the filter panel ────────────────────────────────────────────────────────
+  // Additive, not a fixed set of sections: pick a field, then values. A new field
+  // is a row in this registry — the growth problem the properties rail solved for
+  // the detail view, solved here too.
+  //
+  // Repo and agent are deliberately absent. They are the sidebar's *places*, one
+  // navigation dimension; their chips still show below the header so an active
+  // place is visible and clearable, but you set them where you navigate.
+  var FILTER_FIELDS = [
+    {
+      key: "status", label: "Status",
+      values: function () {
+        return DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; });
+      },
+    },
+    {
+      key: "priority", label: "Priority",
+      values: function () {
+        return PRIORITIES.map(function (p) { return { value: p, label: PRIORITY_LABEL[p] }; });
+      },
+    },
+    {
+      key: "tag", label: "Labels", search: "Filter labels…",
+      values: function () {
+        var n = {};
+        DATA.items.forEach(function (it) { (it.tags || []).forEach(function (t) { n[t] = (n[t] || 0) + 1; }); });
+        return Object.keys(n)
+          .sort(function (a, b) { return n[b] - n[a] || a.localeCompare(b); })
+          .map(function (t) { return { value: t, label: "#" + t }; });
+      },
+    },
+    {
+      key: "owner", label: "Owner",
+      values: function () {
+        var seen = {};
+        DATA.items.forEach(function (it) { if (it.owner) seen[it.owner] = 1; });
+        return Object.keys(seen).sort().map(function (o) { return { value: o, label: "@" + o }; });
+      },
+    },
+    {
+      // Derived states — not fields, so they share the `is:` namespace.
+      key: "is", label: "State",
+      values: function () {
+        return [
+          { value: "ready", label: "Ready" },
+          { value: "blocked", label: "Blocked" },
+          { value: "flagged", label: "Needs attention" },
+          { value: "stale", label: "Stale" },
+          { value: "adapted", label: "Adapted source" },
+        ];
+      },
+    },
+  ];
+  function fieldByKey(k) {
+    for (var i = 0; i < FILTER_FIELDS.length; i++) if (FILTER_FIELDS[i].key === k) return FILTER_FIELDS[i];
+    return null;
+  }
+  // How many pucks each candidate value would leave — counted against the *other*
+  // active terms, so the numbers describe the click you're about to make.
+  function countFor(field, value) {
+    var base = activeTerms().filter(function (t) { return !sameField(t, field, false); });
+    // Model the toggle, not the value: with `status:now` on, clicking Next gives
+    // `status:now,next` (an OR — a *bigger* set), and clicking Now removes the
+    // filter entirely. Counting the candidate alone would predict neither.
+    var current = filterValues(field, false);
+    var next = current.indexOf(value) === -1
+      ? current.concat([value])
+      : current.filter(function (v) { return v !== value; });
+    var probe = base.slice();
+    if (next.length) {
+      if (field === "is") {
+        next.forEach(function (v) { probe.push({ field: "is", op: "is", values: [v], neg: false }); });
+      } else {
+        probe.push({ field: field, op: "in", values: next, neg: false });
+      }
+    }
+    var n = 0;
+    DATA.items.forEach(function (it) { if (runQuery(it, probe)) n++; });
+    return n;
+  }
+
   function toggleFilterMenu() {
     var wrap = filterBtn && filterBtn.parentNode;
     if (!wrap) return;
     var open = wrap.querySelector(".filter-pop");
     if (open) { open.remove(); filterBtn.setAttribute("aria-expanded", "false"); return; }
     var pop = el("div", "filter-pop");
-
-    // (The archive toggle lives in Display, not here: it says how complete the list
-    // is, not which pucks were chosen — and counting it as a filter made the button
-    // light up when you'd just shown *more*.)
-
-    // Priority
-    pop.appendChild(el("div", "fp-label", "Priority"));
-    var prow = el("div", "fp-chips");
-    var opts = [{ v: null, l: "Any" }].concat(PRIORITIES.map(function (p) { return { v: p, l: PRIORITY_LABEL[p] }; }));
-    opts.forEach(function (o) {
-      var chip = el("button", "fp-chip" + (state.priorityFilter === o.v ? " on" : "") + (o.v ? " pri-" + o.v : ""), o.l);
-      chip.type = "button";
-      chip.addEventListener("click", function () {
-        state.priorityFilter = o.v;
-        prow.querySelectorAll(".fp-chip").forEach(function (c) { c.classList.remove("on"); });
-        chip.classList.add("on");
-        renderBoard(); refreshFilterBadge();
-      });
-      prow.appendChild(chip);
-    });
-    pop.appendChild(prow);
-
-    // Labels — scoped to the current place (repo/agent), ranked by use, with the
-    // long singleton tail collapsed behind "Show all" (a search reveals
-    // everything). Folksonomies sprawl; this keeps the useful few in view.
-    // ("Discipline" is reserved for `agent:` — the sidebar's queues — so the tags
-    // are labels here, matching this section's own search field and More button.)
-    pop.appendChild(el("div", "fp-label", "Labels"));
-    var scopePass = function (it) {
-      return (!state.repos.size || state.repos.has(it.repo)) && (!state.agents.size || state.agents.has(it.agent));
-    };
-    var tagCounts = {};
-    DATA.items.forEach(function (it) { if (scopePass(it)) it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
-    // keep any already-selected tag visible even if it's outside the current scope
-    state.tags.forEach(function (t) { if (tagCounts[t] == null) tagCounts[t] = 0; });
-    var allTags = Object.keys(tagCounts).sort(function (a, b) { return tagCounts[b] - tagCounts[a] || a.localeCompare(b); });
-    if (allTags.length) {
-      var TAG_CAP = 12, tagsExpanded = false;
-      var tagSearch = el("input", "fp-search"); tagSearch.type = "text"; tagSearch.placeholder = "Filter labels…"; tagSearch.autocomplete = "off"; tagSearch.spellcheck = false;
-      pop.appendChild(tagSearch);
-      var tagWrap = el("div", "fp-tags");
-      pop.appendChild(tagWrap);
-      var moreBtn = el("button", "fp-more"); moreBtn.type = "button"; moreBtn.hidden = true;
-      pop.appendChild(moreBtn);
-      var renderTags = function () {
-        tagWrap.innerHTML = "";
-        var q = tagSearch.value.trim().toLowerCase();
-        var matches = allTags.filter(function (t) { return !q || t.indexOf(q) !== -1; });
-        var collapsed = !q && !tagsExpanded && matches.length > TAG_CAP;
-        var shown = collapsed ? matches.slice(0, TAG_CAP) : matches;
-        shown.forEach(function (t) {
-          var chip = el("button", "fp-chip tag" + (state.tags.has(t) ? " on" : ""));
-          chip.type = "button";
-          chip.appendChild(document.createTextNode("#" + t));
-          chip.appendChild(el("span", "fp-n", String(tagCounts[t])));
-          chip.addEventListener("click", function () {
-            if (state.tags.has(t)) state.tags.delete(t); else state.tags.add(t);
-            chip.classList.toggle("on", state.tags.has(t));
-            renderBoard(); refreshFilterBadge();
-          });
-          tagWrap.appendChild(chip);
-        });
-        if (!shown.length) tagWrap.appendChild(el("div", "fp-empty", "No labels"));
-        if (!q && matches.length > TAG_CAP) {
-          moreBtn.hidden = false;
-          moreBtn.textContent = tagsExpanded ? "Show fewer" : "Show all " + matches.length + " labels";
-        } else { moreBtn.hidden = true; }
-      };
-      moreBtn.addEventListener("click", function () { tagsExpanded = !tagsExpanded; renderTags(); });
-      tagSearch.addEventListener("input", renderTags);
-      renderTags();
-    }
-
+    // This panel rebuilds itself in place (field list ⇄ value list), which detaches
+    // the very element you clicked before the event reaches the document. The
+    // outside-click closer would then see a target that is no longer inside the
+    // popover and close it. Keep clicks inside from bubbling at all, and — belt and
+    // braces for any future rebuild — ignore targets that have left the document.
+    pop.addEventListener("click", function (e) { e.stopPropagation(); });
+    renderFieldList(pop);
     wrap.appendChild(pop);
     filterBtn.setAttribute("aria-expanded", "true");
     setTimeout(function () {
       document.addEventListener("click", function closer(e) {
-        if (!wrap.contains(e.target)) { pop.remove(); filterBtn.setAttribute("aria-expanded", "false"); document.removeEventListener("click", closer); }
+        if (wrap.contains(e.target) || !document.contains(e.target)) return;
+        pop.remove(); filterBtn.setAttribute("aria-expanded", "false"); document.removeEventListener("click", closer);
       });
     }, 0);
   }
+  // Level 1: which field. Level 2 replaces it in place (with a way back), so the
+  // popover never grows a third column on a phone.
+  function renderFieldList(pop) {
+    pop.innerHTML = "";
+    pop.appendChild(el("div", "fp-label", "Add filter"));
+    FILTER_FIELDS.forEach(function (f) {
+      var row = el("button", "fp-row");
+      row.type = "button";
+      row.appendChild(el("span", null, f.label));
+      var on = filterValues(f.key, false).length;
+      if (on) row.appendChild(el("span", "fp-n", String(on)));
+      row.appendChild(el("span", "fp-chev", "›"));
+      row.addEventListener("click", function () { renderValueList(pop, f); });
+      pop.appendChild(row);
+    });
+  }
+  function renderValueList(pop, f) {
+    pop.innerHTML = "";
+    var back = el("button", "fp-back");
+    back.type = "button";
+    back.appendChild(el("span", "fp-chev", "‹"));
+    back.appendChild(el("span", null, f.label));
+    back.addEventListener("click", function () { renderFieldList(pop); });
+    pop.appendChild(back);
+
+    var all = f.values();
+    var box = el("div", "fp-values");
+    var searchBox = null;
+    if (f.search && all.length > 8) {
+      searchBox = el("input", "fp-search");
+      searchBox.type = "text"; searchBox.placeholder = f.search;
+      searchBox.autocomplete = "off"; searchBox.spellcheck = false;
+      pop.appendChild(searchBox);
+    }
+    pop.appendChild(box);
+
+    var CAP = 12, expanded = false;
+    var more = el("button", "fp-more"); more.type = "button"; more.hidden = true;
+    pop.appendChild(more);
+
+    function paint() {
+      box.innerHTML = "";
+      var active = filterValues(f.key, false);
+      var q = searchBox ? searchBox.value.trim().toLowerCase() : "";
+      var matches = all.filter(function (v) { return !q || v.value.indexOf(q) !== -1; });
+      var collapsed = !q && !expanded && matches.length > CAP;
+      (collapsed ? matches.slice(0, CAP) : matches).forEach(function (v) {
+        var isOn = active.indexOf(v.value) !== -1;
+        var row = el("label", "fp-val" + (isOn ? " on" : ""));
+        var cb = document.createElement("input");
+        cb.type = "checkbox"; cb.checked = isOn;
+        cb.addEventListener("change", function () { toggleFilterValue(f.key, v.value, false); paint(); });
+        row.appendChild(cb);
+        row.appendChild(el("span", "fp-vlabel", v.label));
+        row.appendChild(el("span", "fp-n", String(countFor(f.key, v.value))));
+        box.appendChild(row);
+      });
+      if (!matches.length) box.appendChild(el("div", "fp-empty", "Nothing to filter by"));
+      if (!q && matches.length > CAP) {
+        more.hidden = false;
+        more.textContent = expanded ? "Show fewer" : "Show all " + matches.length;
+      } else { more.hidden = true; }
+    }
+    more.addEventListener("click", function () { expanded = !expanded; paint(); });
+    if (searchBox) searchBox.addEventListener("input", paint);
+    paint();
+  }
+
+  // ── saved views ─────────────────────────────────────────────────────────────
+  // A view is the whole tuple — scope + filter + grouping + ordering + layout —
+  // named, in `board.config.json`. That file is *configuration*, not truth, so this
+  // adds no second source: the pucks are still the only data. Saving one is a
+  // commit, and who may save is decided by repo permissions — which is how we get
+  // Linear's "set default for everyone" without building a role model.
+  function savedViews() {
+    var vs = (DATA.config && DATA.config.views) || [];
+    return vs.filter(function (v) { return v && v.name; });
+  }
+  function paramsOf(v) {
+    var o = {};
+    ["view", "q", "group", "layout", "sort", "done", "empty"].forEach(function (k) {
+      if (v[k] != null && v[k] !== "") o[k] = String(v[k]);
+    });
+    return o;
+  }
+  function sameParams(a, b) {
+    var keys = ["view", "q", "group", "layout", "sort", "done", "empty"];
+    for (var i = 0; i < keys.length; i++) {
+      if ((a[keys[i]] || "") !== (b[keys[i]] || "")) return false;
+    }
+    return true;
+  }
+  function applySavedView(v) {
+    exitPuckView();
+    applyParams(paramsOf(v), true); // a saved view describes the whole board
+    refreshNav();
+    renderBoard();
+    maybeCloseMenu();
+  }
+  function buildSavedViews() {
+    var host = document.getElementById("savedViews");
+    var section = document.getElementById("savedSection");
+    if (!host || !section) return;
+    var views = savedViews();
+    section.hidden = !views.length;
+    host.innerHTML = "";
+    if (!views.length) return;
+    var now = viewParamObject();
+    var seg = el("div", "focusseg");
+    views.forEach(function (v) {
+      var on = sameParams(paramsOf(v), now);
+      var b = el("button", "focusbtn" + (on ? " on" : ""));
+      b.type = "button";
+      b.title = v.q || "Saved view";
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.appendChild(el("span", "focus-label", v.name));
+      b.addEventListener("click", function () { applySavedView(v); });
+      if (ghToken()) {
+        var del = el("button", "saved-del", "✕");
+        del.type = "button";
+        del.title = "Remove this saved view";
+        del.setAttribute("aria-label", "Remove saved view " + v.name);
+        del.addEventListener("click", function (e) { e.stopPropagation(); removeSavedView(v); });
+        b.appendChild(del);
+      }
+      seg.appendChild(b);
+    });
+    host.appendChild(seg);
+  }
+  // Both writes go through the same helper: read the config, change `views`, commit.
+  function writeViews(views, message, done) {
+    var repo = aggregatorRepo();
+    if (!repo) { toast("✗ No aggregator repo configured", true); return; }
+    toast("Saving…");
+    commitViews(repo, views, message)
+      .then(function () {
+        DATA.config = DATA.config || {};
+        DATA.config.views = views; // optimistic: the harvest will confirm it
+        buildSavedViews();
+        if (done) done();
+        toast("✓ Saved — live in ~1 min");
+      })
+      .catch(function (err) { toast("✗ " + err.message, true); });
+  }
+  function commitViews(repo, views, message) {
+    var token = ghToken();
+    var api = "https://api.github.com/repos/" + repo + "/contents/board.config.json";
+    var errItem = { repo: repo, repoName: repo };
+    var headers = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+    return fetch(api, { headers: headers })
+      .then(function (r) { assertOk(r, errItem); return r.json(); })
+      .then(function (info) {
+        var cfg = {};
+        try { cfg = JSON.parse(b64decode(info.content)); } catch (e) {}
+        if (views.length) cfg.views = views; else delete cfg.views;
+        var out = JSON.stringify(cfg, null, 2) + "\n";
+        return fetch(api, {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: message, content: b64encode(out), sha: info.sha }),
+        });
+      })
+      .then(function (r) { assertOk(r, errItem); });
+  }
+  function saveCurrentView() {
+    var params = viewParamObject();
+    if (!Object.keys(params).length) { toast("✗ Nothing to save — this is the default board", true); return; }
+    var name = window.prompt("Name this view — it goes in board.config.json and shows in the sidebar.", "");
+    if (name == null) return;
+    name = name.trim();
+    if (!name) return;
+    var views = savedViews().filter(function (v) { return v.name !== name; }); // same name = replace
+    var entry = { name: name };
+    for (var k in params) entry[k] = params[k];
+    views.push(entry);
+    writeViews(views, "roadmap: save view “" + name + "”");
+  }
+  function removeSavedView(v) {
+    if (!window.confirm("Remove the saved view “" + v.name + "”?")) return;
+    writeViews(savedViews().filter(function (x) { return x !== v; }), "roadmap: remove view “" + v.name + "”");
+  }
+
+  // ── the chip row ────────────────────────────────────────────────────────────
+  // Every active predicate, visible and individually removable — the filter's own
+  // display, so the Filter button needs no count and "showing more" can never read
+  // as "you have narrowed something".
+  var chipRow = document.getElementById("chipRow");
+  function chipsData() {
+    var out = [];
+    if (state.repos.size) {
+      var repos = [];
+      state.repos.forEach(function (r) { repos.push(repoNameOf(r)); });
+      out.push({ label: "Repo: " + repos.join(", "), place: true, remove: function () { state.repos.clear(); } });
+    }
+    if (state.agents.size) {
+      var ags = [];
+      state.agents.forEach(function (a) { ags.push(agentLabel(a)); });
+      out.push({ label: "Agent: " + ags.join(", "), place: true, remove: function () { state.agents.clear(); } });
+    }
+    var terms = parseQuery(state.query);
+    terms.forEach(function (t, i) {
+      var f = fieldByKey(t.field);
+      var label;
+      if (t.field === "text") label = "“" + t.values[0] + "”";
+      else if (t.field === "is") label = (t.neg ? "Not " : "") + t.values[0];
+      else if (f) label = f.label + ": " + t.values.map(function (v) { return valueLabel(f, v); }).join(", ");
+      else label = serializeTerms([t]);
+      out.push({
+        label: (t.neg && t.field !== "is" ? "Not " : "") + label,
+        remove: function () {
+          var rest = parseQuery(state.query).filter(function (_, j) { return j !== i; });
+          setQueryTerms(rest);
+        },
+      });
+    });
+    return out;
+  }
+  function valueLabel(f, v) {
+    var all = f.values();
+    for (var i = 0; i < all.length; i++) if (all[i].value === v) return all[i].label;
+    return v;
+  }
+  function renderChips() {
+    if (!chipRow) return;
+    var chips = chipsData();
+    chipRow.innerHTML = "";
+    chipRow.hidden = !chips.length;
+    if (!chips.length) return;
+    chips.forEach(function (c) {
+      var chip = el("span", "fchip" + (c.place ? " place" : ""));
+      chip.appendChild(el("span", "fchip-label", c.label));
+      var x = el("button", "fchip-x", "✕");
+      x.type = "button";
+      x.setAttribute("aria-label", "Remove filter " + c.label);
+      x.addEventListener("click", function () {
+        c.remove();
+        if (c.place) { refreshNav(); renderBoard(); } // a place also owns the sidebar
+      });
+      chip.appendChild(x);
+      chipRow.appendChild(chip);
+    });
+    if (chips.length > 1) {
+      var clear = el("button", "fchip-clear", "Clear all");
+      clear.type = "button";
+      clear.addEventListener("click", function () {
+        state.repos.clear(); state.agents.clear();
+        setQueryTerms([]);
+        refreshNav();
+      });
+      chipRow.appendChild(clear);
+    }
+  }
+
   if (filterBtn) filterBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleFilterMenu(); });
 
 
@@ -2520,6 +2883,7 @@
   buildRepoChips();
   buildAgentChips();
   buildFocusControl();
+  buildSavedViews();
   renderBoard();
 
   // ── mobile drawer: the sidebar slides in over a scrim ──

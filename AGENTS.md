@@ -72,9 +72,22 @@ field of its own would invent a second truth:
 The board's own views are just queries — `Ready` is `is:ready`, `Needs attention`
 is `is:flagged` — so anything a view shows, a query can name.
 
-URL parameters: `?q=` is the filter, `?view=` names a view (`all`/`ready`/`inbox`/
-`attention`), `?done=1` shows the archive, and `#<repo>/<slug>` opens one puck.
-They compose: `?q=agent:backend+repo:pia-terminal&view=ready`.
+URL parameters: `?q=` is the filter, `?view=` names a built-in view (`all`/`ready`/
+`inbox`/`attention`), `?group=` the column field, `?layout=` board or list, `?sort=`
+the ordering, `?done=1` shows the archive, `?empty=0` hides empty columns, and
+`#<repo>/<slug>` opens one puck. They compose:
+`?q=agent:backend+repo:pia-terminal&view=ready&group=target`.
+
+**Saved views** are the same parameters, named, in `board.config.json` — the board
+lists them in its sidebar. That file is configuration, not truth, so this adds no
+second source; the pucks remain the only data:
+
+```jsonc
+{ "views": [
+  { "name": "This month", "q": "target:<=2026-11-30 -status:done", "group": "target", "sort": "target" },
+  { "name": "Ready for AI", "q": "is:ready agent:backend" }
+] }
+```
 
 ## Writing
 

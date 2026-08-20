@@ -1024,6 +1024,59 @@ body.preload * { transition: none !important; }
   height: 2px; margin: 3px 2px; border-radius: 2px;
   background: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
+/* A saved view's remove affordance — only on hover/focus, so the sidebar stays
+   calm and a saved view reads as navigation first. */
+.saved-del {
+  margin-left: auto; background: none; border: 0; padding: 0 2px; cursor: pointer;
+  color: var(--ink-3); font-size: 11px; line-height: 1; opacity: 0; transition: opacity .12s;
+}
+.focusbtn:hover .saved-del, .saved-del:focus { opacity: 1; }
+.saved-del:hover { color: var(--ink); }
+.dp-save { color: var(--accent); }
+
+/* The chip row: one chip per active predicate, under the view header. It is the
+   filter's display — which is why the Filter button needs no count of its own. */
+.chiprow {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 0 24px 10px; border-bottom: 1px solid var(--line);
+}
+.chiprow[hidden] { display: none; }
+.fchip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 4px 3px 9px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); font-size: 12px; color: var(--ink-2);
+}
+/* A place came from the sidebar, not the panel — tinted so the difference is
+   visible without being a second concept. */
+.fchip.place { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.fchip-label { white-space: nowrap; }
+.fchip-x {
+  background: none; border: 0; padding: 0 4px; cursor: pointer;
+  color: var(--ink-3); font-size: 11px; line-height: 1;
+}
+.fchip-x:hover { color: var(--ink); }
+.fchip-clear { background: none; border: 0; font-size: 12px; color: var(--ink-3); cursor: pointer; padding: 0 4px; }
+.fchip-clear:hover { color: var(--ink); text-decoration: underline; }
+
+/* Filter panel, two levels: fields, then that field's values. */
+.fp-row, .fp-back {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: 0; padding: 6px 4px; border-radius: 6px;
+  font: inherit; font-size: 13px; color: var(--ink); cursor: pointer; text-align: left;
+}
+.fp-row:hover, .fp-back:hover { background: var(--line); }
+.fp-row .fp-chev { margin-left: auto; color: var(--ink-3); }
+.fp-back { color: var(--ink-2); font-weight: 600; }
+.fp-values { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; }
+.fp-val {
+  display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-radius: 6px;
+  font-size: 13px; color: var(--ink); cursor: pointer;
+}
+.fp-val:hover { background: var(--line); }
+.fp-val input { accent-color: var(--accent); cursor: pointer; }
+.fp-val .fp-n { margin-left: auto; color: var(--ink-3); font-family: var(--mono); font-size: 10px; }
+.fp-vlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-row .fp-n { color: var(--accent); font-family: var(--mono); font-size: 10px; }
 .fp-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; }
 .fp-toggle input { accent-color: var(--accent); cursor: pointer; }
 .fp-label { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin-top: 2px; }
