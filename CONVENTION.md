@@ -201,7 +201,9 @@ cut to fix it, so the edges stand and a human decides. A puck depending on itsel
 the same error with one node, kept rather than quietly discarded.
 
 Set it with `roadmap depends <slug> +<ref> -<ref>` (`--clear` empties it), or from
-the puck's **Blocked by** row on the board.
+the puck's **Blocked by** row on the board, which offers a searchable list of pucks
+and writes the reference form for you — a loop or a duplicate isn't in the list to
+begin with.
 
 ### The level above (`parent`)
 
@@ -228,6 +230,8 @@ ignored rather than half-applied — the board never rewrites your file to fix i
 
 On the board it's a grouping like any other: **Display → Grouping → Etapp** turns the
 columns into etapps, and dragging a card between them writes that one `parent:` line.
+The **Etapp** row picks from a searchable list rather than asking you to spell a slug;
+a puck that would close a loop is left out of it.
 
 ---
 

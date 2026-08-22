@@ -120,6 +120,9 @@
     }
     return null;
   }
+  // How this repo would name that puck: a bare slug at home, `owner/repo#slug`
+  // across repos. Matches refKey() in the harvester, and is the one place both
+  // `parent` and `depends` decide how a link is written.
   function refFor(from, target) {
     return target.repo === from.repo ? target.slug : target.repo + "#" + target.slug;
   }
@@ -918,6 +921,386 @@
     return row;
   }
 
+  // ── overlay primitive ───────────────────────────────────────────────────────
+  // One surface, two presentations: an anchored popover on a wide screen, a bottom
+  // sheet on a phone. The *content* — a list, a calendar, a form — is written once
+  // and knows nothing about which it got; presentation is a parameter, the same
+  // move that made grouping a variable in GROUPS.
+  //
+  // The sheet deliberately does NOT shrink for the keyboard. It keeps its height
+  // and the keyboard covers the bottom of it: no reflow when the keyboard comes and
+  // goes, the scroll position survives, and there is no visualViewport dance. Three
+  // things make that correct rather than sloppy — the field stays pinned at the top,
+  // the first rows sit in the band above the keyboard, and the body gets bottom
+  // padding while a field is focused so the last row can still be scrolled into
+  // view. Without the third, the last option would be unreachable.
+  var PHONE = "(max-width: 640px)";
+  function isPhone() { return window.matchMedia(PHONE).matches; }
+
+  // While a sheet is up, the page behind it must be inert — scrolling it would move
+  // the thing you are about to come back to. `overflow: hidden` alone doesn't hold
+  // on iOS, so the body is pinned at its current offset and put back afterwards.
+  // Counted, because a sheet can open over the puck modal, which locks too.
+  var scrollLocks = 0, lockedY = 0;
+  function lockScroll() {
+    if (scrollLocks++) return;
+    lockedY = window.scrollY || document.documentElement.scrollTop || 0;
+    document.body.style.top = -lockedY + "px";
+    document.body.classList.add("scroll-locked");
+  }
+  function unlockScroll() {
+    scrollLocks = Math.max(0, scrollLocks - 1);
+    if (scrollLocks) return;
+    document.body.classList.remove("scroll-locked");
+    document.body.style.top = "";
+    void document.body.offsetHeight; // settle the layout before restoring, or the
+    window.scrollTo(0, lockedY);     // scroll lands on a body that is still fixed
+  }
+
+  // The scrim stops the pointer, not the keyboard. A sheet is modal, so the app
+  // behind it goes `inert` — otherwise Tab, a switch control or a screen reader
+  // walks straight out of the sheet into a board nobody can see, and activating
+  // something there edits or navigates behind the surface. `#app` only: the palette
+  // is a sibling and is deliberately allowed on top (see the Escape order).
+  // One rule instead of a trap per layer: **the top layer is live, everything else
+  // on <body> is inert.** A stack, because the layers genuinely nest — the palette
+  // opens over a sheet, help over the palette — and the one on top is the only one
+  // the keyboard should be able to reach. Writing a focus trap into each of them
+  // would be three copies of the same logic and a fourth hole the day a fifth layer
+  // arrives.
+  //
+  // A layer names the nodes that stay live: a sheet keeps its scrim, so tapping
+  // outside still dismisses it. Everything else on <body> — the app, the layers
+  // below — goes inert, which blocks the pointer, Tab *and* the screen reader.
+  var layers = [];
+  function pushLayer(nodes) {
+    var layer = { nodes: nodes };
+    layers.push(layer);
+    applyInert();
+    return function () {
+      var at = layers.indexOf(layer);
+      if (at < 0) return;
+      layers.splice(at, 1);
+      applyInert();
+    };
+  }
+  function applyInert() {
+    var top = layers.length ? layers[layers.length - 1].nodes : null;
+    var kids = document.body.children;
+    for (var i = 0; i < kids.length; i++) {
+      var n = kids[i];
+      var off = !!top && top.indexOf(n) === -1;
+      if ("inert" in n) n.inert = off;
+      // Pre-`inert` browsers get the screen-reader half, which is the part a scrim
+      // can't do at all. Tab is handled by the sheet's own trap either way.
+      else if (off) n.setAttribute("aria-hidden", "true");
+      else n.removeAttribute("aria-hidden");
+    }
+  }
+  // Everything in `root` a Tab can land on, in document order.
+  var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), ' +
+    'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  function focusables(root) {
+    var all = root.querySelectorAll(FOCUSABLE), out = [];
+    for (var i = 0; i < all.length; i++) if (all[i].offsetParent !== null) out.push(all[i]);
+    return out;
+  }
+
+  // Drag the sheet: down far enough closes it, up snaps it to full height, anything
+  // short springs back. Dragging from the body is allowed only when the list is
+  // already at the top and the finger is going down — otherwise that gesture is a
+  // scroll, and stealing it would make the list feel broken.
+  // Drag the sheet: it follows the finger the whole way. Upward it *grows* — the
+  // bottom stays put and the top rises, which is what a sheet expanding looks like
+  // — and past its natural height it can't shrink further, so downward turns into
+  // sliding it off the screen. Let go past the close threshold and it dismisses;
+  // otherwise it settles at whichever detent it is nearest.
+  //
+  // Growing (height) rather than moving (transform) matters: a translated sheet
+  // leaves a gap under it and shows the same content moved, while a taller one
+  // actually reveals more list — the thing you dragged up to see.
+  var SHEET_CLOSE = 96, SHEET_FULL = 0.94;
+  function draggableSheet(root, body, close) {
+    var startY = 0, dy = 0, slid = 0, pending = false, dragging = false, fromBody = false;
+    var baseH = 0, naturalH = 0, maxH = 0;
+
+    function heights() {
+      maxH = Math.round(window.innerHeight * SHEET_FULL);
+      // Its content height, measured without the full-height override.
+      if (root.classList.contains("full")) return;
+      naturalH = root.offsetHeight;
+    }
+    function down(e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      fromBody = body.contains(e.target);
+      if (fromBody && body.scrollTop > 0) return;
+      heights();
+      pending = true; dragging = false; startY = e.clientY; dy = 0; slid = 0;
+      baseH = root.offsetHeight;
+      // Pin the height for the whole gesture, from the very first touch. Putting a
+      // finger on the sheet blurs the search field, which drops the keyboard
+      // padding — and a content-sized sheet then shrinks by a third *under the
+      // finger*, leaving the pointer over the scrim instead of the sheet it holds.
+      root.style.height = baseH + "px";
+      // Capture from the first touch when the gesture starts on the sheet's chrome:
+      // the grip sits a dozen pixels below the top edge, so an upward drag leaves
+      // the sheet at once and its pointermoves would go to the scrim instead. Not
+      // from the list, though — capture retargets the compatibility mouse events
+      // too, so a tap on a row would resolve its click against the sheet and the
+      // row's own handler would never run.
+      if (!fromBody) { try { root.setPointerCapture(e.pointerId); } catch (err) { /* older engines */ } }
+    }
+    function move(e) {
+      if (!pending && !dragging) return;
+      dy = e.clientY - startY;
+      if (!dragging) {
+        if (Math.abs(dy) < 6) return;
+        if (fromBody && dy < 0) { pending = false; return; } // that's a scroll
+        dragging = true;
+        root.classList.add("dragging");
+        try { root.setPointerCapture(e.pointerId); } catch (err) { /* older engines */ }
+      }
+      var want = baseH - dy;              // finger up → taller
+      var floor = Math.min(naturalH, baseH);
+      if (want >= floor) {
+        slid = 0;
+        root.style.height = Math.min(want, maxH) + "px";
+        root.style.transform = "";
+      } else {
+        slid = floor - want;             // no shorter than it started: slide it away
+        root.style.height = floor + "px";
+        root.style.transform = "translateY(" + slid + "px)";
+      }
+      e.preventDefault();
+    }
+    function up() {
+      if (!dragging) {
+        pending = false;
+        // Release the pin only after the click has been dispatched: letting the
+        // sheet re-size now would move the row out from under the finger between
+        // pointerup and click, and the tap would land on whatever slid into place.
+        setTimeout(function () { if (!pending && !dragging) root.style.height = ""; }, 0);
+        return;
+      }
+      pending = false; dragging = false;
+      root.classList.remove("dragging");
+      if (slid > SHEET_CLOSE) { close(); return; }
+      var h = root.offsetHeight;
+      root.style.transform = "";
+      root.style.height = "";
+      // Settle at the nearer detent, so a drag that got most of the way there
+      // finishes the journey instead of springing back.
+      if (h > (naturalH + maxH) / 2) root.classList.add("full");
+      else root.classList.remove("full");
+    }
+    root.addEventListener("pointerdown", down);
+    root.addEventListener("pointermove", move);
+    root.addEventListener("pointerup", up);
+    root.addEventListener("pointercancel", up);
+  }
+
+  // Every open surface, so navigation and viewport changes can clear them: a sheet
+  // lives on <body>, not inside the puck it belongs to, and would otherwise survive
+  // the puck being swapped out under it.
+  var openSurfaces = [];
+  function closeSurfaces() {
+    openSurfaces.slice().forEach(function (s) { s.close(); });
+  }
+
+  //   opts: { title, anchorWrap, cls, help, onClose, build(body, api) }
+  //   → { close }
+  function openSurface(opts) {
+    var phone = isPhone();
+    var scrim = null;
+    // Where focus came from, so closing hands it back to the control that opened
+    // the surface instead of dropping it on <body> — from where the next Tab starts
+    // over at the top of the page.
+    var lastFocus = document.activeElement;
+    var popLayer = null;
+    var root = el("div", (phone ? "sheet" : "pop") + (opts.cls ? " " + opts.cls : ""));
+    var body = el("div", "surface-body");
+    var closed = false;
+
+    function close() {
+      if (closed) return;
+      closed = true;
+      var at = openSurfaces.indexOf(handle);
+      if (at >= 0) openSurfaces.splice(at, 1);
+      setTimeout(flushRefresh, 0); // catch up on any refresh this surface held off
+      document.removeEventListener("click", onDocClick, true);
+      document.removeEventListener("pointerdown", onDocDown, true);
+      document.removeEventListener("keydown", onKey, true);
+      // Take focus back when we still hold it — or when nobody does. A layer that
+      // sat on top of us (the palette, a panel) drops focus on <body> when it goes,
+      // and a keyboard user closing the sheet next would otherwise be left at the
+      // top of the page. What we must not do is *steal* it: closing usually happens
+      // because the user aimed at something else, and pulling focus off that target
+      // would undo their click as surely as re-rendering under it does.
+      var at = document.activeElement;
+      var hadFocus = root.contains(at) || !at || at === document.body;
+      if (popLayer) popLayer();
+      if (scrim) { scrim.remove(); unlockScroll(); }
+      root.remove();
+      // Deferred, and only to something still on screen. Closing is often the first
+      // step of navigating away — Back closes the surfaces, then hides the whole
+      // detail pane — and handing focus to a trigger inside that pane strands it in
+      // a hidden subtree. One turn later we can see which it was, and whether
+      // anything else has claimed focus in the meantime.
+      if (hadFocus && lastFocus && document.contains(lastFocus)) {
+        setTimeout(function () {
+          var now = document.activeElement;
+          if (now && now !== document.body) return;              // someone else took it
+          if (!document.contains(lastFocus) || !lastFocus.offsetParent) return; // gone or hidden
+          try { lastFocus.focus(); } catch (e2) {}
+        }, 0);
+      }
+      if (opts.onClose) opts.onClose();
+    }
+    function onKey(e) {
+      if (e.key !== "Tab" && e.key !== "Escape") return;
+      // Anything stacked above a surface owns the keyboard: the help overlay, the
+      // palette, and the New/Settings/token panels. Otherwise Escape dismisses a
+      // surface nobody can see and leaves the visible layer standing — and Tab is
+      // worse: the trap would drag focus out of the visible overlay and into the
+      // sheet behind it, since from up there focus reads as "outside". Asking "is
+      // something above me?" rather than naming each one is what keeps a future
+      // panel from re-opening this hole.
+      // Unwind order: help → palette → panel → surface → puck.
+      if (cmdkVisible() || helpOpen() || anyModalOpen()) return;
+      // A sheet is modal, so Tab wraps inside it. `inert` already does this where
+      // it exists; the trap is what makes the older path safe, and it also gives
+      // the wrap-around a real modal has.
+      if (e.key === "Tab" && phone) {
+        var f = focusables(root);
+        if (!f.length) { e.preventDefault(); return; }
+        var first = f[0], last = f[f.length - 1], at = document.activeElement;
+        // The sheet itself holds focus right after opening, and it is *not* part of
+        // the cycle: it sits before its own children in tab order, so forward Tab
+        // happens to land inside, but Shift+Tab would step out to whatever precedes
+        // the sheet in the document. Counting the container as outside sends that
+        // first backward press to the last row instead.
+        var out = !root.contains(at) || at === root;
+        if (e.shiftKey ? (out || at === first) : (out || at === last)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        }
+        return;
+      }
+      if (e.key !== "Escape") return;
+      e.stopPropagation(); // this layer only — the modal beneath stays open
+      close();
+    }
+    // A click that *began* inside the surface is never an outside click, wherever it
+    // ends up: dragging the sheet, or selecting text, moves the pointer far from
+    // where it started, and the click then reports their common ancestor — the
+    // body. Judging by where the gesture started is what makes a draggable sheet
+    // survive its own drag.
+    // The trigger counts as inside: it sits in the anchor wrapper, not in the
+    // popover, so closing on it would race its own toggle — the handler would find
+    // the surface already gone and open a fresh one, and the control could never be
+    // clicked shut.
+    function inside(node) {
+      return root.contains(node) || !!(opts.anchorWrap && opts.anchorWrap.contains(node));
+    }
+    var downInside = false;
+    function onDocDown(e) { downInside = inside(e.target); }
+    function onDocClick(e) {
+      if (downInside) { downInside = false; return; }
+      // A surface rebuilds its own contents, which detaches the clicked node before
+      // the event reaches the document — a plain contains() check then reads it as
+      // "outside" and closes on every inner click.
+      if (inside(e.target) || !document.contains(e.target)) return;
+      close();
+    }
+
+    if (phone) {
+      scrim = el("div", "sheet-scrim");
+      scrim.addEventListener("click", close);
+      document.body.appendChild(scrim);
+      root.setAttribute("role", "dialog");
+      root.setAttribute("aria-modal", "true");
+      if (opts.title) root.setAttribute("aria-label", opts.title);
+      root.tabIndex = -1; // focus lands on the sheet itself, never on a text field:
+                          // that would raise the keyboard before anyone asked
+      root.appendChild(el("div", "sheet-grip"));
+      var head = el("div", "sheet-head");
+      if (opts.help) {
+        var h = el("a", "sheet-help", "?");
+        h.href = opts.help; h.target = "_blank"; h.rel = "noopener";
+        h.title = "What is this field?";
+        head.appendChild(h);
+      }
+      head.appendChild(el("h3", "sheet-title", opts.title || ""));
+      root.appendChild(head);
+      root.appendChild(body);
+      document.body.appendChild(root);
+      lockScroll();
+      popLayer = pushLayer([root, scrim]); // the scrim stays live: tap-outside still closes
+      draggableSheet(root, body, close);
+      // While a *text field* inside is focused the keyboard is up; pad the scroll
+      // area so the last row can still be brought above it.
+      //
+      // Only text fields: a button takes focus on mousedown too, and padding the
+      // body for that grew the sheet mid-tap. Since the sheet is anchored to the
+      // bottom, growing moves every row upward — so the tap landed on the row above
+      // the one you aimed at, or on nothing at all.
+      var typing = function (n) { return n && (n.tagName === "INPUT" || n.tagName === "TEXTAREA"); };
+      root.addEventListener("focusin", function (e) { if (typing(e.target)) root.classList.add("kb"); });
+      root.addEventListener("focusout", function () {
+        setTimeout(function () {
+          if (!typing(document.activeElement) || !root.contains(document.activeElement)) {
+            root.classList.remove("kb");
+          }
+        }, 0);
+      });
+    } else {
+      root.appendChild(body);
+      (opts.anchorWrap || document.body).appendChild(root);
+      if (!opts.anchorWrap) root.classList.add("pop-center");
+    }
+
+    var handle = { close: close, el: root };
+    openSurfaces.push(handle);
+    opts.build(body, { close: close, phone: phone });
+    // Give a sheet's search field breathing room before the list, the way the
+    // reference apps do. The gap has to belong to the *pinned* element, not sit
+    // between it and the list: a margin there is not painted, so rows would scroll
+    // through it. Wrapping the field lets the padding be part of what stays put —
+    // and an <input> can't carry it itself, since padding-bottom on a field moves
+    // its own text instead of adding space beneath it.
+    if (phone) {
+      var head = body.firstElementChild;
+      if (head && (head.classList.contains("fp-search") || head.classList.contains("tokenbox"))) {
+        var held = document.activeElement; // moving a node blurs it — put focus back
+        var pin = el("div", "sheet-pin");
+        body.insertBefore(pin, head);
+        pin.appendChild(head);
+        if (held && pin.contains(held)) { try { held.focus(); } catch (e) {} }
+      }
+    }
+    // Move focus into the sheet unless the builder already placed it (the desktop
+    // pickers focus their search field; the phone ones deliberately don't).
+    if (phone && !root.contains(document.activeElement)) {
+      try { root.focus({ preventScroll: true }); } catch (e) { root.focus(); }
+    }
+    setTimeout(function () {
+      document.addEventListener("click", onDocClick, true);
+      document.addEventListener("pointerdown", onDocDown, true);
+      document.addEventListener("keydown", onKey, true);
+    }, 0);
+    return handle;
+  }
+
+  // A surface picks its shell once, at open. Crossing the breakpoint — a phone
+  // rotating into landscape — would leave a sheet with none of its media-scoped
+  // positioning and the body still locked, so close instead of trying to morph.
+  (function () {
+    var mq = window.matchMedia(PHONE);
+    var onChange = function () { closeSurfaces(); };
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  })();
+
   // A Linear-style editable property: a single chip showing the *current* value;
   // click opens a picker popover to change it. Static chip when not editable. This
   // is the growable pattern — a new field is one more propPicker, not a button row.
@@ -928,33 +1311,186 @@
     var chip = el("button", "pick-chip");
     chip.type = "button";
     function paint(node) { chip.innerHTML = ""; chip.appendChild(node); }
-    paint(cur ? opts.valueNode(cur) : el("span", "prop-muted", opts.placeholder || "—"));
+    paint(cur ? opts.valueNode(cur) : el("span", "prop-muted", opts.placeholder || "\u2014"));
     if (!opts.editable) { chip.classList.add("static"); chip.disabled = true; return chip; }
     chip.classList.add("editable");
-    chip.appendChild(el("span", "pick-caret", "▾"));
     var wrap = el("div", "prop-pick");
+    var open = null;
     chip.addEventListener("click", function (e) {
       e.stopPropagation();
-      if (wrap.querySelector(".pick-menu")) { closeMenu(); return; }
-      var menu = el("div", "pick-menu");
-      opts.options.forEach(function (o) {
-        var mi = el("button", "pick-mi" + (o.value === opts.current ? " on" : ""));
-        mi.type = "button";
-        mi.appendChild(opts.valueNode(o));
-        if (o.value === opts.current) mi.appendChild(el("span", "pick-check", "✓"));
-        mi.addEventListener("click", function () { closeMenu(); if (o.value !== opts.current) opts.onPick(o.value); });
-        menu.appendChild(mi);
+      if (open) { open.close(); return; }
+      open = openSurface({
+        title: opts.title || "",
+        anchorWrap: wrap,
+        cls: "pick-menu",
+        onClose: function () { open = null; },
+        build: function (list, api) {
+          opts.options.forEach(function (o) {
+            var mi = el("button", "pick-mi" + (o.value === opts.current ? " on" : ""));
+            mi.type = "button";
+            mi.appendChild(opts.valueNode(o));
+            if (o.value === opts.current) mi.appendChild(el("span", "pick-check", "\u2713"));
+            mi.addEventListener("click", function () {
+              api.close();
+              if (o.value !== opts.current) opts.onPick(o.value);
+            });
+            list.appendChild(mi);
+          });
+          // No "create an option" here, on purpose: status and priority are closed
+          // interface fields. An invented value would commit fine and then be
+          // dropped by the harvester's normalize*() — a write that looks like it
+          // worked and disappears an hour later.
+        },
       });
-      wrap.appendChild(menu);
-      setTimeout(function () {
-        document.addEventListener("click", function closer(ev) {
-          if (!wrap.contains(ev.target)) { closeMenu(); document.removeEventListener("click", closer); }
-        });
-      }, 0);
     });
-    function closeMenu() { var m = wrap.querySelector(".pick-menu"); if (m) m.remove(); }
     wrap.appendChild(chip);
     return wrap;
+  }
+
+  // A searchable list of pucks \u2014 the control for every field whose value is
+  // *another puck* (etapp, blockers). Those can't be typed from memory the way a
+  // date or an issue number can, and `window.prompt` hands the whole dialog to the
+  // browser: on iOS that draws a system sheet in its own shape and colours, which
+  // reads as a different app.
+  //
+  // Impossible choices are left out rather than refused afterwards: what can't be
+  // picked shouldn't be pointable.
+  //   opts: { current, repo, exclude(item) \u2192 bool, title, placeholder, empty, onPick(item|null) }
+  function puckPicker(label, opts) {
+    var wrap = el("div", "prop-pick");
+    // "\u22ef" is the secondary form — a value is already showing and this only
+    // changes it; anything else is the row's whole control and reads as a chip.
+    var quiet = label === "\u22ef";
+    var btn = el("button", "linklike prop-trigger" + (quiet ? " quiet" : ""));
+    btn.type = "button";
+    btn.textContent = label;
+    if (quiet) btn.setAttribute("aria-label", "Change");
+    wrap.appendChild(btn);
+    var open = null;
+
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (open) { open.close(); return; }
+      btn.setAttribute("aria-expanded", "true");
+      open = openSurface({
+        title: opts.title || "Pick a puck",
+        anchorWrap: wrap,
+        cls: "pick-menu pick-find",
+        help: opts.help,
+        onClose: function () { open = null; btn.setAttribute("aria-expanded", "false"); },
+        build: function (host, api) {
+          // The chosen value lives *inside* the field, as a token with its own ✕ —
+          // one control shows the state and takes the query. Single-value fields
+          // (etapp) carry one token, multi-value ones (blockers) carry several.
+          var box = el("div", "tokenbox");
+          var search = el("input", "fp-search token-input");
+          search.type = "text";
+          search.placeholder = opts.placeholder || "Find a puck\u2026";
+          search.autocomplete = "off"; search.spellcheck = false;
+          host.appendChild(box);
+          var list = el("div", "pick-list");
+          host.appendChild(list);
+
+          function paintBox() {
+            box.innerHTML = "";
+            (opts.tokens ? opts.tokens() : []).forEach(function (t) {
+              var tok = el("span", "token");
+              var dot = el("span", "repo-dot");
+              dot.style.background = t.color || "var(--ink-3)";
+              tok.appendChild(dot);
+              tok.appendChild(el("span", "token-label", t.label));
+              var x = el("button", "token-x", "\u2715");
+              x.type = "button";
+              x.setAttribute("aria-label", "Remove " + t.label);
+              x.addEventListener("click", function () { api.close(); t.onRemove(); });
+              tok.appendChild(x);
+              box.appendChild(tok);
+            });
+            box.appendChild(search);
+          }
+          paintBox();
+
+          // Same repo first \u2014 that's where a link usually points \u2014 then the rest,
+          // freshest first. An A\u2013Z dump of 138 pucks helps nobody.
+          // Adapted pucks are pickable: the harvester resolves references against
+          // every item on the board, so a native puck may perfectly well depend on
+          // one. What can't be *written to* is a different question from what can
+          // be pointed at — `exclude` is where impossible choices belong.
+          var pool = DATA.items.filter(function (it) { return !opts.exclude(it); });
+          pool.sort(function (a, b) {
+            var ar = a.repo === opts.repo ? 0 : 1, br = b.repo === opts.repo ? 0 : 1;
+            return ar - br || (b.updated || "").localeCompare(a.updated || "") ||
+              a.title.localeCompare(b.title);
+          });
+
+          var CAP = 40;
+          function paint() {
+            list.innerHTML = "";
+            var q = lower(search.value.trim());
+            var hits = pool.filter(function (it) {
+              return !q || lower(it.title).indexOf(q) !== -1 || it.slug.indexOf(q) !== -1 ||
+                lower(it.repoName).indexOf(q) !== -1;
+            });
+            hits.slice(0, CAP).forEach(function (it) {
+              var mi = el("button", "pick-mi" + (it.id === opts.current ? " on" : ""));
+              mi.type = "button";
+              var dot = el("span", "repo-dot");
+              dot.style.background = it.repoColor;
+              mi.appendChild(dot);
+              mi.appendChild(el("span", "pick-title", it.title));
+              // The repo is worth naming only when it isn't the one we're writing in.
+              if (it.repo !== opts.repo) mi.appendChild(el("span", "pick-repo", it.repoName));
+              if (it.id === opts.current) mi.appendChild(el("span", "pick-check", "\u2713"));
+              mi.addEventListener("click", function () { api.close(); opts.onPick(it); });
+              list.appendChild(mi);
+            });
+            if (!hits.length) list.appendChild(el("div", "fp-empty", q ? "No puck matches" : "Nothing to pick"));
+            else if (hits.length > CAP) list.appendChild(el("div", "fp-empty", "\u2026and " + (hits.length - CAP) + " more \u2014 keep typing"));
+          }
+          search.addEventListener("input", paint);
+          paint();
+          // Not on a phone: here the *list* is the content, and raising the keyboard
+          // on open buries the choices behind it. Same guard the label picker uses.
+          if (!isPhone()) search.focus();
+        },
+      });
+    });
+    return wrap;
+  }
+
+  // The last thing `window.prompt` was still doing: ask for one value. Same shell as
+  // every other surface, so a phone gets a sheet instead of an OS dialog.
+  //   opts: { title, value, placeholder, hint, action, help, onSave(text) }
+  function inputSurface(anchorWrap, opts) {
+    return openSurface({
+      title: opts.title,
+      anchorWrap: anchorWrap,
+      cls: "inputpop",
+      help: opts.help,
+      onClose: opts.onClose,
+      build: function (host, api) {
+        var field = el("input", "fp-search");
+        field.type = "text";
+        field.value = opts.value || "";
+        field.placeholder = opts.placeholder || "";
+        field.autocomplete = "off"; field.spellcheck = false;
+        host.appendChild(field);
+        if (opts.hint) host.appendChild(el("div", "fp-empty", opts.hint));
+        var row = el("div", "date-foot");
+        var save = el("button", "date-act", opts.action || "Save");
+        save.type = "button";
+        function done() { var v = field.value; api.close(); opts.onSave(v); }
+        save.addEventListener("click", done);
+        field.addEventListener("keydown", function (e) { if (e.key === "Enter") done(); });
+        row.appendChild(save);
+        host.appendChild(row);
+        // Not on a phone either, though here the field *is* the content and there is
+        // no list to bury: a sheet that opens with the keyboard already up is the
+        // thing that felt wrong, whichever surface does it. One rule beats an
+        // exception that has to be justified every time someone reads it.
+        if (!isPhone()) { field.focus(); field.select(); }
+      },
+    });
   }
 
   // Pull a trailing issue number out of "42", "#42", or a full issue URL.
@@ -965,7 +1501,18 @@
   // The Issue property cell: a link (+ open/closed state) when set, "Link issue"
   // when editable and empty, "—" otherwise. Edit uses a prompt (number or URL).
   function issueValue(item, editable) {
-    var wrap = el("span", "issue-cell");
+    // Positioned, because inputSurface anchors an absolute popover inside it —
+    // without this the nearest containing block is the main column and the editor
+    // opens below the whole page instead of beside the control.
+    var wrap = el("span", "issue-cell prop-pick");
+    // One editor per cell. The trigger sits inside the anchor wrapper, so clicking
+    // it no longer counts as an outside click — without a handle to close, a second
+    // click would stack a second editor on top of the first.
+    var openEditor = null;
+    function toggleIssueEditor() {
+      if (openEditor) { openEditor.close(); return; }
+      openEditor = promptIssue(wrap, item, function () { openEditor = null; });
+    }
     if (item.issue) {
       var a = el("a", "issue-link", "#" + item.issue);
       a.href = "https://github.com/" + item.repo + "/issues/" + item.issue;
@@ -974,12 +1521,12 @@
       if (item.issueState) wrap.appendChild(el("span", "issue-state issue-" + item.issueState, item.issueState));
       if (editable) {
         var ed = el("button", "linklike issue-editbtn", "Edit"); ed.type = "button";
-        ed.addEventListener("click", function () { promptIssue(item); });
+        ed.addEventListener("click", toggleIssueEditor);
         wrap.appendChild(ed);
       }
     } else if (editable) {
       var link = el("button", "linklike", "Link issue"); link.type = "button";
-      link.addEventListener("click", function () { promptIssue(item); });
+      link.addEventListener("click", toggleIssueEditor);
       wrap.appendChild(link);
       var mk = el("button", "linklike issue-newbtn", "New issue"); mk.type = "button";
       mk.addEventListener("click", function () { newIssue(item); });
@@ -989,32 +1536,148 @@
     }
     return wrap;
   }
-  function promptIssue(item) {
-    var val = window.prompt("Link a GitHub issue in " + item.repoName + " — number or URL.\nLeave blank to unlink.", item.issue ? String(item.issue) : "");
-    if (val === null) return; // cancelled
-    val = val.trim();
-    if (val === "") { if (item.issue) changeIssue(item, null); return; }
-    var n = parseIssue(val);
-    if (!n) { toast("✗ Couldn’t read an issue number", true); return; }
-    changeIssue(item, n);
+  function promptIssue(wrap, item, onClose) {
+    return inputSurface(wrap, {
+      title: "Issue",
+      onClose: onClose,
+      value: item.issue ? String(item.issue) : "",
+      placeholder: "42 or a full issue URL",
+      hint: "The working issue in " + item.repoName + ". Leave blank to unlink.",
+      action: item.issue ? "Save" : "Link",
+      onSave: function (val) {
+        val = String(val).trim();
+        if (val === "") { if (item.issue) changeIssue(item, null); return; }
+        var n = parseIssue(val);
+        if (!n) { toast("\u2717 Use an issue number or URL", true); return; }
+        changeIssue(item, n);
+      },
+    });
   }
-  // The Labels cell: the tag pills, plus an edit affordance when writable.
+
+  // The Labels cell: the tags as pills, plus the picker when writable.
   function labelsValue(item, editable) {
     var wrap = el("div", "card-tags");
     item.tags.forEach(function (t) { wrap.appendChild(el("span", "tagpill", "#" + t)); });
     if (!item.native) wrap.appendChild(el("span", "adapted-badge", "adapted"));
     if (editable && item.native) {
-      var ed = el("button", "linklike issue-editbtn", item.tags.length ? "Edit" : "Add labels");
-      ed.type = "button";
-      ed.addEventListener("click", function () { promptLabels(item); });
-      wrap.appendChild(ed);
+      wrap.appendChild(labelPicker(item, item.tags.length ? "Edit" : "Add labels"));
     }
     return wrap;
   }
-  function promptLabels(item) {
-    var val = window.prompt("Labels (comma-separated):", (item.tags || []).join(", "));
-    if (val === null) return;
-    changeTags(item, val.split(",").map(function (x) { return slugify(x); }).filter(Boolean));
+
+  // Labels are the one field on a puck whose value set is genuinely OPEN — a tag is
+  // whatever someone wrote — so this is where "create" belongs. The counterpart of
+  // the rule that status and priority get no such row: an invented label survives
+  // the harvest, an invented status does not.
+  //
+  // Multi-select, so the surface stays open while you toggle; the field carries the
+  // chosen labels as tokens and doubles as the search box.
+  function labelPicker(item, label) {
+    var wrap = el("div", "prop-pick");
+    var btn = el("button", "linklike issue-editbtn", label);
+    btn.type = "button";
+    wrap.appendChild(btn);
+    var open = null;
+
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (open) { open.close(); return; }
+      // Multi-select, so the write waits for the close: toggling committed on every
+      // tap would be three commits for three labels — and each one re-rendered the
+      // detail pane, which tore the surface out of the DOM mid-edit.
+      var was = (item.tags || []).slice();
+      var chosen = was.slice();
+      open = openSurface({
+        title: "Labels",
+        anchorWrap: wrap,
+        cls: "pick-menu pick-find",
+        help: "https://github.com/tor2dbear/roadmap/blob/main/CONVENTION.md#frontmatter-the-interface",
+        onClose: function () {
+          open = null;
+          if (chosen.join(",") === was.join(",")) return;
+          // Save after the dispatch that closed us finishes. Closing often happens
+          // from a click on another control, and changeTags() re-renders the detail
+          // pane synchronously — that click would then land on a detached node and
+          // appear to do nothing.
+          setTimeout(function () { changeTags(item, chosen.slice()); }, 0);
+        },
+        build: function (host) {
+          // The field holds the chosen labels as tokens and the query at once.
+          var box = el("div", "tokenbox");
+          var search = el("input", "fp-search token-input");
+          search.type = "text";
+          search.placeholder = "Filter or add a label\u2026";
+          search.autocomplete = "off"; search.spellcheck = false;
+          host.appendChild(box);
+          var list = el("div", "pick-list");
+          host.appendChild(list);
+
+          function known() {
+            var n = {};
+            DATA.items.forEach(function (it) { (it.tags || []).forEach(function (t) { n[t] = (n[t] || 0) + 1; }); });
+            return Object.keys(n).sort(function (a, b) { return n[b] - n[a] || a.localeCompare(b); });
+          }
+          function toggle(t) {
+            var i = chosen.indexOf(t);
+            if (i >= 0) chosen.splice(i, 1); else chosen.push(t);
+            search.value = "";
+            paintBox(); paintList();
+            if (!isPhone()) search.focus(); // desktop keeps typing; a phone would
+          }                                 // raise the keyboard over the list
+          function paintBox() {
+            box.innerHTML = "";
+            chosen.forEach(function (t) {
+              var tok = el("span", "token");
+              tok.appendChild(el("span", null, "#" + t));
+              var x = el("button", "token-x", "\u2715");
+              x.type = "button";
+              x.setAttribute("aria-label", "Remove label " + t);
+              x.addEventListener("click", function () { toggle(t); });
+              tok.appendChild(x);
+              box.appendChild(tok);
+            });
+            box.appendChild(search);
+          }
+          function paintList() {
+            list.innerHTML = "";
+            var q = slugify(search.value.trim());
+            var hits = known().filter(function (t) { return !q || t.indexOf(q) !== -1; });
+            // Create sits first when what you typed isn't a label yet — the same
+            // shape the reference apps use, allowed here because the set is open.
+            if (q && known().indexOf(q) === -1) {
+              var add = el("button", "pick-mi pick-new");
+              add.type = "button";
+              add.appendChild(el("span", "prop-muted", "Create"));
+              add.appendChild(el("span", "tagpill", "#" + q));
+              add.addEventListener("click", function () { toggle(q); });
+              list.appendChild(add);
+            }
+            hits.forEach(function (t) {
+              var on = chosen.indexOf(t) !== -1;
+              var mi = el("button", "pick-mi" + (on ? " on" : ""));
+              mi.type = "button";
+              mi.appendChild(el("span", "tagpill", "#" + t));
+              if (on) mi.appendChild(el("span", "pick-check", "\u2713"));
+              mi.addEventListener("click", function () { toggle(t); });
+              list.appendChild(mi);
+            });
+            if (!hits.length && !q) list.appendChild(el("div", "fp-empty", "No labels yet"));
+          }
+          search.addEventListener("input", paintList);
+          search.addEventListener("keydown", function (e2) {
+            if (e2.key === "Enter") {
+              var q = slugify(search.value.trim());
+              if (q) { e2.preventDefault(); toggle(q); }
+            } else if (e2.key === "Backspace" && !search.value && chosen.length) {
+              toggle(chosen[chosen.length - 1]); // backspace eats the last token
+            }
+          });
+          paintBox(); paintList();
+          if (!isPhone()) search.focus();
+        },
+      });
+    });
+    return wrap;
   }
 
   // Build the full puck detail into `container` — shared by both surfaces.
@@ -1081,8 +1744,17 @@
       container.appendChild(overview);
     }
 
-    // ── Overview: properties rail — discrete rows, Linear-style ──
-    var props = el("div", "props");
+    // ── Overview: properties rail, in sections ──
+    // Thirteen rows with a hairline between every one gave each the same weight,
+    // so nothing was scannable. The groups are the model's own joints: the three
+    // orthogonal axes first (when in the queue · when in the calendar · how much it
+    // matters), then routing, then the references, then the one open value set.
+    // A group draws no rules inside itself — the heading does that work.
+    var groups = [];
+    function group(label) { var g = { label: label, rows: [] }; groups.push(g); return g; }
+    var gAxes = group(null), gPeople = group("People"),
+        gRel = group("Relations"), gLabels = group("Labels");
+    var props = gAxes; // rows are pushed into a group; see the render at the end
 
     var editable = ghToken() && item.native && canWrite(item);
     // Signed in, native, but no write access to this repo → say so (once checked).
@@ -1091,7 +1763,7 @@
     }
 
     // Status: current value as a chip; click to pick (editable) — Linear-style.
-    props.appendChild(propRow("Status", propPicker({
+    gAxes.rows.push(propRow("Status", propPicker({
       editable: editable,
       current: item.status,
       options: DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; }),
@@ -1101,7 +1773,7 @@
 
     // Priority: same pattern. Shown when editable or when the puck has one set.
     if (editable || item.priority) {
-      props.appendChild(propRow("Priority", propPicker({
+      gAxes.rows.push(propRow("Priority", propPicker({
         editable: editable,
         current: item.priority || null,
         placeholder: "No priority",
@@ -1121,17 +1793,17 @@
     // Target: the horizon. Shown when editable or when the puck declares one —
     // most pucks won't, and an empty row on every card would be noise.
     if (editable || item.target) {
-      props.appendChild(propRow("Target", targetValue(item, editable)));
+      gAxes.rows.push(propRow("Target", targetValue(item, editable)));
     }
 
-    props.appendChild(propRow("Assignee", item.owner
-      ? ownerEl(item.owner, { name: true, link: true })
-      : el("span", "prop-muted", "—")));
+    // No editor for this field (owner is a frontmatter line, not a picker), so an
+    // empty row could only ever say "—". Show it when there is someone to show.
+    if (item.owner) gPeople.rows.push(propRow("Assignee", ownerEl(item.owner, { name: true, link: true })));
 
     // Agent: the PO-layer routing row — hand this puck to a discipline as easily
     // as a status flip. Shown when editable or already routed.
     if (editable || item.agent) {
-      props.appendChild(propRow("Agent", propPicker({
+      gPeople.rows.push(propRow("Agent", propPicker({
         editable: editable,
         current: item.agent || null,
         placeholder: "Unassigned",
@@ -1150,17 +1822,17 @@
     // Issue: link/unlink a GitHub issue (writes the `issue:` frontmatter line).
     // Thin-via-GitHub — the discussion is the issue; this is just a pointer field.
     if (editable || item.issue) {
-      props.appendChild(propRow("Issue", issueValue(item, editable)));
+      gRel.rows.push(propRow("Issue", issueValue(item, editable)));
     }
 
     if (editable || item.tags.length || !item.native) {
-      props.appendChild(propRow("Labels", labelsValue(item, editable)));
+      gLabels.rows.push(propRow("Labels", labelsValue(item, editable), "keyless"));
     }
 
     // Etapp: the level above. One pointer up, so the row is a link + an edit —
     // there is no epic record to open, just another puck.
     if (editable || item.parentRef || item.parent) {
-      props.appendChild(propRow("Etapp", parentValue(item, editable)));
+      gRel.rows.push(propRow("Etapp", parentValue(item, editable)));
     }
 
     // …and the level below, when this puck *is* an etapp: its pucks, with the
@@ -1177,14 +1849,14 @@
       var kidsRow = propRow("Pucks", kidsV, "blocked");
       if (item.progress) kidsRow.querySelector(".prop-k").appendChild(
         el("span", "prop-muted", " " + item.progress.done + "/" + item.progress.total));
-      props.appendChild(kidsRow);
+      gRel.rows.push(kidsRow);
     }
 
     // Blocked by: the authored `depends` list, editable. It shows landed blockers
     // too (struck through) — `blockedBy` hides them, and you can't remove a
     // dependency the board never showed you.
     if (editable || (item.depends || []).length) {
-      props.appendChild(propRow("Blocked by", dependsValue(item, editable), "blocked"));
+      gRel.rows.push(propRow("Blocked by", dependsValue(item, editable), "blocked"));
     }
 
     // …and the other direction, derived: what this puck is holding up.
@@ -1197,12 +1869,25 @@
         blocksV.appendChild(a);
         if (i < arr.length - 1) blocksV.appendChild(document.createTextNode(", "));
       });
-      props.appendChild(propRow("Blocks", blocksV, "blocked"));
+      gRel.rows.push(propRow("Blocks", blocksV, "blocked"));
     }
 
-    if (item.created) props.appendChild(propRow("Created", el("span", "prop-date", item.created)));
-    if (item.updated) props.appendChild(propRow("Updated", el("span", "prop-date", item.updated)));
-    overview.appendChild(props);
+    groups.forEach(function (g) {
+      if (!g.rows.length) return;
+      if (g.label) overview.appendChild(el("div", "sect-label", g.label));
+      var box = el("div", "props");
+      g.rows.forEach(function (r) { box.appendChild(r); });
+      overview.appendChild(box);
+    });
+
+    // Created/Updated are derived and never edited, and Activity is the same fact
+    // with more detail. A footnote rather than two rows — kept at all because
+    // Activity can fail (private repo, rate limit) and `updated` drives the stale
+    // flag, so it should not take a round trip to see.
+    var meta = [];
+    if (item.created) meta.push("Created " + item.created);
+    if (item.updated) meta.push("Updated " + item.updated);
+    if (meta.length) overview.appendChild(el("div", "prop-foot", meta.join("  \u00b7  ")));
 
     var sig = signalMessages(item);
     if (sig.length) {
@@ -1422,13 +2107,22 @@
   // A puck opens as a full-width page: the board + view-header hide and the detail
   // fills the content area (same on desktop and mobile). The breadcrumb is "back".
   function openDetail(item) {
+    // Claim the pane *before* closing surfaces. A surface's onClose can fire the
+    // write it was holding, and that write asks to refresh the puck it belongs to
+    // — the one we're navigating away from. Naming the new puck first makes that
+    // refresh a no-op instead of a puck popping back over its successor.
+    currentDetailItem = item;
+    pendingRefresh = null;
+    // Navigating from the palette calls this directly — pushState fires neither
+    // popstate nor hashchange, so syncHash's cleanup never runs and a sheet would
+    // stay up over the puck that replaced its own.
+    closeSurfaces();
     paneRefs();
     fillDetail(detailContent, item);
     detailPane.hidden = false;
     document.body.classList.add("viewing-puck");
     // The mobile topbar becomes the puck's context (Linear-style): Pucks › Title,
     // where "Pucks" is the back action and the title truncates.
-    currentDetailItem = item;
     var tc = document.getElementById("topCrumb");
     if (tc) {
       tc.innerHTML = "";
@@ -1475,6 +2169,15 @@
   function closeDetail() {
     paneRefs();
     selectedId = null;
+    // Give up the puck *before* closing surfaces, for the same reason openDetail
+    // claims the new one first: a surface's onClose can fire the write it held, and
+    // that write must not reopen the puck we're in the middle of leaving.
+    currentDetailItem = null;
+    pendingRefresh = null;
+    // Every way out of a puck funnels through here — Back, the breadcrumb, the
+    // sidebar, a palette tag. A sheet lives on <body>, so without this it survives
+    // the puck it belonged to and can still commit to it.
+    closeSurfaces();
     document.body.classList.remove("viewing-puck");
     if (detailPane) detailPane.hidden = true;
     highlightSelected();
@@ -1948,6 +2651,7 @@
   // Go to a view: clear any place so the view is global ("pure"), not still scoped
   // to the repo/agent you were last in.
   function goToView(key) {
+    closeSurfaces(); // same as openDetail: the palette gets here without a hash change
     exitPuckView();
     state.focus = key;
     state.repos.clear();
@@ -1959,6 +2663,7 @@
   // Go to a place: single-select it and reset to its whole board (focus "all"), so a
   // place always shows the same thing regardless of the view you came from.
   function goToPlace(set, key) {
+    closeSurfaces(); // same as goToView — the board changes under whatever is open
     exitPuckView();
     pickScope(set, key);
     state.focus = "all";
@@ -2096,13 +2801,18 @@
     row.appendChild(control);
     return row;
   }
+  var displaySurface = null;
   function toggleDisplayMenu() {
     var wrap = displayBtn && displayBtn.parentNode;
     if (!wrap) return;
-    var open = wrap.querySelector(".filter-pop");
-    if (open) { open.remove(); displayBtn.setAttribute("aria-expanded", "false"); return; }
-    var pop = el("div", "filter-pop display-pop");
-
+    if (displaySurface) { displaySurface.close(); return; }
+    displayBtn.setAttribute("aria-expanded", "true");
+    displaySurface = openSurface({
+      title: "Display",
+      anchorWrap: wrap,
+      cls: "filter-pop display-pop",
+      onClose: function () { displaySurface = null; displayBtn.setAttribute("aria-expanded", "false"); },
+      build: function (pop) {
     // Layout — a segmented control, because it's one choice among a few, not a
     // toggle that has to be pressed twice to learn what it does.
     var seg = el("div", "dp-seg");
@@ -2177,13 +2887,8 @@
     });
     pop.appendChild(reset);
 
-    wrap.appendChild(pop);
-    displayBtn.setAttribute("aria-expanded", "true");
-    setTimeout(function () {
-      document.addEventListener("click", function closer(e) {
-        if (!wrap.contains(e.target)) { pop.remove(); displayBtn.setAttribute("aria-expanded", "false"); document.removeEventListener("click", closer); }
-      });
-    }, 0);
+      },
+    });
   }
   if (displayBtn) displayBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleDisplayMenu(); });
   refreshDisplayDot();
@@ -2337,6 +3042,11 @@
   function chooseSuggestion(it) {
     hideSuggestions();
     searchInput.blur();
+    // Every palette choice changes what the screen shows — another puck, the board
+    // under a new filter, a panel. None of the destinations wants the surface that
+    // belonged to where you were, and the branches below reach the board by several
+    // different routes (a tag filters in place without ever entering goToView).
+    closeSurfaces();
     if (it.__cmd) {
       closeCmdk();
       if (typeof it.run === "function") it.run();
@@ -2373,10 +3083,14 @@
   // Type `status:now` here and it still becomes a filter — it just replaces that
   // field rather than everything.
   var paletteBase = [];
+  var popCmdkLayer = null;
   function openCmdk() {
     if (!cmdkOverlay) return;
     cmdkOverlay.hidden = false;
     document.body.classList.add("cmdk-open");
+    // Takes the top of the stack, so a sheet underneath goes inert and Tab can't
+    // walk out of the palette into it.
+    popCmdkLayer = pushLayer([cmdkOverlay]);
     paletteBase = parseQuery(state.query).filter(function (t) { return t.field !== "text"; });
     searchInput.value = queryText();
     updateSearchClear();
@@ -2388,6 +3102,7 @@
     if (!cmdkOverlay || cmdkOverlay.hidden) return;
     cmdkOverlay.hidden = true;
     document.body.classList.remove("cmdk-open");
+    if (popCmdkLayer) { popCmdkLayer(); popCmdkLayer = null; }
     // The palette is navigation, not a lingering board filter — its free text is
     // dropped on close, as before. Field terms are different: `status:now` typed
     // here is a *filter*, indistinguishable from one built in the panel, so it
@@ -2438,7 +3153,15 @@
     var k = e.key.toLowerCase();
 
     // ⌘K / Ctrl-K toggles the palette from anywhere (even while typing).
-    if ((e.metaKey || e.ctrlKey) && k === "k") { e.preventDefault(); cmdkVisible() ? closeCmdk() : openCmdk(); return; }
+    if ((e.metaKey || e.ctrlKey) && k === "k") {
+      // …but not over a panel: a panel owns the screen, and the palette's own
+      // commands open panels — that is the route by which they would stack. Still
+      // preventDefault: "does nothing" has to mean nothing, and Chrome would
+      // otherwise take Ctrl-K for its address bar and pull focus out of the modal.
+      e.preventDefault();
+      if (!cmdkVisible() && anyModalOpen()) return;
+      cmdkVisible() ? closeCmdk() : openCmdk(); return;
+    }
 
     // Escape unwinds exactly one layer: help → palette → (else) the puck detail,
     // which the modal-backdrop's own Escape listener closes. Consume the event for
@@ -2446,10 +3169,10 @@
     if (k === "escape") {
       if (helpOpen()) { closeShortcutHelp(); e.stopImmediatePropagation(); return; }
       if (cmdkVisible()) { closeCmdk(); e.stopImmediatePropagation(); return; }
-      // An open property picker (status/priority/agent/labels) is the top layer —
-      // dismiss it first instead of letting the backdrop listener close the puck.
-      var openPick = document.querySelector(".pick-menu");
-      if (openPick) { openPick.remove(); e.stopImmediatePropagation(); e.preventDefault(); return; }
+      // An open picker/sheet is the top layer, but openSurface() closes itself from
+      // a capture-phase listener and stops the event there — so by the time this
+      // runs there is no surface left. Removing the node here instead would strand
+      // its scrim on screen and lock the page.
       return; // a bare puck: let the backdrop listener run closeModal()
     }
 
@@ -2509,7 +3232,12 @@
     { keys: ["Esc"], desc: "Close / back out" },
     { keys: ["?"], desc: "This help" },
   ];
-  function closeShortcutHelp() { var o = document.querySelector(".shortcut-help"); if (o) o.remove(); }
+  var popHelpLayer = null;
+  function closeShortcutHelp() {
+    var o = document.querySelector(".shortcut-help");
+    if (o) o.remove();
+    if (popHelpLayer) { popHelpLayer(); popHelpLayer = null; }
+  }
   function toggleShortcutHelp() {
     if (helpOpen()) { closeShortcutHelp(); return; }
     var overlay = el("div", "shortcut-help");
@@ -2537,6 +3265,16 @@
     // Click the backdrop (not the card) to dismiss. Esc is handled globally.
     overlay.addEventListener("mousedown", function (e) { if (e.target === overlay) closeShortcutHelp(); });
     document.body.appendChild(overlay);
+    // Take the keyboard, the way the palette does with its input. Without this the
+    // overlay is only visually on top: focus stays wherever it was — in the sheet
+    // underneath — and Tab walks that sheet's controls behind a panel the reader is
+    // looking at. It also gives a screen reader something to announce.
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", "Keyboard shortcuts");
+    overlay.tabIndex = -1;
+    popHelpLayer = pushLayer([overlay]);
+    try { overlay.focus({ preventScroll: true }); } catch (e) { overlay.focus(); }
   }
 
   var searchClear = document.getElementById("searchClear");
@@ -2718,27 +3456,22 @@
     return n;
   }
 
+  var filterSurface = null;
   function toggleFilterMenu() {
     var wrap = filterBtn && filterBtn.parentNode;
     if (!wrap) return;
-    var open = wrap.querySelector(".filter-pop");
-    if (open) { open.remove(); filterBtn.setAttribute("aria-expanded", "false"); return; }
-    var pop = el("div", "filter-pop");
-    // This panel rebuilds itself in place (field list ⇄ value list), which detaches
-    // the very element you clicked before the event reaches the document. The
-    // outside-click closer would then see a target that is no longer inside the
-    // popover and close it. Keep clicks inside from bubbling at all, and — belt and
-    // braces for any future rebuild — ignore targets that have left the document.
-    pop.addEventListener("click", function (e) { e.stopPropagation(); });
-    renderFieldList(pop);
-    wrap.appendChild(pop);
+    if (filterSurface) { filterSurface.close(); return; }
     filterBtn.setAttribute("aria-expanded", "true");
-    setTimeout(function () {
-      document.addEventListener("click", function closer(e) {
-        if (wrap.contains(e.target) || !document.contains(e.target)) return;
-        pop.remove(); filterBtn.setAttribute("aria-expanded", "false"); document.removeEventListener("click", closer);
-      });
-    }, 0);
+    // The panel rebuilds itself in place (field list to value list), which detaches
+    // the element you just clicked; openSurface's closer ignores targets that have
+    // left the document, so a rebuild can't close the surface out from under you.
+    filterSurface = openSurface({
+      title: "Filter",
+      anchorWrap: wrap,
+      cls: "filter-pop",
+      onClose: function () { filterSurface = null; filterBtn.setAttribute("aria-expanded", "false"); },
+      build: function (body) { renderFieldList(body); },
+    });
   }
   // Level 1: which field. Level 2 replaces it in place (with a way back), so the
   // popover never grows a third column on a phone.
@@ -2904,18 +3637,24 @@
       })
       .then(function (r) { assertOk(r, errItem); });
   }
-  function saveCurrentView() {
+  function saveCurrentView(wrap) {
     var params = viewParamObject();
     if (!Object.keys(params).length) { toast("✗ Nothing to save — this is the default board", true); return; }
-    var name = window.prompt("Name this view — it goes in board.config.json and shows in the sidebar.", "");
-    if (name == null) return;
-    name = name.trim();
-    if (!name) return;
-    var views = savedViews().filter(function (v) { return v.name !== name; }); // same name = replace
-    var entry = { name: name };
-    for (var k in params) entry[k] = params[k];
-    views.push(entry);
-    writeViews(views, "roadmap: save view “" + name + "”");
+    inputSurface(wrap || null, {
+      title: "Save view",
+      placeholder: "Name this view",
+      hint: "Goes in board.config.json and shows in the sidebar.",
+      action: "Save",
+      onSave: function (name) {
+        name = String(name).trim();
+        if (!name) return;
+        var views = savedViews().filter(function (v) { return v.name !== name; }); // same name = replace
+        var entry = { name: name };
+        for (var k in params) entry[k] = params[k];
+        views.push(entry);
+        writeViews(views, "roadmap: save view “" + name + "”");
+      },
+    });
   }
   function removeSavedView(v) {
     if (!window.confirm("Remove the saved view “" + v.name + "”?")) return;
@@ -3245,7 +3984,31 @@
   // Optimistic: flip in-memory + re-render now, commit in the background, revert on failure.
   // Reopen the detail only if it's currently showing (so a status change from the
   // picker refreshes the open puck, but a drag-drop on the board doesn't pop it).
-  function reopenIfOpen(item) { if (document.body.classList.contains("viewing-puck")) openModal(item); }
+  // Refresh the open puck after an optimistic write — but never while a surface is
+  // up. The detail pane is rebuilt wholesale, which would detach the very control a
+  // popover is anchored to, leaving a picker that looks alive and writes nowhere.
+  // Deferred writes make this easy to hit: close the label picker by clicking the
+  // status chip, and the save lands *after* the status picker has opened.
+  // "Still showing" means *this* puck, not any puck: a held-off write belongs to the
+  // puck it was made on, and flushing it after the reader moved on would drag that
+  // puck back over the one they're reading, hash and all.
+  var pendingRefresh = null;
+  function isOpenPuck(item) {
+    return document.body.classList.contains("viewing-puck") &&
+      !!currentDetailItem && currentDetailItem.id === item.id;
+  }
+  function reopenIfOpen(item) {
+    if (!isOpenPuck(item)) return;
+    if (openSurfaces.length) { pendingRefresh = item; return; }
+    pendingRefresh = null;
+    openModal(item);
+  }
+  function flushRefresh() {
+    if (!pendingRefresh || openSurfaces.length) return;
+    var it = pendingRefresh;
+    pendingRefresh = null;
+    if (isOpenPuck(it)) openModal(it);
+  }
   function changeStatus(item, status) {
     if (status === item.status || !ghToken()) return;
     var prevS = item.status, prevU = item.updated;
@@ -3455,35 +4218,154 @@
   }
   // Ask for a horizon in the same shape the CLI takes: a date, or a month meaning
   // "by the end of it". Blank clears it.
-  function promptTarget(item) {
-    var val = window.prompt("Target horizon for this puck — YYYY-MM-DD, or YYYY-MM for the end of that month.\nLeave blank to clear.", item.target || "");
-    if (val === null) return;
-    val = val.trim();
-    if (val === "") { if (item.target) changeTarget(item, null); return; }
-    var m = /^(\d{4})-(\d{2})$/.exec(val);
-    if (m && (Number(m[2]) < 1 || Number(m[2]) > 12)) { toast("✗ " + val + " is not a real month", true); return; }
-    var date = m ? endOfMonth(val) : val;
-    // Round-trip, like the CLI and the harvester: "2026-02-31" parses fine and
-    // silently becomes March, which would store a horizon nobody typed.
-    if (!realDate(date)) { toast("✗ Use a real date: YYYY-MM-DD or YYYY-MM", true); return; }
-    changeTarget(item, date);
-  }
   // The Target cell in the rail: the horizon, shown exact here (the detail view is
   // where precision belongs) with an edit affordance when writable.
   function targetValue(item, editable) {
+    // One control, not a value plus a link to change it: the date *is* the button.
+    // Read-only keeps the plain value, and an empty read-only row says "—".
     var wrap = el("span", "issue-cell"); // same inline row shape as the Issue cell
-    if (item.target) {
+    if (editable) {
+      wrap.appendChild(datePicker(item, item.target ? targetEl(item.target, "prop-date") : null));
+    } else if (item.target) {
+      // Read-only: no picker to open, so the exact date has nowhere else to live —
+      // the board shows the horizon coarsely, and this is the one page that says
+      // precisely what the puck declares.
       wrap.appendChild(targetEl(item.target, "prop-date"));
       wrap.appendChild(el("span", "prop-muted", item.target));
     } else {
-      wrap.appendChild(el("span", "prop-muted", "No target"));
+      wrap.appendChild(el("span", "prop-muted", "\u2014"));
     }
-    if (editable) {
-      var edit = el("button", "linklike", item.target ? "Change" : "Set target");
-      edit.type = "button";
-      edit.addEventListener("click", function () { promptTarget(item); });
-      wrap.appendChild(edit);
-    }
+    return wrap;
+  }
+
+  // ── date picker ─────────────────────────────────────────────────────────────
+  // A field *and* a grid, bound to each other: type the date if you know it, browse
+  // if you don't. Deliberately smaller than the pickers it was modelled on \u2014 no
+  // end date (a range becomes sprint dates), no time, no reminders (that needs a
+  // backend). Clear is here because "no horizon" is a real answer.
+  //
+  // "This month" writes the month's last day, which is what `roadmap target <slug>
+  // 2026-11` already means: `target` is stored exact so it sorts and compares, but a
+  // horizon is not a promise about a Tuesday.
+  var WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  function ymd(d) { return d.toISOString().slice(0, 10); }
+  //   content: the node to show inside the trigger (the current target), or null
+  //   for the empty state, which labels itself.
+  function datePicker(item, content) {
+    var wrap = el("div", "prop-pick");
+    var btn = el("button", "linklike prop-trigger" + (content ? " has-value" : ""));
+    btn.type = "button";
+    if (content) btn.appendChild(content);
+    else btn.appendChild(document.createTextNode("Set target"));
+    wrap.appendChild(btn);
+    var open = null;
+
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (open) { open.close(); return; }
+      open = openSurface({
+        title: "Target",
+        anchorWrap: wrap,
+        cls: "datepop",
+        help: "https://github.com/tor2dbear/roadmap/blob/main/CONVENTION.md#the-horizon-target",
+        onClose: function () { open = null; },
+        build: function (host, api) {
+          var value = item.target || null;
+          var view = new Date((value || today()) + "T00:00:00Z"); // the month on screen
+
+          var input = el("input", "fp-search date-input");
+          input.type = "text";
+          input.placeholder = "YYYY-MM-DD";
+          input.value = value || "";
+          input.autocomplete = "off"; input.spellcheck = false;
+          host.appendChild(input);
+
+          var cal = el("div", "cal");
+          host.appendChild(cal);
+
+          var foot = el("div", "date-foot");
+          // Named for what it does: the month you are looking at, not today's. It
+          // writes that month's last day — the horizon `roadmap target <slug>
+          // 2026-11` already means.
+          var month = el("button", "date-act", "End of month");
+          month.type = "button";
+          month.addEventListener("click", function () {
+            commit(endOfMonth(ymd(view).slice(0, 7)));
+          });
+          var clear = el("button", "date-act date-clear", "Clear");
+          clear.type = "button";
+          clear.addEventListener("click", function () { commit(null); });
+          foot.appendChild(month);
+          foot.appendChild(clear);
+          host.appendChild(foot);
+
+          function commit(date) {
+            api.close();
+            changeTarget(item, date);
+          }
+          function drawCal() {
+            cal.innerHTML = "";
+            var head = el("div", "cal-head");
+            var prev = el("button", "cal-nav", "\u2039"); prev.type = "button";
+            var next = el("button", "cal-nav", "\u203a"); next.type = "button";
+            prev.setAttribute("aria-label", "Previous month");
+            next.setAttribute("aria-label", "Next month");
+            // Step by month from day 1: setUTCMonth keeps the day, so August 31st
+            // "next month" lands on October 1st and the button appears to skip one.
+            function step(by) {
+              view = new Date(Date.UTC(view.getUTCFullYear(), view.getUTCMonth() + by, 1));
+              drawCal();
+            }
+            prev.addEventListener("click", function () { step(-1); });
+            next.addEventListener("click", function () { step(1); });
+            head.appendChild(el("span", "cal-month", monthLabel(ymd(view).slice(0, 7))));
+            head.appendChild(prev);
+            head.appendChild(next);
+            cal.appendChild(head);
+
+            var grid = el("div", "cal-grid");
+            WEEKDAYS.forEach(function (w) { grid.appendChild(el("span", "cal-wd", w.slice(0, 2))); });
+            // Monday-first, like the rest of the ISO-shaped data.
+            var first = new Date(Date.UTC(view.getUTCFullYear(), view.getUTCMonth(), 1));
+            var lead = (first.getUTCDay() + 6) % 7;
+            var start = new Date(first);
+            start.setUTCDate(1 - lead);
+            var now = today();
+            for (var i = 0; i < 42; i++) {
+              var d = new Date(start);
+              d.setUTCDate(start.getUTCDate() + i);
+              var iso = ymd(d);
+              var out = d.getUTCMonth() !== view.getUTCMonth();
+              var cell = el("button", "cal-day" + (out ? " out" : "") +
+                (iso === value ? " on" : "") + (iso === now ? " today" : ""), String(d.getUTCDate()));
+              cell.type = "button";
+              cell.setAttribute("aria-label", iso);
+              (function (pick) { cell.addEventListener("click", function () { commit(pick); }); })(iso);
+              grid.appendChild(cell);
+            }
+            cal.appendChild(grid);
+          }
+          // Typing steers the grid: a full date selects it, a bare month browses to it.
+          input.addEventListener("input", function () {
+            var v = input.value.trim();
+            var m = /^(\d{4})-(\d{2})$/.exec(v);
+            if (realDate(v)) { value = v; view = new Date(v + "T00:00:00Z"); drawCal(); }
+            else if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12) { view = new Date(v + "-01T00:00:00Z"); drawCal(); }
+          });
+          input.addEventListener("keydown", function (e) {
+            if (e.key !== "Enter") return;
+            var v = input.value.trim();
+            if (v === "") { commit(null); return; }
+            var m = /^(\d{4})-(\d{2})$/.exec(v);
+            if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12) { commit(endOfMonth(v)); return; }
+            if (realDate(v)) { commit(v); return; }
+            toast("\u2717 Use a real date: YYYY-MM-DD or YYYY-MM", true);
+          });
+          drawCal();
+          if (!isPhone()) input.focus(); // on a phone, don't summon the keyboard over the grid
+        },
+      });
+    });
     return wrap;
   }
 
@@ -3493,11 +4375,6 @@
   // file — no epic record to keep in sync, and dragging a card between etapp
   // columns is the same one-file commit a status flip is.
 
-  // How this repo would name that puck: a bare slug at home, `owner/repo#slug`
-  // across repos. Matches refKey() in the harvester.
-  function parentRefFor(item, target) {
-    return target.repo === item.repo ? target.slug : target.repo + "#" + target.slug;
-  }
   // Would this link close a loop? Walk up from the proposed parent; meeting the
   // puck itself means the etapp would contain its own ancestor. The harvester cuts
   // such a link anyway — refusing here keeps a nonsense line out of git.
@@ -3601,23 +4478,16 @@
     changeDepends(item, (item.depends || []).filter(function (r) { return r !== ref; }),
       "roadmap: " + item.slug + " no longer blocked by " + ref);
   }
-  // Ask for a blocker the way the CLI takes one: a slug in this repo, or
-  // `owner/repo#slug` anywhere on the board.
-  function promptDepend(item) {
-    var val = window.prompt(
-      "Blocked by which puck? A slug in " + item.repoName + ", or owner/repo#slug.", "");
-    if (val === null) return;
-    val = val.trim();
-    if (!val) return;
-    var target = resolveRef(item, val);
-    if (!target) { toast('✗ No puck "' + val + '" on the board', true); return; }
-    if (target === item) { toast("✗ A puck can’t depend on itself", true); return; }
-    var ref = refFor(item, target);
-    if ((item.depends || []).indexOf(ref) !== -1) return;
-    if (wouldDependLoop(item, target)) { toast("✗ That would make a dependency loop", true); return; }
-    changeDepends(item, (item.depends || []).concat([ref]),
-      "roadmap: " + item.slug + " blocked by " + ref);
+  // Which pucks could block this one: anything but itself, what it already lists,
+  // and anything that already waits on it (a loop).
+  function blockerCandidates(item) {
+    var listed = {};
+    dependsItems(item).forEach(function (d) { listed[d.id] = 1; });
+    return function (other) {
+      return other === item || listed[other.id] || wouldDependLoop(item, other);
+    };
   }
+
   // The Blocked by cell: every *declared* blocker (landed ones struck through, so
   // they can still be removed), each with a ✕ when writable, plus "Add".
   function dependsValue(item, editable) {
@@ -3642,12 +4512,35 @@
       }
       wrap.appendChild(chip);
     });
-    if (!(item.depends || []).length) wrap.appendChild(el("span", "prop-muted", "Nothing"));
+    // "Nothing" next to "Add" is the same empty-value-plus-link pair the Target and
+    // Etapp rows had: the button already says what the row is for.
+    if (!(item.depends || []).length && !editable) wrap.appendChild(el("span", "prop-muted", "—"));
     if (editable) {
-      var add = el("button", "linklike", "Add");
-      add.type = "button";
-      add.addEventListener("click", function () { promptDepend(item); });
-      wrap.appendChild(add);
+      wrap.appendChild(puckPicker("Add", {
+        repo: item.repo,
+        title: "Blocked by",
+        help: "https://github.com/tor2dbear/roadmap/blob/main/CONVENTION.md#dependencies-depends",
+        // Several tokens: everything this puck declared. Removing one from here is
+        // the same write as the ✕ on the row behind.
+        tokens: function () {
+          return (item.depends || []).map(function (ref) {
+            var d = resolveRef(item, ref);
+            return {
+              label: d ? d.title : ref,
+              color: d ? d.repoColor : null,
+              onRemove: function () { removeDepend(item, ref); },
+            };
+          });
+        },
+        current: null,
+        exclude: blockerCandidates(item),
+        placeholder: "Find a blocker…",
+        onPick: function (target) {
+          var ref = refFor(item, target);
+          changeDepends(item, (item.depends || []).concat([ref]),
+            "roadmap: " + item.slug + " blocked by " + ref);
+        },
+      }));
     }
     return wrap;
   }
@@ -3668,7 +4561,7 @@
     if (parentId && !target) return;
     if (parentId === item.id) { toast("✗ A puck can’t be its own etapp", true); return; }
     if (wouldLoop(item, parentId)) { toast("✗ That would make an etapp loop", true); return; }
-    var raw = target ? parentRefFor(item, target) : null;
+    var raw = target ? refFor(item, target) : null;
     var prevRef = item.parentRef, prevRaw = item.parent, prevU = item.updated;
     relink(item, parentId, raw);
     item.updated = today();
@@ -3684,27 +4577,13 @@
         toast("✗ " + err.message, true);
       });
   }
-  // Ask for an etapp the way the CLI takes one: a slug in this repo, or
-  // `owner/repo#slug` anywhere on the board. Blank takes the puck out.
-  function promptParent(item) {
-    var cur = parentItem(item);
-    var val = window.prompt(
-      "Etapp for this puck — a puck slug in " + item.repoName + ", or owner/repo#slug.\nLeave blank to take it out of its etapp.",
-      item.parent || "");
-    if (val === null) return;
-    val = val.trim();
-    if (val === "") { if (item.parentRef || item.parent) changeParent(item, null); return; }
-    var hash = val.indexOf("#");
-    var repo = hash === -1 ? item.repo : val.slice(0, hash);
-    var slug = hash === -1 ? val : val.slice(hash + 1);
-    var target = null;
-    for (var i = 0; i < DATA.items.length; i++) {
-      if (DATA.items[i].repo === repo && DATA.items[i].slug === slug) { target = DATA.items[i]; break; }
-    }
-    if (!target) { toast('✗ No puck "' + val + '" on the board', true); return; }
-    if (target === cur) return;
-    changeParent(item, target.id);
+  // Which pucks could be this one's etapp: anything but itself and its own
+  // descendants (that would close a loop). Excluded up front, so the loop refusal
+  // in changeParent() is a backstop rather than something you meet by clicking.
+  function etappCandidates(item) {
+    return function (other) { return other === item || wouldLoop(item, other.id); };
   }
+
   // The Etapp cell in the rail: a link to the etapp when set, plus an edit
   // affordance. Same inline shape as Issue and Target.
   function parentValue(item, editable) {
@@ -3717,14 +4596,34 @@
       wrap.appendChild(a);
     } else if (item.parent) {
       wrap.appendChild(el("span", "prop-muted", item.parent)); // named but unresolved — the flag says why
-    } else {
-      wrap.appendChild(el("span", "prop-muted", "No etapp"));
+    } else if (!editable) {
+      wrap.appendChild(el("span", "prop-muted", "\u2014"));
     }
     if (editable) {
-      var edit = el("button", "linklike", item.parent ? "Change" : "Set etapp");
-      edit.type = "button";
-      edit.addEventListener("click", function () { promptParent(item); });
-      wrap.appendChild(edit);
+      // Set: the name navigates (a relation is a place you go), and the edit sits
+      // behind a quiet secondary control. Empty: one chip that says what it does.
+      // What is gone is the pair — a value that only restated "nothing" next to a
+      // link that did the work.
+      wrap.appendChild(puckPicker(item.parent ? "\u22ef" : "Set etapp", {
+        repo: item.repo,
+        title: "Etapp",
+        help: "https://github.com/tor2dbear/roadmap/blob/main/CONVENTION.md#the-level-above-parent",
+        current: item.parentRef,
+        exclude: etappCandidates(item),
+        placeholder: "Find an etapp…",
+        // One token: the etapp this puck sits in. Its ✕ takes it out, which is why
+        // the list needs no separate "No etapp" row any more.
+        tokens: function () {
+          if (!item.parent) return [];
+          var cur = parentItem(item);
+          return [{
+            label: cur ? cur.title : item.parent,
+            color: cur ? cur.repoColor : null,
+            onRemove: function () { changeParent(item, null); },
+          }];
+        },
+        onPick: function (target) { changeParent(item, target && target.id); },
+      }));
     }
     return wrap;
   }
@@ -4122,11 +5021,56 @@
   // One capture flow for New *and* ⌘K: Title + Repo (+ optional context). Repo is
   // permanent (the file lives there, can't move later), so it's always shown —
   // defaulting to the current scope / this board's repo. Everything else (status,
+  // A panel (New puck / Edit access / Settings) is a modal: it owns Escape while it
+  // is up. Without this the press fell past it to the puck's own backdrop listener
+  // and closed the *puck* behind the panel — the same "a layer nobody aimed at
+  // handles the key" bug as a surface eating Escape under a panel. Help and the
+  // palette still outrank it; the unwind order is help → palette → panel → surface
+  // → puck.
+  // There is exactly one panel at a time. `modal-open` is a single boolean and
+  // Escape wants a single owner, so a second panel would leave both wrong: closing
+  // one by its button clears the class while the other is still on screen, and one
+  // Escape would take them all (stopPropagation doesn't stop a sibling listener on
+  // the same node). Cheaper to make stacking impossible than to make it correct —
+  // and there is no reading of the product where two panels at once is the answer.
+  var openPanel = null;
+  function panelCloser(back) {
+    if (openPanel) openPanel();
+    var done = false;
+    var popPanelLayer = pushLayer([back]);
+    function close() {
+      // Idempotent, and it only gives up the shared state while it still owns it.
+      // A panel's async paths hold this closure: Settings can finish its save long
+      // after the user closed it and opened something else, and a second close then
+      // cleared `modal-open` out from under the panel that had taken over.
+      if (done) return;
+      done = true;
+      popPanelLayer();
+      document.removeEventListener("keydown", onEsc, true);
+      if (back.parentNode) document.body.removeChild(back);
+      if (openPanel !== close) return;
+      openPanel = null;
+      document.body.classList.remove("modal-open");
+    }
+    function onEsc(e) {
+      if (e.key !== "Escape" || cmdkVisible() || helpOpen()) return;
+      // Immediate: this layer owns the press outright. Plain stopPropagation leaves
+      // any other listener on document — a surface's, the puck's — free to act on
+      // the same key.
+      e.stopImmediatePropagation();
+      close();
+    }
+    document.addEventListener("keydown", onEsc, true);
+    openPanel = close;
+    return close;
+  }
   // priority, agent, labels) is set on the puck page after creation.
   function openNewPuckPanel(preset) {
     if (!ghToken()) return;
     preset = preset || {};
+    closeSurfaces(); // a panel owns the screen: no picker left alive underneath it
     var back = el("div", "token-backdrop");
+    var close = panelCloser(back);
     var p = el("div", "token-panel");
     p.appendChild(el("h3", "token-title", "New puck"));
     var defRepo = preset.repo || defaultCaptureRepo() || (DATA.sources[0] && DATA.sources[0].repo);
@@ -4148,7 +5092,6 @@
     var actions = el("div", "token-actions");
     var create = el("button", "tbtn primary", "Create");
     var cancel = el("button", "tbtn", "Cancel");
-    function close() { if (back.parentNode) document.body.removeChild(back); document.body.classList.remove("modal-open"); }
     create.addEventListener("click", function () {
       var t = title.value.trim();
       if (!t) { title.focus(); return; }
@@ -4167,7 +5110,9 @@
   }
 
   function openTokenPanel(after) {
+    closeSurfaces(); // a panel owns the screen: no picker left alive underneath it
     var back = el("div", "token-backdrop");
+    var close = panelCloser(back);
     var p = el("div", "token-panel");
     p.appendChild(el("h3", "token-title", "Edit access"));
     p.appendChild(el("p", "token-note",
@@ -4184,7 +5129,6 @@
     var save = el("button", "tbtn primary", "Save");
     var clear = el("button", "tbtn", "Clear");
     var cancel = el("button", "tbtn", "Cancel");
-    function close() { if (back.parentNode) document.body.removeChild(back); document.body.classList.remove("modal-open"); }
     save.addEventListener("click", function () {
       var v = inp.value.trim(); setGhToken(v); if (after) after(); close();
       toast(v ? "Token saved — open a puck to edit" : "Token cleared");
@@ -4257,7 +5201,9 @@
   // Settings: workspace identity writes through to board.config.json (git-native,
   // the same pen as puck edits); preferences are per-browser.
   function openSettingsPanel() {
+    closeSurfaces(); // a panel owns the screen: no picker left alive underneath it
     var back = el("div", "token-backdrop");
+    var close = panelCloser(back);
     var p = el("div", "token-panel set-panel");
     p.appendChild(el("h3", "token-title", "Settings"));
     var repo = aggregatorRepo();
@@ -4294,7 +5240,6 @@
     var actions = el("div", "token-actions");
     var save = el("button", "tbtn primary", "Save");
     var cancel = el("button", "tbtn", "Close");
-    function close() { if (back.parentNode) document.body.removeChild(back); document.body.classList.remove("modal-open"); }
     save.disabled = !canGit;
     save.addEventListener("click", function () {
       if (!canGit) { close(); return; }
@@ -4347,6 +5292,10 @@
   // and manual hash edits). Idempotent so popstate + hashchange firing together
   // for one navigation doesn't double-render.
   function syncHash() {
+    // Back/Forward can swap the puck underneath an open sheet — it lives on <body>,
+    // not inside the detail pane — and a picker left standing would write to the
+    // puck you just navigated away from.
+    closeSurfaces();
     var it = itemFromHash();
     if (it) {
       if (!(currentDetailItem && currentDetailItem.id === it.id && document.body.classList.contains("viewing-puck"))) openDetail(it);

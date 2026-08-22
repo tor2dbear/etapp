@@ -470,6 +470,9 @@ body {
 .modal-body a { color: var(--accent); }
 .modal .card-links { padding-top: 4px; }
 body.modal-open { overflow: hidden; }
+/* Pinned rather than merely `overflow: hidden`, which iOS ignores: the body keeps
+   its place at a negative offset and is put back when the last layer closes. */
+body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: hidden; }
 @media (max-width: 600px) {
   .modal-backdrop { padding: 0; }
   .modal { max-width: none; max-height: 100vh; height: 100%; border-radius: 0; border: none; border-left: none; }
@@ -809,6 +812,11 @@ body.preload * { transition: none !important; }
 .prop-v .card-tags { margin: 0; gap: 5px; }
 .prop-status-edit { display: flex; gap: 5px; flex-wrap: wrap; }
 .sect-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 16px 0 6px; }
+/* A section heading names the column, so the row inside it does not repeat it. */
+.prop-keyless { grid-template-columns: 1fr; }
+.prop-keyless .prop-k { display: none; }
+/* Derived, never edited, and Activity has the same fact in full. */
+.prop-foot { margin: 14px 0 0; font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
 
 /* ── workspace header (leads with the board) + account menu (identity + sign out) ─ */
 .ws-btn {
@@ -895,6 +903,9 @@ body.preload * { transition: none !important; }
   position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, .4);
   display: flex; align-items: flex-start; justify-content: center; padding: 10vh 16px 16px;
 }
+/* It takes focus on open so the keyboard follows what is on screen, but it is a
+   container, not a control — no ring on it. */
+.shortcut-help:focus { outline: none; }
 .shortcut-help .sc-card {
   width: 100%; max-width: 440px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
@@ -986,12 +997,11 @@ body.preload * { transition: none !important; }
 .filter-count[hidden] { display: none; }
 /* Anchored under its own button (Filter and Display both sit at the left of the
    view header), so a popover never opens leftward across the sidebar. */
-.filter-pop {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: var(--shadow); padding: 10px; min-width: 232px; max-width: 300px;
-  display: flex; flex-direction: column; gap: 8px;
-}
+/* Shell (position, background, border, shadow) comes from .pop / .sheet; this is
+   only what the panel itself needs, so the same markup serves both. */
+.filter-pop { padding: 10px; min-width: 232px; max-width: 300px; }
+.filter-pop .surface-body { gap: 8px; }
+@media (max-width: 640px) { .sheet.filter-pop { min-width: 0; max-width: none; } }
 /* Display menu — same shell as the filter popover (one popover language), with
    rows for the choices that shape the presentation. */
 .display-pop { min-width: 260px; }
@@ -1095,6 +1105,12 @@ body.preload * { transition: none !important; }
   width: 100%; box-sizing: border-box; padding: 6px 9px; font: inherit; font-size: 13px;
   border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink);
 }
+/* iOS Safari zooms the page in whenever a focused field's font-size is under 16px,
+   and there is no way back out except pinching. Every text control gets 16px on a
+   phone — the touch targets want the extra height anyway. */
+@media (max-width: 640px) {
+  input[type="text"], input[type="search"], input:not([type]), textarea, select { font-size: 16px; }
+}
 .fp-search:focus { outline: none; border-color: var(--accent); }
 .fp-tags { display: flex; flex-wrap: wrap; gap: 5px; max-height: 168px; overflow-y: auto; }
 .fp-chip.tag .fp-n { color: var(--ink-3); font-family: var(--mono); font-size: 10px; margin-left: 4px; }
@@ -1145,12 +1161,30 @@ body.preload * { transition: none !important; }
 }
 .pick-chip.editable:hover { background: var(--panel-2); border-color: var(--line); }
 .pick-chip.static { cursor: default; padding: 0; margin: 0; }
-.pick-caret { color: var(--ink-3); font-size: 10px; flex: none; }
-.pick-menu {
-  position: absolute; top: calc(100% + 5px); left: -1px; z-index: 45; min-width: 190px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: var(--shadow); padding: 4px; display: flex; flex-direction: column; gap: 1px;
+/* No caret: the chip *is* the control. A caret only helps where hover can reveal
+   an affordance, which is nowhere on a phone — so the shape has to carry it. A set
+   value already looks like something (a status pill, a badge); an empty one is
+   plain muted text, so that is the one that gets drawn as a chip. */
+.pick-chip.editable > .prop-muted,
+.prop .linklike {
+  border: 1px solid var(--line); border-radius: 7px; padding: 3px 9px;
+  background: none; font: inherit; font-size: 13px; color: var(--ink-2); cursor: pointer;
 }
+.pick-chip.editable > .prop-muted { padding: 2px 8px; color: var(--ink-3); }
+.prop .linklike:hover { background: var(--panel-2); color: var(--ink); text-decoration: none; }
+/* A trigger that carries the row's value looks like the value, not like a button —
+   until you reach for it. */
+.prop .prop-trigger.has-value { border-color: transparent; padding: 3px 7px; margin: -3px -7px; color: var(--ink); }
+.prop .prop-trigger.has-value:hover { border-color: var(--line); }
+/* The secondary form: a value already carries the row and this only changes it. */
+.prop .prop-trigger.quiet { border: 0; padding: 2px 6px; font-size: 15px; line-height: 1; color: var(--ink-3); }
+/* "New issue" is a second, different action — a separator, not another chip. */
+.prop .issue-newbtn { border: 0; padding: 3px 2px; color: var(--accent); }
+.prop .issue-newbtn:hover { background: none; text-decoration: underline; }
+/* The shell (position, background, border, shadow) comes from .pop / .sheet — this
+   carries only what a menu of options needs, so the same markup works in both. */
+.pick-menu { min-width: 190px; padding: 4px; }
+.pick-menu .surface-body { gap: 1px; }
 .pick-mi {
   display: flex; align-items: center; gap: 8px; font: inherit; font-size: 13px;
   background: none; border: 0; border-radius: 6px; padding: 7px 9px; color: var(--ink);
@@ -1193,7 +1227,10 @@ body.preload * { transition: none !important; }
 }
 
 /* ── puck page: Overview / Activity tabs + git-history list ─────────────────── */
-.detail-tabs { display: flex; gap: 2px; margin: 10px 0 14px; border-bottom: 1px solid var(--line); }
+/* The two gaps that set the page's rhythm: title → tabs, and the rule under the
+   tabs → the first property. Both were tight enough that the title read as part
+   of the tab strip and the rule as part of the table under it. */
+.detail-tabs { display: flex; gap: 2px; margin: 20px 0 24px; border-bottom: 1px solid var(--line); }
 .tab-btn {
   font: inherit; font-size: 13px; background: none; border: 0;
   border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 8px 10px;
@@ -1236,6 +1273,172 @@ body.preload * { transition: none !important; }
 .disc-body code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
 .disc-body pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .disc-body a { color: var(--accent); }
+
+/* ── overlay primitive: one surface, two presentations ──────────────────────── */
+/* Anchored popover on a wide screen, bottom sheet on a phone. The content is
+   written once; only the shell differs. `.surface-body` is what the builder fills,
+   so a list, a calendar or a form all scroll the same way. */
+.pop {
+  position: absolute; top: calc(100% + 5px); left: -1px; z-index: 45;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.pop-center { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+.surface-body { display: flex; flex-direction: column; }
+
+@media (max-width: 640px) {
+  .sheet-scrim { position: fixed; inset: 0; z-index: 58; background: rgba(0, 0, 0, 0.35); touch-action: none; }
+  .sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 59;
+    display: flex; flex-direction: column;
+    max-height: 88dvh;
+    background: var(--panel); border-top: 1px solid var(--line);
+    border-radius: 16px 16px 0 0; box-shadow: var(--shadow);
+    padding: 6px 10px calc(10px + env(safe-area-inset-bottom));
+  }
+  /* The grip is the handle: drag down to dismiss, up to go full height. The whole
+     sheet listens, but only the chrome starts a drag unconditionally — from the
+     list, a downward drag only takes over once the list is already at the top. */
+  .sheet-grip {
+    width: 40px; height: 5px; border-radius: 3px; background: var(--line);
+    margin: 4px auto 14px; flex: none; cursor: grab;
+  }
+  .sheet {
+    transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+                height 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+                max-height 0.22s ease;
+    touch-action: pan-y;
+  }
+  /* While the finger is down it owns the sheet: no transition, and the resting cap
+     lifts to the full detent so growing isn't clipped halfway there. */
+  .sheet.dragging { transition: none; max-height: 94dvh; }
+  /* Maximised means *taller*, so it needs a height — a bigger max-height alone does
+     nothing to a sheet that is already sized to its content. */
+  .sheet.full { height: 94dvh; max-height: 94dvh; }
+  .sheet-grip, .sheet-head { touch-action: none; }
+  /* The sheet takes focus itself on open (that is what makes it a dialog to a
+     screen reader), but it isn't a control — so no ring on the container. The
+     controls inside keep theirs. */
+  .sheet:focus { outline: none; }
+  /* Keep overscroll from chaining out to the page behind the sheet — on the sheet
+     itself too, not just its list: a short sheet (the one-field editor) has nothing
+     scrollable inside, so a drag there would otherwise reach the page. */
+  .sheet, .sheet .surface-body { overscroll-behavior: contain; }
+  /* The title needs room on both sides of it: pressed up against the grip above and
+     the field below, it read as a label on the field rather than the sheet's name. */
+  .sheet-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 18px; flex: none; }
+  .sheet-title {
+    margin: 0 auto; font-size: 14px; font-weight: 600; color: var(--ink);
+    /* centred like a native sheet title, with the ? pulled out of the flow */
+  }
+  .sheet-help {
+    position: absolute; left: 12px; width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid var(--line); color: var(--ink-3); font-size: 12px;
+    display: inline-flex; align-items: center; justify-content: center; text-decoration: none;
+  }
+  /* The sheet does NOT resize for the keyboard — it keeps its height and the
+     keyboard covers the bottom. The pinned field stays put and the scroll position
+     survives. `kb` pads the scroll area while a field is focused so the LAST row
+     can still be scrolled above the keyboard; without it, it would be unreachable. */
+  /* No `-webkit-overflow-scrolling: touch` here, deliberately. It switches iOS into
+     its legacy scrolling mode, where a `position: sticky` child detaches during
+     momentum: the list keeps moving while the pinned field lags a frame behind, and
+     rows draw *above* it. Momentum has been the default since iOS 13 and the
+     property is deprecated, so the only thing it still buys is that bug. */
+  .sheet .surface-body { overflow-y: auto; gap: 8px; }
+  .sheet.kb .surface-body { padding-bottom: 42dvh; }
+  /* The field is wrapped in .sheet-pin (see openSurface) and that wrapper is what
+     stays put — with tokens the input sits inside .tokenbox, so pinning the input
+     itself pins nothing. The padding is the gap before the list: it belongs to the
+     pinned box, so rows scroll *under* it instead of through it. */
+  .sheet .surface-body > .sheet-pin {
+    position: sticky; top: 0; z-index: 1; background: var(--panel); padding-bottom: 12px;
+  }
+  .sheet .pick-list { max-height: none; overflow: visible; }
+  .sheet .pick-mi { padding: 12px 10px; font-size: 15px; } /* thumb-sized rows */
+}
+
+/* ── date picker: a field and a grid, bound to each other ───────────────────── */
+.datepop { min-width: 268px; padding: 8px; }
+.datepop .surface-body { gap: 8px; }
+.date-input { font-variant-numeric: tabular-nums; }
+.cal-head { display: flex; align-items: center; gap: 4px; padding: 2px 2px 6px; }
+.cal-month { font-size: 13px; color: var(--ink); font-weight: 600; }
+.cal-nav {
+  font: inherit; font-size: 15px; line-height: 1; background: none; border: 0;
+  color: var(--ink-2); cursor: pointer; padding: 2px 7px; border-radius: 6px;
+}
+.cal-nav:first-of-type { margin-left: auto; }
+@media (hover: hover) { .cal-nav:hover { background: var(--panel-2); color: var(--ink); } }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.cal-wd { font-size: 10px; color: var(--ink-3); text-align: center; padding-bottom: 4px; }
+.cal-day {
+  font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  background: none; border: 0; border-radius: 7px; padding: 7px 0; color: var(--ink);
+  cursor: pointer; text-align: center;
+}
+.cal-day.out { color: var(--ink-3); opacity: 0.55; }
+.cal-day.today { box-shadow: inset 0 0 0 1px var(--line); }
+.cal-day.on { background: var(--accent); color: var(--bg); }
+@media (hover: hover) { .cal-day:hover:not(.on) { background: var(--panel-2); } }
+.date-foot { display: flex; align-items: center; gap: 6px; padding-top: 4px; border-top: 1px solid var(--line); }
+.date-act {
+  font: inherit; font-size: 12px; background: none; border: 1px solid var(--line);
+  border-radius: 7px; padding: 5px 10px; color: var(--ink-2); cursor: pointer;
+}
+@media (hover: hover) { .date-act:hover { color: var(--ink); border-color: var(--accent); } }
+.date-clear { margin-left: auto; border-color: transparent; color: var(--ink-3); }
+@media (max-width: 640px) {
+  .datepop .cal-day { padding: 11px 0; font-size: 14px; }
+  .datepop .date-act { padding: 9px 14px; font-size: 13px; }
+}
+
+/* ── token field: the chosen values live inside the search box ──────────────── */
+/* One control shows the current value and takes the query — the shape the
+   reference pickers use, and the reason a multi-select needs no second row. */
+.tokenbox {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 5px; background: var(--panel-2);
+}
+.tokenbox .token-input {
+  flex: 1 1 90px; min-width: 90px; border: 0; background: none; padding: 3px 2px; margin: 0;
+}
+.tokenbox .token-input:focus { outline: none; }
+.token {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  font-size: 11px; color: var(--ink-2); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 5px; padding: 1px 4px 1px 6px;
+}
+.token-x { font: inherit; font-size: 9px; line-height: 1; background: none; border: 0; padding: 2px; color: var(--ink-3); cursor: pointer; }
+@media (hover: hover) { .token-x:hover { color: var(--ink); } }
+.pick-new .tagpill { background: var(--panel-2); }
+.token .repo-dot { flex: none; }
+.token-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }
+
+/* ── one-field surface: what window.prompt used to do, in our own shell ─────── */
+.inputpop { min-width: 260px; max-width: min(340px, calc(100vw - 32px)); padding: 8px; }
+.inputpop .surface-body { gap: 8px; }
+.inputpop .fp-empty { padding: 0 2px; color: var(--ink-3); font-size: 11.5px; line-height: 1.4; }
+@media (max-width: 640px) { .sheet.inputpop { min-width: 0; max-width: none; } }
+
+/* ── puck picker: the control for a field whose value is another puck ───────── */
+/* Ours, not the browser's: window.prompt hands the dialog to the OS, which on iOS
+   draws a system sheet in its own shape and colours. This borrows the picker
+   popover's shell and the filter panel's search box, so it reads as one app. */
+.pick-find { min-width: 260px; max-width: min(340px, calc(100vw - 32px)); padding: 6px; }
+.pick-find .surface-body { gap: 6px; }
+.pick-find .fp-search { margin-bottom: 2px; }
+.pick-list { display: flex; flex-direction: column; gap: 1px; max-height: 46vh; overflow-y: auto; }
+.pick-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-repo { margin-left: auto; padding-left: 8px; color: var(--ink-3); font-size: 11px; flex: none; }
+.pick-mi .repo-dot { flex: none; }
+.pick-find .fp-empty { padding: 8px 9px; color: var(--ink-3); font-size: 12px; }
+
+/* On a phone every surface is a bottom sheet (see the overlay primitive), so the
+   width/height caps above apply to the popover only. */
+@media (max-width: 640px) {
+  .sheet.pick-find { min-width: 0; max-width: none; }
+}
 
 /* ── dependencies: the Blocked by / Blocks rows ─────────────────────────────── */
 /* `depends:` is the only authored half; the row edits it in place, one chip per
