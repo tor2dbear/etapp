@@ -28,7 +28,9 @@ parentRef, children[], progress, signals[], sourceUrl, … }`.
 
 - `signals[]` — drift flags (`stale` / `issue-closed` / `issue-open` /
   `target-passed` / `parent-missing` / `parent-cycle` / `depends-missing` /
-  `dependency-cycle`): the declared status disagrees with reality.
+  `dependency-cycle` / `rollup-open` / `rollup-done`): the declared status
+  disagrees with reality. The last two compare an etapp's own status against its
+  parts — done with something still open, or every part settled and the etapp not.
 - `blockedBy[]` — everything from `depends` that isn't settled yet, as ids;
   a reference that resolves to nothing stays **as written**, because an unknown
   blocker is not a finished one. **Empty = unblocked**, and a settled puck's is
@@ -43,7 +45,7 @@ parentRef, children[], progress, signals[], sourceUrl, … }`.
 
 ```bash
 node -e "const d=require('./data/roadmap.json'); \
-console.log(d.items.filter(i=>['now','next'].includes(i.status) && !(i.blockedBy||[]).length).map(i=>i.id).join('\n'))"
+console.log(d.items.filter(i=>['now','next'].includes(i.status) && !(i.blockedBy||[]).length && !(i.children||[]).length).map(i=>i.id).join('\n'))"
 ```
 
 **"What needs attention?"** — items where `signals.length > 0`.
@@ -73,7 +75,7 @@ field of its own would invent a second truth:
 
 | Term | True when |
 |---|---|
-| `is:ready` | `status` is `now`/`next` **and** `blockedBy` is empty |
+| `is:ready` | `status` is `now`/`next`, `blockedBy` is empty, **and** it has no children — an etapp is not work you pick up |
 | `is:blocked` | `blockedBy` is non-empty |
 | `is:blocking` | `blocks` is non-empty — something unfinished waits on this puck |
 | `is:flagged` | the puck has any drift signal |
@@ -81,15 +83,19 @@ field of its own would invent a second truth:
 | `is:adapted` | the source isn't native pucks |
 | `is:done` | `done` **or** `cancelled` (the archive) |
 | `is:etapp` | the puck has children — it *is* an etapp |
-| `is:orphan` | neither a parent nor children: outside every etapp |
+| `is:member` | it has a resolved `parentRef` — it sits in an etapp |
+| `is:standalone` | neither a parent nor children: in no etapp (`is:orphan` is the old name, still accepted) |
 
 The board's own views are just queries — `Ready` is `is:ready`, `Needs attention`
 is `is:flagged` — so anything a view shows, a query can name.
 
 URL parameters: `?q=` is the filter, `?view=` names a built-in view (`all`/`ready`/
-`inbox`/`attention`), `?group=` the column field, `?layout=` board or list, `?sort=`
-the ordering, `?done=1` shows the archive, `?empty=0` hides empty columns, and
-`#<repo>/<slug>` opens one puck. They compose:
+`inbox`/`etapps`/`standalone`/`attention`), `?group=` the column field, `?layout=`
+board or list, `?sort=` the ordering, `?done=1` shows the archive, `?empty=0` hides
+empty columns, `?collapsed=` folds groups shut in the list layout (a comma-separated
+list of group keys, URL-encoded, sorted; the keys belong to whatever `?group=` is
+set to and are dropped when it changes), and `#<repo>/<slug>` opens one puck. They
+compose:
 `?q=agent:backend+repo:pia-terminal&view=ready&group=target`.
 
 **Saved views** are the same parameters, named, in `board.config.json` — the board

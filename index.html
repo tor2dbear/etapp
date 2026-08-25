@@ -26,15 +26,17 @@
           <button class="ws-btn" id="wsBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Workspace menu">
             <span class="brand-mark" id="brandMark" aria-hidden="true"></span>
             <h1>Roadmap</h1>
-            <span class="ws-caret" aria-hidden="true">▾</span>
+            <span class="ws-caret" aria-hidden="true"></span>
           </button>
           <div class="side-head-actions">
             <button id="sideSearch" class="head-act" type="button" aria-label="Search"></button>
             <button id="sideNew" class="head-act" type="button" aria-label="New puck" hidden></button>
           </div>
         </div>
+        <!-- The group headings are emitted by JS, not written here: which groups
+             exist is a property of the views (see VIEW_GROUPS), and a heading in
+             the markup would outlive the rows it names. -->
         <div class="side-section">
-          <div class="side-eyebrow">Views</div>
           <nav class="side-views" id="sideViews" aria-label="Views"></nav>
         </div>
         <!-- Saved views: named queries from board.config.json (config, not truth);
@@ -66,9 +68,16 @@
         <header class="topbar">
           <!-- menu stays in puck mode too, so nav is always reachable; icon injected via icon("sidebar") -->
           <button id="menuToggle" class="ghost menu-toggle" type="button" aria-label="Menu"></button>
-          <div class="top-title">
-            <span id="topTitle" class="view-title">All pucks</span>
-            <span id="topCount" class="view-count"></span>
+          <!-- The title is the view switcher (see buildViewSwitch): it is already the
+               name of the current view, on both widths, so it is where a reader
+               looks to learn which view they are in — and therefore where they
+               should be able to change it. -->
+          <div class="top-title view-switch">
+            <button class="view-switch-btn" id="topTitleBtn" type="button" aria-haspopup="true" aria-expanded="false">
+              <span id="topTitle" class="view-title">All pucks</span>
+              <span id="topCount" class="view-count"></span>
+              <span class="vs-caret" aria-hidden="true"></span>
+            </button>
           </div>
           <!-- puck mode: breadcrumb (Pucks › Title) replaces the board title; the
                "Pucks" segment is the back action -->
@@ -81,8 +90,13 @@
 
         <!-- consistent view-header: current view + view-options (stays as you navigate/open pucks) -->
         <header class="vhead">
-          <h2 class="view-title" id="viewTitle">All pucks</h2>
-          <span class="view-count" id="viewCount"></span>
+          <h2 class="vhead-h view-switch">
+            <button class="view-switch-btn" id="viewTitleBtn" type="button" aria-haspopup="true" aria-expanded="false">
+              <span class="view-title" id="viewTitle">All pucks</span>
+              <span class="view-count" id="viewCount"></span>
+              <span class="vs-caret" aria-hidden="true"></span>
+            </button>
+          </h2>
           <div class="vopts" id="viewActions">
             <div class="filter-wrap">
               <button id="filterBtn" class="ghost filter-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Filter">

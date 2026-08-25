@@ -70,6 +70,14 @@
     sort: "default", // see SORTS below
     group: "status", // which field becomes the columns — see GROUPS
     showEmpty: true, // board only: keep a column that has no pucks (it's a drop target)
+    // List-only: which groups are folded shut. A folded group is a *display*
+    // preference, never puck truth, so it goes in the URL with the rest of the
+    // display state (`done`, `empty`, `sort`, …) — which also makes it save into a
+    // view for free, with no new machinery and no second store. The keys belong to
+    // whichever field is grouping; changing the grouping leaves harmless leftovers
+    // that match nothing. Not in the board layout: there a column header is a drop
+    // target and carries `+`, so a click on it already means something else.
+    collapsed: new Set(),
   };
   var SORTS = ["default", "updated-desc", "priority", "target", "updated-asc", "created-desc", "created-asc", "title"];
   var PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
@@ -136,7 +144,20 @@
   // from the `parent:` fields — never a stored second copy, so a lookup is all the
   // board needs.
   function parentItem(item) { return item.parentRef ? itemById(item.parentRef) : null; }
-  function childItems(item) { return (item.children || []).map(itemById).filter(Boolean); }
+  // Members in the order you'd work them: by status column, then by manual rank,
+  // then by title. The harvester sorts `children[]` by id "for stable output" and
+  // says the board sorts them for display — this is the board keeping that promise.
+  // Without it an etapp you're running listed its parts alphabetically by slug,
+  // with the one `next` puck sitting in the middle of the `now` ones.
+  function childItems(item) {
+    return (item.children || []).map(itemById).filter(Boolean).sort(function (a, b) {
+      var sa = DATA.statuses.indexOf(a.status), sb = DATA.statuses.indexOf(b.status);
+      if (sa !== sb) return sa - sb;
+      var oa = a.order == null ? Infinity : a.order, ob = b.order == null ? Infinity : b.order;
+      if (oa !== ob) return oa - ob;
+      return a.title.localeCompare(b.title);
+    });
+  }
   function signalMessages(item) {
     return (item.signals || []).map(function (s) {
       if (s.type === "stale") {
@@ -157,6 +178,12 @@
       if (s.type === "dependency-cycle") return "In a dependency loop — these pucks wait for each other, so none of them is ready.";
       if (s.type === "parent-missing") return 'Etapp "' + item.parent + '" doesn’t exist — typo, or the puck was renamed?';
       if (s.type === "parent-cycle") return 'Etapp "' + item.parent + '" closes a loop — the link is ignored.';
+      if (s.type === "rollup-open") {
+        var open = item.progress.total - item.progress.done;
+        return "Marked " + (STATUS_LABEL[item.status] || item.status).toLowerCase() + " but " + open +
+          " of " + item.progress.total + " parts " + (open === 1 ? "is" : "are") + " still open.";
+      }
+      if (s.type === "rollup-done") return "Every part is done — mark the etapp done?";
       return s.type;
     });
   }
@@ -282,7 +309,16 @@
   // data (by the harvester or here), so giving each its own field would invent a
   // second truth. Negate with `-is:blocked`.
   var IS_STATES = {
-    ready: function (i) { return (i.status === "now" || i.status === "next") && !(i.blockedBy || []).length; },
+    // Ready is "pick one up, or hand it to an agent" — and an etapp is neither. It
+    // has no work of its own; what you take is one of its parts. Dog-fooding made
+    // that concrete: `gui-hantverk` was unblocked (it declares no `depends:`) and
+    // therefore Ready, while four of its five members were waiting on each other.
+    // The view agents read to choose work was offering the one thing that can't be
+    // chosen, and hiding that its contents were stalled.
+    ready: function (i) {
+      return (i.status === "now" || i.status === "next") &&
+        !(i.blockedBy || []).length && !(i.children || []).length;
+    },
     blocked: function (i) { return !!(i.blockedBy || []).length; },
     flagged: function (i) { return isFlagged(i); },
     stale: function (i) { return (i.signals || []).some(function (s) { return s.type === "stale"; }); },
@@ -292,8 +328,16 @@
     // etapp, and one with neither parent nor children stands outside every etapp.
     blocking: function (i) { return !!(i.blocks || []).length; },
     etapp: function (i) { return !!(i.children || []).length; },
-    orphan: function (i) { return !i.parentRef && !(i.children || []).length; },
+    member: function (i) { return !!i.parentRef; },
+    // `standalone` is what the sidebar row is called, `orphan` is what it was called
+    // first; same predicate, so the query language says what the button says.
+    orphan: isStandalone,
+    standalone: isStandalone,
   };
+  // The three states cover every puck between them, and the only ones counted twice
+  // are the sub-etapps — which genuinely are both. That's the check that the split
+  // is the right one: `is:etapp` + `is:member` + `is:standalone` leaves nothing out.
+  function isStandalone(i) { return !i.parentRef && !(i.children || []).length; }
 
   // Split on whitespace, but keep "quoted phrases" whole so free text can contain spaces.
   function tokenize(str) {
@@ -386,7 +430,21 @@
   // The sidebar views are queries, not special cases in the filter — the same
   // strings a saved view or an agent would write. ("all" = the committed board;
   // inbox has its own space, and the archive is added below unless it's shown.)
-  var VIEWS = { all: "-status:inbox", ready: "is:ready", inbox: "status:inbox", attention: "is:flagged" };
+  // `is:etapp` is derived (a puck with children *is* the etapp), so the view is a
+  // query and not a new record type — the same trick every other view uses.
+  // Etapps carries no `-status:inbox`: an etapp can sit anywhere, inbox included,
+  // and hiding it there would make the sidebar's count disagree with the board.
+  // Standalone does carry it — an inbox puck is standalone by definition, and
+  // without the exclusion the row would just re-count the inbox.
+  var VIEWS = {
+    all: "-status:inbox", ready: "is:ready", inbox: "status:inbox",
+    etapps: "is:etapp", standalone: "-status:inbox is:standalone", attention: "is:flagged",
+  };
+  // Which views can reach the archive at all, and therefore have to obey the toggle.
+  // `ready` and `inbox` can't (their statuses are never terminal), and `attention`
+  // *wants* to — a flagged done puck is exactly what that view is for. The rest are
+  // the ones that would otherwise show landed work unasked.
+  var ARCHIVABLE = { all: 1, etapps: 1, standalone: 1 };
   var NOT_DONE = { field: "is", op: "is", values: ["done"], neg: true };
 
   // Places and the filter popover, projected into terms. A place is just a filter
@@ -405,11 +463,15 @@
   }
   // The filter half of the view — what goes in ?q= and, later, on the chip row.
   function filterTerms() { return controlTerms().concat(parseQuery(state.query)); }
-  function activeTerms() {
+  // What the view itself says, before any filter the user added. Split out because
+  // two questions need it separately: "what does the board show" (below) and "what
+  // could this view ever show" (the filter panel, deciding which values are real).
+  function viewTerms() {
     var t = parseQuery(VIEWS[state.focus] || VIEWS.all);
-    if (state.focus === "all" && !state.showDone) t.push(NOT_DONE);
-    return t.concat(filterTerms());
+    if (ARCHIVABLE[state.focus] && !state.showDone) t.push(NOT_DONE);
+    return t;
   }
+  function activeTerms() { return viewTerms().concat(filterTerms()); }
 
   // Recomputed once per render (renderBoard) so the query isn't parsed per item.
   var activeQuery = null;
@@ -486,14 +548,32 @@
     if (state.sort !== DISPLAY_DEFAULTS.sort) o.sort = state.sort;
     if (state.showDone) o.done = "1";
     if (!state.showEmpty) o.empty = "0";
+    // Sorted, not in click order: the same set of folded groups has to serialize to
+    // the same string every time, or the URL churns and two identical views compare
+    // unequal.
+    if (state.view === "list" && state.collapsed.size) {
+      var folded = [];
+      state.collapsed.forEach(function (k) { folded.push(k); });
+      o.collapsed = folded.sort().join(",");
+    }
     return o;
   }
+  // The view's keys, in one place. Three readers used to keep their own copy of this
+  // list — the URL writer, and the saved-view reader and comparer — so adding
+  // `collapsed` to the writer alone meant a saved view committed the fold and then
+  // stripped it on the way back in. A list that has to be right in three files is a
+  // list that will be wrong in one.
+  var VIEW_KEYS = ["view", "q", "group", "layout", "sort", "done", "empty", "collapsed"];
+  // `q` and `collapsed` carry values the URL can't take raw: a search string, and the
+  // NUL that keys the "none" bucket (see NO_VALUE) — unencoded, the parser drops it
+  // and a shared link loses the fold it was supposed to carry.
+  var ENCODED_KEYS = { q: 1, collapsed: 1 };
   function viewParams() {
     var p = [];
     var o = viewParamObject();
-    ["view", "q", "group", "layout", "sort", "done", "empty"].forEach(function (k) {
+    VIEW_KEYS.forEach(function (k) {
       if (o[k] == null) return;
-      p.push(k + "=" + (k === "q" ? encodeURIComponent(o[k]).replace(/%20/g, "+") : o[k]));
+      p.push(k + "=" + (ENCODED_KEYS[k] ? encodeURIComponent(o[k]).replace(/%20/g, "+") : o[k]));
     });
     return p.length ? "?" + p.join("&") : "";
   }
@@ -535,11 +615,16 @@
       state.group = DISPLAY_DEFAULTS.group;
       state.view = DISPLAY_DEFAULTS.view;
       state.sort = DISPLAY_DEFAULTS.sort;
+      state.collapsed.clear();
     }
     // A link's display choices win over the saved preferences, but aren't saved
     // themselves — someone else's view shouldn't quietly become yours.
     if (got.done === "1") state.showDone = true;
     if (got.empty === "0") state.showEmpty = false;
+    if (got.collapsed != null) {
+      state.collapsed.clear();
+      got.collapsed.split(",").forEach(function (k) { if (k) state.collapsed.add(k); });
+    }
     if (GROUPS[got.group]) state.group = got.group;
     if (got.layout === "list" || got.layout === "board") state.view = got.layout;
     if (SORTS.indexOf(got.sort) !== -1) state.sort = got.sort;
@@ -647,12 +732,40 @@
     edit: ["M6.875 2.5H2.5a1.25 1.25 0 0 0 -1.25 1.25v8.75a1.25 1.25 0 0 0 1.25 1.25h8.75a1.25 1.25 0 0 0 1.25 -1.25v-4.375", "M11.5625 1.5625a1.325625 1.325625 0 0 1 1.875 1.875L7.5 9.375l-2.5 0.625 0.625 -2.5 5.9375 -5.9375z"],
     // git-commit — a puck is a commit-like unit in git (our "project" glyph)
     commit: ["M5 7.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0 -5 0", "M0.65625 7.5 4.375 7.5", "m10.631250000000001 7.5 3.71875 0"],
+    // An etapp is several pucks on one track — the commit mark, twice. It has to
+    // differ from `commit` at 12px, which is why it is two dots and not a container
+    // outline: at that size an outline is a smudge and a count of dots still reads.
+    etapp: ["M3.125 7.5a1.5625 1.5625 0 1 0 3.125 0 1.5625 1.5625 0 1 0 -3.125 0",
+            "M8.75 7.5a1.5625 1.5625 0 1 0 3.125 0 1.5625 1.5625 0 1 0 -3.125 0",
+            "M0.9375 7.5 3.125 7.5", "M6.25 7.5 8.75 7.5", "M11.875 7.5 14.0625 7.5"],
     // git-merge — the Etapp brand mark: two stages meeting on one line
     merge: ["M9.5833 11.5a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M1.9167 3.8333a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M3.8333 13.4167V5.75a5.75 5.75 0 0 0 5.75 5.75"],
     // trash-2 (Feather), scaled to the 16 viewBox
     trash: ["M2 4h12", "M12.667 4v9.333a1.333 1.333 0 0 1 -1.333 1.333H4.667a1.333 1.333 0 0 1 -1.333 -1.333V4", "M5.333 4V2.667a1.333 1.333 0 0 1 1.333 -1.333h2.667a1.333 1.333 0 0 1 1.333 1.333V4", "M6.667 7.333v4", "M9.333 7.333v4"],
     // sliders (Feather) — settings/command
     sliders: ["M2.6667 14v-4.6667", "M2.6667 6.6667V2", "M8 14v-6", "M8 5.3333V2", "M13.3333 14v-3.3333", "M13.3333 8V2", "M0.6667 9.3333h4", "M6 5.3333h4", "M11.3333 10.6667h4"],
+    // more-horizontal, from the set proper. It was hand-drawn here as three
+    // zero-length capped lines (the way `list` draws its bullets) — same picture,
+    // but the spacing was mine and not the set's.
+    more: ["M2.5 7.5a0.625 0.625 0 1 0 1.25 0 0.625 0.625 0 1 0 -1.25 0",
+           "M6.875 7.5a0.625 0.625 0 1 0 1.25 0 0.625 0.625 0 1 0 -1.25 0",
+           "M11.25 7.5a0.625 0.625 0 1 0 1.25 0 0.625 0.625 0 1 0 -1.25 0"],
+    // The only direction marks on the board: the breadcrumb's steps and the filter
+    // panel's way in and out. They were the typographic › ‹ ←, which take their
+    // weight and their baseline from the *font* — so they never quite matched the
+    // marks beside them, and the back arrow was a different species from the
+    // separators it sat in a row with.
+    "chev-right": ["m5.625 11.25 3.75 -3.75 -3.75 -3.75"],
+    "chev-left": ["m9.375 11.25 -3.75 -3.75 3.75 -3.75"],
+    "chev-down": ["m3.75 5.625 3.75 3.75 3.75 -3.75"],
+    check: ["M12.5 3.75 5.625 10.625l-3.125 -3.125"],
+    "chev-up": ["m11.25 9.375 -3.75 -3.75 -3.75 3.75"],
+    // rotate-ccw — undo an arrangement, not undo a write
+    reset: ["m0.625 2.5 0 3.75 3.75 0",
+            "M2.19375 9.375a5.625 5.625 0 1 0 1.33125 -5.85L0.625 6.25"],
+    // inbox — the one view that is a room rather than a filter (see VIEW_GROUPS)
+    inbox: ["m13.75 7.5 -3.75 0 -1.25 1.875 -2.5 0 -1.25 -1.875 -3.75 0",
+            "M3.40625 3.19375 1.25 7.5v3.75a1.25 1.25 0 0 0 1.25 1.25h10a1.25 1.25 0 0 0 1.25 -1.25v-3.75l-2.15625 -4.30625A1.25 1.25 0 0 0 10.475 2.5H4.525a1.25 1.25 0 0 0 -1.11875 0.69375z"],
     list: ["m5 3.75 8.125 0", "m5 7.5 8.125 0", "m5 11.25 8.125 0", "m1.875 3.75 0.00625 0", "m1.875 7.5 0.00625 0", "m1.875 11.25 0.00625 0"],
     grid: ["M1.875 1.875h4.375v4.375H1.875Z", "M8.75 1.875h4.375v4.375h-4.375Z", "M8.75 8.75h4.375v4.375h-4.375Z", "M1.875 8.75h4.375v4.375H1.875Z"],
     key: ["m13.125 1.25 -1.25 1.25m-4.7562500000000005 4.7562500000000005a3.4375 3.4375 0 1 1 -4.86125 4.86125 3.4375 3.4375 0 0 1 4.860625 -4.860625zm0 0L9.6875 4.6875m0 0 1.875 1.875L13.75 4.375l-1.875 -1.875m-2.1875 2.1875L11.875 2.5"],
@@ -677,6 +790,55 @@
     });
     return svg;
   }
+  // The breadcrumb's step, in one place: the separator appeared in three builders,
+  // and a glyph copied three times is three chances for them to drift apart.
+  function sep() { return icon("chev-right", "crumb-sep"); }
+
+  // ── segmented control: one value out of a small closed set ──────────────────
+  // There were two of these — the layout switch and the theme switch — with the
+  // same job, the same click-and-repaint dance, and two different looks: one drew a
+  // border around *each* option, the other a filled track with a raised pill. The
+  // giveaway is the border: one around each option says "two things that happen to
+  // sit next to each other", one frame around the group says "one control with N
+  // positions". Both of them are the second thing.
+  //
+  // Tabs are deliberately not this. Overview/Activity switches what the page
+  // *shows*, so it stays underlined (`.tab-btn`) — the one of the three where the
+  // choice changes the region below it. Same reason `.focusbtn` differs from it.
+  //
+  // opts: [[value, label, iconName?], …]. onPick gets the value; the control has
+  // already moved its own `on` state, so a caller only does its own work.
+  function segmented(opts, current, onPick) {
+    var seg = el("div", "segmented");
+    seg.setAttribute("role", "group");
+    opts.forEach(function (o) {
+      var b = el("button", "segmented-btn" + (current === o[0] ? " on" : ""));
+      b.type = "button";
+      if (o[2]) b.appendChild(icon(o[2]));
+      b.appendChild(el("span", null, o[1]));
+      b.setAttribute("aria-pressed", current === o[0] ? "true" : "false");
+      b.addEventListener("click", function () {
+        [].forEach.call(seg.children, function (c) {
+          var on = c === b;
+          c.classList.toggle("on", on);
+          c.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        onPick(o[0]);
+      });
+      seg.appendChild(b);
+    });
+    return seg;
+  }
+  // A disclosure caret carries both directions and lets CSS pick by the button's
+  // own `aria-expanded` — the state is already on the control, so nothing has to be
+  // kept in sync. (A rotated down-chevron would draw the same shape; using the set's
+  // own up mark means the file says which mark it is rather than how it got there.)
+  function fillCaret(span) {
+    if (!span) return;
+    span.innerHTML = "";
+    span.appendChild(icon("chev-down", "caret-down"));
+    span.appendChild(icon("chev-up", "caret-up"));
+  }
 
   // Blocked badge for a puck waiting on unfinished dependencies (tooltip lists them).
   function blockBadge(item) {
@@ -695,31 +857,53 @@
   function progressBadge(item) {
     var p = item.progress;
     var b = el("span", "rollup" + (p.done === p.total ? " full" : ""));
-    b.appendChild(icon("merge"));
+    // The puck mark, not the etapp mark: this badge counts *pucks*, and the etapp
+    // it belongs to already wears its own mark beside the title. Carrying `etapp`
+    // here put the same glyph on one card twice and had the count of two dots
+    // standing in front of the number 5.
+    b.appendChild(icon("commit"));
     b.appendChild(el("span", "rollup-n", p.done + "/" + p.total));
     b.title = "Etapp: " + p.done + " of " + p.total + " pucks done";
     b.setAttribute("aria-label", b.title);
     return b;
   }
   // Membership chip on a child card: which etapp this puck belongs to.
+  // Membership, on a card. Clickable when the etapp is on the board: the crumb
+  // already goes up and the members list goes down, but this — the one place the
+  // relation is stated on the board itself — did nothing but repeat a name. On a
+  // flat board a card and its etapp can be columns apart, so the tie has to be a
+  // link or it is only a label.
   function etappChip(item) {
     var p = parentItem(item);
-    var c = el("span", "etapp-chip");
+    var name = p ? p.title : item.parentRef;
+    var c = el(p ? "button" : "span", "etapp-chip" + (p ? " etapp-link" : ""));
+    if (p) c.type = "button";
     c.appendChild(icon("merge"));
-    c.appendChild(el("span", "etapp-name", p ? p.title : item.parentRef));
-    c.title = "Etapp: " + (p ? p.title : item.parentRef);
+    c.appendChild(el("span", "etapp-name", name));
+    c.title = "Etapp: " + name;
     c.setAttribute("aria-label", c.title);
+    if (p) {
+      c.addEventListener("click", function (e) {
+        e.stopPropagation(); // the card underneath opens *this* puck; the chip opens its etapp
+        openModal(p);
+      });
+    }
     return c;
   }
 
   // The puck's identity mark: a git-commit glyph tinted with the repo colour —
   // like Linear's project icon, which is coloured by the project's identity (not
   // status). It's the single colour marker, so the meta shows just the repo name.
+  // The identity mark, tinted with the repo. A puck that holds other pucks gets a
+  // different one: an etapp was indistinguishable from a member on the board, and
+  // "which of these is an etapp?" is the first question the board should answer
+  // without being read.
   function puckGlyph(item) {
-    var g = el("span", "puck-glyph");
+    var etapp = (item.children || []).length > 0;
+    var g = el("span", "puck-glyph" + (etapp ? " is-etapp" : ""));
     g.style.color = item.repoColor;
-    g.title = item.repoName;
-    g.appendChild(icon("commit"));
+    g.title = etapp ? "Etapp \u00b7 " + item.repoName : item.repoName;
+    g.appendChild(icon(etapp ? "etapp" : "commit"));
     return g;
   }
 
@@ -911,9 +1095,12 @@
   }
 
   // A property row: mono key + value node. Add a field = add a row (growable).
-  function propRow(k, valNode, cls) {
+  //   field: the model's name for the row, when it differs from the reader's word.
+  //   The label is free to change; `data-field` is what the shortcuts and the tests
+  //   hang on, so it stays the name the data uses.
+  function propRow(k, valNode, cls, field) {
     var row = el("div", "prop" + (cls ? " prop-" + cls : ""));
-    row.dataset.field = String(k).toLowerCase(); // lets keyboard shortcuts target a field
+    row.dataset.field = String(field || k).toLowerCase();
     row.appendChild(el("span", "prop-k", k));
     var v = el("div", "prop-v");
     if (valNode != null) v.appendChild(valNode);
@@ -984,6 +1171,26 @@
       applyInert();
     };
   }
+  // `inert` is what actually removes a layer from the tab order — but where it is
+  // missing we only get `aria-hidden`, which a screen reader honours and Tab does
+  // not. So the stack keeps its own trap: one listener for every layer, instead of
+  // the sheet having one and the palette, help and panels having none.
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Tab" || !layers.length) return;
+    var top = layers[layers.length - 1].nodes.filter(Boolean);
+    var f = [];
+    top.forEach(function (n) { f = f.concat(focusables(n)); });
+    if (!f.length) { e.preventDefault(); return; } // nothing to land on: stay put
+    var first = f[0], last = f[f.length - 1], at = document.activeElement;
+    // A layer's own container is not part of its cycle: it holds focus right after
+    // opening and sits before its children in tab order, so forward Tab lands
+    // inside by itself while Shift+Tab would step out of the dialog.
+    var out = !top.some(function (n) { return n.contains(at) && at !== n; });
+    if (e.shiftKey ? (out || at === first) : (out || at === last)) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    }
+  }, true);
   function applyInert() {
     var top = layers.length ? layers[layers.length - 1].nodes : null;
     var kids = document.body.children;
@@ -1114,9 +1321,17 @@
     var scrim = null;
     // Where focus came from, so closing hands it back to the control that opened
     // the surface instead of dropping it on <body> — from where the next Tab starts
-    // over at the top of the page.
+    // over at the top of the page. The node alone is not enough: committing a value
+    // rebuilds the detail pane, so the trigger we remember is detached by the time
+    // we look. Remember which row it was in, and take the replacement.
     var lastFocus = document.activeElement;
+    var lastField = null;
+    if (lastFocus && lastFocus.closest) {
+      var owner = lastFocus.closest(".prop");
+      if (owner) lastField = owner.dataset.field;
+    }
     var popLayer = null;
+    var onDestroy = [];
     var root = el("div", (phone ? "sheet" : "pop") + (opts.cls ? " " + opts.cls : ""));
     var body = el("div", "surface-body");
     var closed = false;
@@ -1138,6 +1353,7 @@
       // would undo their click as surely as re-rendering under it does.
       var at = document.activeElement;
       var hadFocus = root.contains(at) || !at || at === document.body;
+      onDestroy.forEach(function (fn) { fn(); });
       if (popLayer) popLayer();
       if (scrim) { scrim.remove(); unlockScroll(); }
       root.remove();
@@ -1146,47 +1362,41 @@
       // detail pane — and handing focus to a trigger inside that pane strands it in
       // a hidden subtree. One turn later we can see which it was, and whether
       // anything else has claimed focus in the meantime.
-      if (hadFocus && lastFocus && document.contains(lastFocus)) {
+      // No `document.contains(lastFocus)` here. A review read this as a live bug —
+      // "the redraw detaches the trigger, so the guard skips the very case the
+      // branch inside was written for" — and it isn't one: propPicker calls
+      // `api.close()` *before* `onPick()`, so the trigger is still attached when
+      // this runs. Verified by running the restore-after-commit test against the
+      // unmodified code; it passed.
+      // The guard goes anyway, because it states a requirement the code doesn't
+      // have: the branch inside handles a detached node on purpose, so demanding an
+      // attached one here is a trap for the first caller that rebuilds before it
+      // closes. It also covers `lastFocus` being null while the row is known.
+      if (hadFocus && (lastFocus || lastField)) {
         setTimeout(function () {
           var now = document.activeElement;
-          if (now && now !== document.body) return;              // someone else took it
-          if (!document.contains(lastFocus) || !lastFocus.offsetParent) return; // gone or hidden
-          try { lastFocus.focus(); } catch (e2) {}
+          if (now && now !== document.body) return;   // someone else took it
+          var back = lastFocus;
+          if ((!back || !document.contains(back)) && lastField) {
+            // Redrawn: find the same row's control in the pane that replaced it.
+            var row = document.querySelector('.prop[data-field="' + lastField + '"]');
+            back = row ? focusables(row)[0] : null;
+          }
+          if (!back || !document.contains(back) || !back.offsetParent) return; // gone or hidden
+          try { back.focus(); } catch (e2) {}
         }, 0);
       }
       if (opts.onClose) opts.onClose();
     }
     function onKey(e) {
-      if (e.key !== "Tab" && e.key !== "Escape") return;
+      if (e.key !== "Escape") return; // Tab is the layer stack's job, for every layer
       // Anything stacked above a surface owns the keyboard: the help overlay, the
       // palette, and the New/Settings/token panels. Otherwise Escape dismisses a
-      // surface nobody can see and leaves the visible layer standing — and Tab is
-      // worse: the trap would drag focus out of the visible overlay and into the
-      // sheet behind it, since from up there focus reads as "outside". Asking "is
+      // surface nobody can see and leaves the visible layer standing. Asking "is
       // something above me?" rather than naming each one is what keeps a future
       // panel from re-opening this hole.
       // Unwind order: help → palette → panel → surface → puck.
       if (cmdkVisible() || helpOpen() || anyModalOpen()) return;
-      // A sheet is modal, so Tab wraps inside it. `inert` already does this where
-      // it exists; the trap is what makes the older path safe, and it also gives
-      // the wrap-around a real modal has.
-      if (e.key === "Tab" && phone) {
-        var f = focusables(root);
-        if (!f.length) { e.preventDefault(); return; }
-        var first = f[0], last = f[f.length - 1], at = document.activeElement;
-        // The sheet itself holds focus right after opening, and it is *not* part of
-        // the cycle: it sits before its own children in tab order, so forward Tab
-        // happens to land inside, but Shift+Tab would step out to whatever precedes
-        // the sheet in the document. Counting the container as outside sends that
-        // first backward press to the last row instead.
-        var out = !root.contains(at) || at === root;
-        if (e.shiftKey ? (out || at === first) : (out || at === last)) {
-          e.preventDefault();
-          (e.shiftKey ? last : first).focus();
-        }
-        return;
-      }
-      if (e.key !== "Escape") return;
       e.stopPropagation(); // this layer only — the modal beneath stays open
       close();
     }
@@ -1268,15 +1478,32 @@
     // through it. Wrapping the field lets the padding be part of what stays put —
     // and an <input> can't carry it itself, since padding-bottom on a field moves
     // its own text instead of adding space beneath it.
+    // A builder is not required to produce its field up front — the filter panel
+    // renders a plain list first and only inserts a search box once a field has
+    // more than eight values. So watch the body rather than pinning once: whatever
+    // arrives at the top gets pinned when it arrives.
     if (phone) {
-      var head = body.firstElementChild;
-      if (head && (head.classList.contains("fp-search") || head.classList.contains("tokenbox"))) {
-        var held = document.activeElement; // moving a node blurs it — put focus back
-        var pin = el("div", "sheet-pin");
-        body.insertBefore(pin, head);
-        pin.appendChild(head);
-        if (held && pin.contains(held)) { try { held.focus(); } catch (e) {} }
+      pinField();
+      var watch = new MutationObserver(pinField);
+      watch.observe(body, { childList: true });
+      onDestroy.push(function () { watch.disconnect(); });
+    }
+    // Pin the field *and whatever leads up to it* — the filter panel puts a back
+    // button above its search box, and pinning the box alone would leave that to
+    // scroll away on its own. Anything past the field is the list, and scrolls.
+    function pinField() {
+      var kids = body.children;
+      if (!kids.length || kids[0].classList.contains("sheet-pin")) return;
+      var at = -1;
+      for (var i = 0; i < kids.length && i < 3; i++) {
+        if (kids[i].classList.contains("fp-search") || kids[i].classList.contains("tokenbox")) { at = i; break; }
       }
+      if (at < 0) return;
+      var held = document.activeElement; // moving a node blurs it — put focus back
+      var pin = el("div", "sheet-pin");
+      body.insertBefore(pin, kids[0]);
+      while (body.children[1] && pin.children.length <= at) pin.appendChild(body.children[1]);
+      if (held && pin.contains(held)) { try { held.focus(); } catch (e) {} }
     }
     // Move focus into the sheet unless the builder already placed it (the desktop
     // pickers focus their search field; the phone ones deliberately don't).
@@ -1301,19 +1528,57 @@
     else if (mq.addListener) mq.addListener(onChange);
   })();
 
+  // The six statuses are not one scale, and the model already says so in two
+  // independent places: `TERMINAL` names the settled pair, and `VIEWS.all` is
+  // literally `-status:inbox` — the one status excluded from every board view.
+  // Three kinds, then: the queue (where in the order of work), the inbox (not a
+  // promise yet), the archive (settled). Drawn flat they read as six steps of one
+  // ladder, with `inbox` sitting between `later` and `done` as though it came after
+  // "later" and before "done".
+  //
+  // Derived from those two properties rather than written out, so a status added to
+  // STATUSES lands in a group by what it *is*. `inbox` is the only one named here,
+  // and it was already special by name in `VIEWS.all`.
+  //
+  // The order inside is STATUSES' own — the board's column order. Putting `inbox`
+  // first would read chronologically and match the sidebar, but it would give the
+  // app a second ordering of one list and push the three common targets down a row;
+  // fencing it where it stands says the same thing for less.
+  function statusOptions() {
+    var kind = function (s) { return s === "inbox" ? 1 : TERMINAL[s] ? 2 : 0; };
+    var out = [], last = null;
+    DATA.statuses.forEach(function (s) {
+      var k = kind(s);
+      if (last !== null && k !== last) out.push({ sep: true });
+      last = k;
+      out.push({ value: s, label: STATUS_LABEL[s] || s });
+    });
+    return out;
+  }
+
   // A Linear-style editable property: a single chip showing the *current* value;
   // click opens a picker popover to change it. Static chip when not editable. This
   // is the growable pattern — a new field is one more propPicker, not a button row.
-  //   opts: { editable, current, options:[{value,label}], valueNode(o), onPick(v) }
+  //   opts: { editable, current, options:[{value,label}|{sep:true}], valueNode(o), onPick(v) }
+  // An option carrying `sep: true` draws a rule instead of a row — the same rule the
+  // ⋯ menu uses. It lets a list say "these are different kinds of thing" without the
+  // picker learning what the kinds are; only the caller that builds the options knows.
   function propPicker(opts) {
     var cur = null;
-    for (var i = 0; i < opts.options.length; i++) if (opts.options[i].value === opts.current) cur = opts.options[i];
+    for (var i = 0; i < opts.options.length; i++) {
+      if (!opts.options[i].sep && opts.options[i].value === opts.current) cur = opts.options[i];
+    }
     var chip = el("button", "pick-chip");
     chip.type = "button";
     function paint(node) { chip.innerHTML = ""; chip.appendChild(node); }
     paint(cur ? opts.valueNode(cur) : el("span", "prop-muted", opts.placeholder || "\u2014"));
     if (!opts.editable) { chip.classList.add("static"); chip.disabled = true; return chip; }
     chip.classList.add("editable");
+    // A chip whose value is bare text has nothing of its own to look like, so it
+    // carries the box at rest. One whose value already has a shape — a status pill,
+    // a date — does not, or the shape would be drawn twice. That is the difference,
+    // not which surface it happens to sit on.
+    if (opts.boxed) chip.classList.add("boxed");
     var wrap = el("div", "prop-pick");
     var open = null;
     chip.addEventListener("click", function (e) {
@@ -1326,10 +1591,15 @@
         onClose: function () { open = null; },
         build: function (list, api) {
           opts.options.forEach(function (o) {
-            var mi = el("button", "pick-mi" + (o.value === opts.current ? " on" : ""));
+            if (o.sep) { list.appendChild(el("div", "menu-rule")); return; }
+            var mi = el("button", "row pick-mi" + (o.value === opts.current ? " on" : ""));
             mi.type = "button";
+            // The value, not just its label: the option's durable identity, for the
+            // same reason `data-field` exists — a hook that doesn't move when the
+            // wording does.
+            if (o.value != null) mi.setAttribute("data-value", String(o.value));
             mi.appendChild(opts.valueNode(o));
-            if (o.value === opts.current) mi.appendChild(el("span", "pick-check", "\u2713"));
+            if (o.value === opts.current) mi.appendChild(icon("check", "pick-check"));
             mi.addEventListener("click", function () {
               api.close();
               if (o.value !== opts.current) opts.onPick(o.value);
@@ -1432,7 +1702,7 @@
                 lower(it.repoName).indexOf(q) !== -1;
             });
             hits.slice(0, CAP).forEach(function (it) {
-              var mi = el("button", "pick-mi" + (it.id === opts.current ? " on" : ""));
+              var mi = el("button", "row pick-mi" + (it.id === opts.current ? " on" : ""));
               mi.type = "button";
               var dot = el("span", "repo-dot");
               dot.style.background = it.repoColor;
@@ -1440,7 +1710,7 @@
               mi.appendChild(el("span", "pick-title", it.title));
               // The repo is worth naming only when it isn't the one we're writing in.
               if (it.repo !== opts.repo) mi.appendChild(el("span", "pick-repo", it.repoName));
-              if (it.id === opts.current) mi.appendChild(el("span", "pick-check", "\u2713"));
+              if (it.id === opts.current) mi.appendChild(icon("check", "pick-check"));
               mi.addEventListener("click", function () { api.close(); opts.onPick(it); });
               list.appendChild(mi);
             });
@@ -1483,6 +1753,14 @@
         save.addEventListener("click", done);
         field.addEventListener("keydown", function (e) { if (e.key === "Enter") done(); });
         row.appendChild(save);
+        // A second action belongs *in* the surface, not beside the trigger: two
+        // shapes in one row made the rarer action the loudest thing in the block.
+        if (opts.alt) {
+          var alt = el("button", "row pick-mi alt-act", opts.alt.label);
+          alt.type = "button";
+          alt.addEventListener("click", function () { api.close(); opts.alt.run(); });
+          host.appendChild(alt);
+        }
         host.appendChild(row);
         // Not on a phone either, though here the field *is* the content and there is
         // no list to bury: a sheet that opens with the keyboard already up is the
@@ -1528,9 +1806,6 @@
       var link = el("button", "linklike", "Link issue"); link.type = "button";
       link.addEventListener("click", toggleIssueEditor);
       wrap.appendChild(link);
-      var mk = el("button", "linklike issue-newbtn", "New issue"); mk.type = "button";
-      mk.addEventListener("click", function () { newIssue(item); });
-      wrap.appendChild(mk);
     } else {
       wrap.appendChild(el("span", "prop-muted", "—"));
     }
@@ -1540,6 +1815,11 @@
     return inputSurface(wrap, {
       title: "Issue",
       onClose: onClose,
+      // "New issue" used to sit next to the trigger as a second, differently
+      // shaped control. It is the rarer action, so it lives one level in.
+      alt: canWrite(item) && !item.issue
+        ? { label: "\u002b  New issue in " + item.repoName, run: function () { newIssue(item); } }
+        : null,
       value: item.issue ? String(item.issue) : "",
       placeholder: "42 or a full issue URL",
       hint: "The working issue in " + item.repoName + ". Leave blank to unlink.",
@@ -1640,12 +1920,12 @@
           }
           function paintList() {
             list.innerHTML = "";
-            var q = slugify(search.value.trim());
+            var q = slugChars(search.value.trim()); // empty query stays empty — see slugify
             var hits = known().filter(function (t) { return !q || t.indexOf(q) !== -1; });
             // Create sits first when what you typed isn't a label yet — the same
             // shape the reference apps use, allowed here because the set is open.
             if (q && known().indexOf(q) === -1) {
-              var add = el("button", "pick-mi pick-new");
+              var add = el("button", "row pick-mi pick-new");
               add.type = "button";
               add.appendChild(el("span", "prop-muted", "Create"));
               add.appendChild(el("span", "tagpill", "#" + q));
@@ -1654,10 +1934,10 @@
             }
             hits.forEach(function (t) {
               var on = chosen.indexOf(t) !== -1;
-              var mi = el("button", "pick-mi" + (on ? " on" : ""));
+              var mi = el("button", "row pick-mi" + (on ? " on" : ""));
               mi.type = "button";
               mi.appendChild(el("span", "tagpill", "#" + t));
-              if (on) mi.appendChild(el("span", "pick-check", "\u2713"));
+              if (on) mi.appendChild(icon("check", "pick-check"));
               mi.addEventListener("click", function () { toggle(t); });
               list.appendChild(mi);
             });
@@ -1666,7 +1946,7 @@
           search.addEventListener("input", paintList);
           search.addEventListener("keydown", function (e2) {
             if (e2.key === "Enter") {
-              var q = slugify(search.value.trim());
+              var q = slugChars(search.value.trim());
               if (q) { e2.preventDefault(); toggle(q); }
             } else if (e2.key === "Backspace" && !search.value && chosen.length) {
               toggle(chosen[chosen.length - 1]); // backspace eats the last token
@@ -1680,27 +1960,108 @@
     return wrap;
   }
 
+  // The puck's own ⋯ menu, at the right end of the tab strip. What lives here is
+  // everything you do *to the file* rather than to the fields: open it on GitHub,
+  // copy a link to it, delete it. They used to sit in a link row under the body —
+  // which put a destructive action at the end of a scroll, told apart from two
+  // navigation links by colour alone. In a menu the delete is one deliberate step
+  // away and can carry a rule above it; the rail keeps every value edit.
+  function puckMenu(item) {
+    var wrap = el("div", "prop-pick puck-more");
+    var btn = el("button", "btn btn--icon");
+    btn.type = "button";
+    btn.title = "More actions";
+    btn.setAttribute("aria-label", "More actions");
+    btn.setAttribute("aria-haspopup", "true");
+    btn.setAttribute("aria-expanded", "false");
+    btn.appendChild(icon("more"));
+    var open = null;
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (open) { open.close(); return; }
+      btn.setAttribute("aria-expanded", "true");
+      open = openSurface({
+        title: "Actions",
+        anchorWrap: wrap,
+        cls: "pick-menu menu-right",
+        onClose: function () { open = null; btn.setAttribute("aria-expanded", "false"); },
+        build: function (host, api) {
+          var src = el("a", "row");
+          src.href = item.sourceUrl; src.target = "_blank"; src.rel = "noopener";
+          src.appendChild(icon("external"));
+          src.appendChild(el("span", null, "Open source"));
+          src.addEventListener("click", function () { api.close(); });
+          host.appendChild(src);
+
+          var copy = el("button", "row");
+          copy.type = "button";
+          copy.appendChild(icon("share"));
+          var copyLabel = el("span", null, "Copy link");
+          copy.appendChild(copyLabel);
+          copy.addEventListener("click", function () {
+            copyText(location.origin + location.pathname + "#" + item.id, function () {
+              copyLabel.textContent = "Copied";
+              setTimeout(api.close, 700);
+            });
+          });
+          host.appendChild(copy);
+
+          // Same gate as every other write in the rail (`editable`): signed in,
+          // native, and not known read-only. The old link row skipped the token
+          // check, so a signed-out reader was offered a Delete that could only
+          // fail — canWrite() alone means "not known to be read-only", not "may".
+          if (ghToken() && item.native && canWrite(item)) {
+            host.appendChild(el("div", "menu-rule"));
+            var del = el("button", "row danger");
+            del.type = "button";
+            del.appendChild(icon("trash"));
+            del.appendChild(el("span", null, "Delete puck"));
+            del.addEventListener("click", function () { api.close(); confirmDeletePuck(item); });
+            host.appendChild(del);
+          }
+        },
+      });
+    });
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
   // Build the full puck detail into `container` — shared by both surfaces.
-  // Structure: breadcrumb → title → properties rail → details (body) → links.
+  // Structure: breadcrumb → title → tab strip (+ ⋯ menu) → properties rail → body.
   function fillDetail(container, item) {
     container.innerHTML = "";
     container.style.setProperty("--repo", item.repoColor);
 
     var crumb = el("div", "detail-crumb");
-    var home = el("button", "crumb-home", "← " + currentViewTitle());
+    var home = el("button", "crumb-home");
+    home.appendChild(icon("chev-left"));
+    home.appendChild(el("span", null, currentViewTitle()));
     home.type = "button";
     home.title = "Back to the board";
     home.addEventListener("click", function () { closeModal(); });
     crumb.appendChild(home);
-    crumb.appendChild(el("span", "crumb-sep", "›"));
+    // The etapp sits in the path, not only in a field far down the rail: a
+    // breadcrumb is where a reader learns the shape of things, and it puts the
+    // level above one tap away instead of a scroll.
+    var up = parentItem(item);
+    if (up) {
+      crumb.appendChild(sep());
+      var upLink = el("button", "crumb-back", up.title);
+      upLink.type = "button";
+      upLink.title = "Etapp: " + up.title;
+      upLink.addEventListener("click", function () { openModal(up); });
+      crumb.appendChild(upLink);
+    }
+    crumb.appendChild(sep());
     crumb.appendChild(el("span", "crumb-cur", item.repoName + " · " + item.slug));
     container.appendChild(crumb);
 
-    // Puck glyph (git-commit) — Etapp's answer to Linear's project icon, tinted
-    // with the repo (project) colour. The single colour marker on the page.
+    // Puck glyph — Etapp's answer to Linear's project icon, tinted with the repo
+    // (project) colour. The single colour marker on the page, and it makes the same
+    // etapp/member distinction the cards do.
     var pic = el("div", "detail-icon");
     pic.style.color = item.repoColor;
-    pic.appendChild(icon("commit"));
+    pic.appendChild(icon((item.children || []).length ? "etapp" : "commit"));
     container.appendChild(pic);
 
     container.appendChild(el("h2", "modal-title", item.title));
@@ -1714,11 +2075,20 @@
       extraTabs.push({ key: "activity", label: "Activity", load: loadActivity });
       if (item.issue) extraTabs.push({ key: "discussion", label: "Discussion", load: loadDiscussion });
     }
+    // The strip under the title carries the tabs on the left and the ⋯ menu on the
+    // right. It is drawn even when there is only one face to show (an adapted
+    // source has no Activity or Discussion): the menu has to live somewhere, and
+    // the rule is what separates the heading from the page's content either way.
+    var strip = el("div", "detail-tabs");
+    var tabList = el("div", "tab-list");
+    strip.appendChild(tabList);
+    strip.appendChild(puckMenu(item));
+    container.appendChild(strip);
+
     if (extraTabs.length) {
       var defs = [{ key: "overview", label: "Overview", panel: overview }].concat(
         extraTabs.map(function (t) { t.panel = el("div", "tab-panel"); t.panel.hidden = true; return t; }));
-      var tabs = el("div", "detail-tabs");
-      tabs.setAttribute("role", "tablist");
+      tabList.setAttribute("role", "tablist");
       var tabBtns = {};
       var loadedSet = {};
       var pick = function (name) {
@@ -1736,9 +2106,8 @@
         b.setAttribute("aria-selected", d.key === "overview" ? "true" : "false");
         b.addEventListener("click", function () { pick(d.key); });
         tabBtns[d.key] = b;
-        tabs.appendChild(b);
+        tabList.appendChild(b);
       });
-      container.appendChild(tabs);
       defs.forEach(function (d) { container.appendChild(d.panel); });
     } else {
       container.appendChild(overview);
@@ -1754,6 +2123,9 @@
     function group(label) { var g = { label: label, rows: [] }; groups.push(g); return g; }
     var gAxes = group(null), gPeople = group("People"),
         gRel = group("Relations"), gLabels = group("Labels");
+    // A heading over one row weighs more than it separates: with no assignee,
+    // "People" is a title for `Agent` alone. Then it joins the block above instead.
+    gPeople.mergeIfAlone = true;
     var props = gAxes; // rows are pushed into a group; see the render at the end
 
     var editable = ghToken() && item.native && canWrite(item);
@@ -1764,9 +2136,10 @@
 
     // Status: current value as a chip; click to pick (editable) — Linear-style.
     gAxes.rows.push(propRow("Status", propPicker({
+      title: "Status", // the sheet is a dialog; an unnamed one tells a screen reader nothing
       editable: editable,
       current: item.status,
-      options: DATA.statuses.map(function (s) { return { value: s, label: STATUS_LABEL[s] || s }; }),
+      options: statusOptions(),
       valueNode: function (o) { return el("span", "status-pill status-" + o.value, o.label); },
       onPick: function (v) { changeStatus(item, v); },
     })));
@@ -1774,6 +2147,7 @@
     // Priority: same pattern. Shown when editable or when the puck has one set.
     if (editable || item.priority) {
       gAxes.rows.push(propRow("Priority", propPicker({
+        title: "Priority", // the sheet is a dialog; an unnamed one tells a screen reader nothing
         editable: editable,
         current: item.priority || null,
         placeholder: "No priority",
@@ -1804,6 +2178,7 @@
     // as a status flip. Shown when editable or already routed.
     if (editable || item.agent) {
       gPeople.rows.push(propRow("Agent", propPicker({
+        title: "Agent", // the sheet is a dialog; an unnamed one tells a screen reader nothing
         editable: editable,
         current: item.agent || null,
         placeholder: "Unassigned",
@@ -1832,24 +2207,20 @@
     // Etapp: the level above. One pointer up, so the row is a link + an edit —
     // there is no epic record to open, just another puck.
     if (editable || item.parentRef || item.parent) {
-      gRel.rows.push(propRow("Etapp", parentValue(item, editable)));
+      // "Etapp" up and "Pucks" down were two unrelated nouns for the two ends of one
+      // edge — a type name and a generic plural — so the row read as its own field
+      // rather than as the other half of the pair below. One verb, two directions,
+      // the way Blocked by / Blocks already reads. The word "etapp" stays where it
+      // belongs: on the *value*, and in the board's Etapp grouping.
+      gRel.rows.push(propRow("Part of", parentValue(item, editable), null, "etapp"));
     }
 
-    // …and the level below, when this puck *is* an etapp: its pucks, with the
-    // rollup the harvester counted.
-    if ((item.children || []).length) {
-      var kidsV = el("div", "prop-blockers");
-      childItems(item).forEach(function (k, i) {
-        var ka = el("a", "blocker-link" + (TERMINAL[k.status] ? " done" : ""), k.title);
-        ka.href = "#" + k.id;
-        ka.addEventListener("click", function (e) { e.preventDefault(); openModal(k); });
-        kidsV.appendChild(ka);
-        if (i < item.children.length - 1) kidsV.appendChild(document.createTextNode(", "));
-      });
-      var kidsRow = propRow("Pucks", kidsV, "blocked");
-      if (item.progress) kidsRow.querySelector(".prop-k").appendChild(
-        el("span", "prop-muted", " " + item.progress.done + "/" + item.progress.total));
-      gRel.rows.push(kidsRow);
+    // …and the level below. With members it becomes a section of its own further
+    // down (a comma-separated line works for two pucks and collapses at eight);
+    // without them the rail keeps one quiet control, so an etapp can be *started*
+    // from the parent side instead of only from each child.
+    if (!(item.children || []).length && canAddMember(item)) {
+      gRel.rows.push(propRow("Contains", addPuckPicker(item), "blocked", "pucks"));
     }
 
     // Blocked by: the authored `depends` list, editable. It shows landed blockers
@@ -1872,22 +2243,42 @@
       gRel.rows.push(propRow("Blocks", blocksV, "blocked"));
     }
 
+    var lastBox = null;
     groups.forEach(function (g) {
       if (!g.rows.length) return;
+      if (g.mergeIfAlone && g.rows.length < 2 && lastBox) {
+        g.rows.forEach(function (r) { lastBox.appendChild(r); });
+        return;
+      }
       if (g.label) overview.appendChild(el("div", "sect-label", g.label));
       var box = el("div", "props");
       g.rows.forEach(function (r) { box.appendChild(r); });
       overview.appendChild(box);
+      lastBox = box;
     });
+
+    // ── Contains: the etapp's members, as rows ──
+    // The page where you *run* an etapp, not just read that it has one. Direct
+    // members only — a sub-etapp shows its own count and answers for its subtree,
+    // which is what makes the number compose at any depth.
+    if ((item.children || []).length) {
+      var head = el("div", "sect-label sect-with-badge");
+      head.appendChild(document.createTextNode("Contains"));
+      if (item.progress) head.appendChild(progressBadge(item));
+      overview.appendChild(head);
+      var members = el("div", "members");
+      childItems(item).forEach(function (k) { members.appendChild(memberRow(k)); });
+      // Not `editable`: that asks whether *this* puck's file is writable, and adding
+      // a member writes the **child's** `parent:` line. A token that owns another
+      // source repo can add from it to an etapp it could never edit itself.
+      if (canAddMember(item)) members.appendChild(addPuckPicker(item));
+      overview.appendChild(members);
+    }
 
     // Created/Updated are derived and never edited, and Activity is the same fact
     // with more detail. A footnote rather than two rows — kept at all because
     // Activity can fail (private repo, rate limit) and `updated` drives the stale
     // flag, so it should not take a round trip to see.
-    var meta = [];
-    if (item.created) meta.push("Created " + item.created);
-    if (item.updated) meta.push("Updated " + item.updated);
-    if (meta.length) overview.appendChild(el("div", "prop-foot", meta.join("  \u00b7  ")));
 
     var sig = signalMessages(item);
     if (sig.length) {
@@ -1909,35 +2300,17 @@
       overview.appendChild(editBtn);
     }
 
-    var links = el("div", "card-links");
-    var srcLink = linkEl("source", item.sourceUrl);
-    srcLink.insertBefore(icon("external", "inline"), srcLink.firstChild);
-    links.appendChild(srcLink);
-    if (item.issue) {
-      links.appendChild(linkEl("issue #" + item.issue, "https://github.com/" + item.repo + "/issues/" + item.issue));
-    }
-    var copyBtn = el("button", "linklike");
-    copyBtn.type = "button";
-    copyBtn.appendChild(icon("share", "inline"));
-    var copyLabel = el("span", null, "Copy link");
-    copyBtn.appendChild(copyLabel);
-    copyBtn.addEventListener("click", function () {
-      var url = location.origin + location.pathname + "#" + item.id;
-      copyText(url, function () {
-        copyLabel.textContent = "Copied";
-        setTimeout(function () { copyLabel.textContent = "Copy link"; }, 1500);
-      });
-    });
-    links.appendChild(copyBtn);
-    if (canWrite(item) && item.native) {
-      var delBtn = el("button", "linklike danger");
-      delBtn.type = "button";
-      delBtn.appendChild(icon("trash", "inline"));
-      delBtn.appendChild(el("span", null, "Delete"));
-      delBtn.addEventListener("click", function () { confirmDeletePuck(item); });
-      links.appendChild(delBtn);
-    }
-    overview.appendChild(links);
+    // Source, Copy link and Delete used to be a link row here. They act on the
+    // file rather than on this page's content, so they live in the ⋯ menu at the
+    // top now — and the issue they also linked is already a link in the rail.
+
+    // Created/Updated: metadata about the file, so it rests at the foot of the tab.
+    // Between the rail and the Details heading it sat in the same muted mono voice
+    // as that heading, and the two blurred into one grey block.
+    var meta = [];
+    if (item.created) meta.push("Created " + item.created);
+    if (item.updated) meta.push("Updated " + item.updated);
+    if (meta.length) overview.appendChild(el("div", "prop-foot", meta.join("  \u00b7  ")));
   }
 
   // Activity tab: the git history of this puck's file, read live from GitHub's
@@ -2130,7 +2503,7 @@
       back.type = "button";
       back.addEventListener("click", function () { closeModal(); });
       tc.appendChild(back);
-      tc.appendChild(el("span", "crumb-sep", "›"));
+      tc.appendChild(sep());
       tc.appendChild(el("span", "crumb-title", item.title));
     }
     detailContent.scrollTop = 0;
@@ -2339,7 +2712,17 @@
       write: function (item, k) { changePriority(item, k === NO_VALUE ? null : k); },
     },
   };
-  function activeGroup() { return GROUPS[state.group] || GROUPS.status; }
+  // Grouping by a field the view has already fixed makes one group named after the
+  // view — "INBOX 11" under a header that says "Inbox 11". Derived from the columns
+  // the view can show rather than from the view's name, so a future single-status
+  // view gets the same treatment without being listed anywhere.
+  //
+  // The *effective* group falls back; `state.group` keeps what you chose. Visiting
+  // the inbox therefore doesn't overwrite the grouping you set elsewhere, and the
+  // URL still carries the choice you made.
+  function groupUsable(k) { return k !== "status" || columnsForFocus().length > 1; }
+  function effectiveGroup() { return groupUsable(state.group) ? state.group : "repo"; }
+  function activeGroup() { return GROUPS[effectiveGroup()] || GROUPS.status; }
   // "Manual" is the only ordering where a hand-placed position means anything —
   // every other mode derives it from a field (see sortComparator).
   function manualRank() { return state.sort === "default"; }
@@ -2393,7 +2776,11 @@
       // priority-grouped neighbours would compute a number against pucks from other
       // statuses and quietly reshuffle the real board. Those groupings keep the
       // plain column drop below, which writes their own field.
-      if (manualRank() && ghToken() && state.group === "status") {
+      // `effectiveGroup()`, not `state.group`: a view that cannot group by status
+      // falls back to repo while the stored choice stays `status`, and reading the
+      // stored one enabled the status-only drop handler over repo columns — which
+      // computed a rank against another repo's cards and snapped the card back.
+      if (manualRank() && ghToken() && effectiveGroup() === "status") {
         cards.addEventListener("dragover", function (e) {
           if (!dragItem) return;
           e.preventDefault();
@@ -2445,19 +2832,42 @@
     });
   }
 
+  // Fold a group shut or open it. Display state, so it travels the same road as the
+  // rest: into `state`, out through the URL, onto the board.
+  function toggleGroup(key) {
+    if (state.collapsed.has(key)) state.collapsed.delete(key);
+    else state.collapsed.add(key);
+    refreshDisplayDot();
+    renderBoard();
+  }
   function renderList(groups) {
     var g = activeGroup();
     groups.forEach(function (grp) {
       if (!grp.items.length) return; // a flat list has no drop targets, so no empty headers
       var section = el("section", "list-group" + (g.cls ? " " + g.cls(grp.key) : " col-plain"));
       if (g.tint && g.tint(grp.key)) section.style.setProperty("--tint", g.tint(grp.key));
+      var shut = state.collapsed.has(grp.key);
+      if (shut) section.classList.add("shut");
       var head = el("div", "list-head");
-      head.appendChild(el("span", "swatch"));
-      head.appendChild(el("h2", null, grp.label));
-      head.appendChild(el("span", "count", String(grp.items.length)));
+      // The heading stays a heading and the *button* goes inside it: `role="button"`
+      // on the row would have made its contents presentational, and the list's group
+      // headings would have dropped out of the heading map. The rollup badge stays
+      // outside the button — it is the etapp's number, not part of the control.
+      var h = el("h2");
+      var toggle = el("button", "lh-toggle");
+      toggle.type = "button";
+      toggle.setAttribute("aria-expanded", shut ? "false" : "true");
+      toggle.title = (shut ? "Expand " : "Collapse ") + grp.label;
+      toggle.appendChild(icon(shut ? "chev-right" : "chev-down", "lh-caret"));
+      toggle.appendChild(el("span", "swatch"));
+      toggle.appendChild(el("span", "lh-label", grp.label));
+      toggle.appendChild(el("span", "count", String(grp.items.length)));
+      toggle.addEventListener("click", function () { toggleGroup(grp.key); });
+      h.appendChild(toggle);
+      head.appendChild(h);
       if (g.headExtra) { var hx = g.headExtra(grp.key); if (hx) head.appendChild(hx); }
       section.appendChild(head);
-      grp.items.forEach(function (it) { section.appendChild(listRow(it)); });
+      if (!shut) grp.items.forEach(function (it) { section.appendChild(listRow(it)); });
       board.appendChild(section);
     });
   }
@@ -2506,9 +2916,19 @@
 
   function renderBoard() {
     board.innerHTML = "";
-    // Ready and Inbox are focused queues → always the grouped list, whatever the toggle says.
-    var queue = state.focus === "ready" || state.focus === "inbox";
-    var layout = queue ? "list" : state.view;
+    // The layout is whatever the toggle says — in every view.
+    //
+    // Ready and Inbox used to be forced to the list "whatever the toggle says",
+    // on the grounds that a focused queue reads better as one. Two things were
+    // wrong with that. The premise only holds under *status* grouping, where Inbox
+    // is one column and Ready is two — group by repo or agent and those views have
+    // as many columns as any other. And the override was silent: Display went on
+    // showing Board as the selected layout, so the control claimed a choice that
+    // never took effect. (It also let the board-only "Show empty columns" row
+    // appear over a list.) A view that reads better as a list is a reason to pick
+    // List — and that choice persists — not a reason to overrule the person who
+    // picked Board.
+    var layout = state.view;
     board.classList.toggle("as-list", layout === "list");
     activeQuery = activeTerms();
     var visible = DATA.items.filter(matches).sort(sortComparator());
@@ -2523,8 +2943,12 @@
     buildSavedViews(); // its "active" state tracks the board, like the view rows
     refreshDisplayDot();
     writeUrl(); // every render reflects the view into the URL, so it stays shareable
+    // The footer says where the data came from, not what the view is showing: the
+    // count of the current view is already in the view header and the sidebar, and
+    // a third copy under the fold was the only one that could go stale (it stayed
+    // put, reading "1 of 145 shown", while a puck page covered the board).
     document.getElementById("footmeta").textContent =
-      shown + " of " + DATA.total + " shown · generated " + DATA.generatedAt.slice(0, 16).replace("T", " ") + " UTC · ";
+      DATA.total + " pucks · generated " + DATA.generatedAt.slice(0, 16).replace("T", " ") + " UTC · ";
   }
 
   // Which status groups the current view shows. Inbox is its own space, so it's
@@ -2533,6 +2957,13 @@
     if (state.focus === "inbox") return ["inbox"];
     if (state.focus === "ready") return ["now", "next"];
     if (state.focus === "attention") return DATA.statuses; // flagged can be any status
+    // An etapp is any puck that holds others, so it can sit anywhere — including
+    // inbox, which the committed board hides. Without this the sidebar counted one
+    // and the board showed none, which is exactly the drift viewCounts exists to
+    // prevent. Done still follows the toggle.
+    if (state.focus === "etapps") {
+      return DATA.statuses.filter(function (s) { return !TERMINAL[s] || state.showDone; });
+    }
     // "all" = the committed board: now/next/later (+done/cancelled when shown), never inbox.
     return DATA.statuses.filter(function (s) {
       return s !== "inbox" && (!TERMINAL[s] || state.showDone);
@@ -2540,7 +2971,10 @@
   }
 
   // The consistent view-header reflects the current focus + how many are shown.
-  var VIEW_TITLES = { all: "All pucks", ready: "Ready to take", inbox: "Inbox", attention: "Needs attention" };
+  var VIEW_TITLES = {
+    all: "All pucks", ready: "Ready to take", inbox: "Inbox",
+    etapps: "Etapps", standalone: "Standalone", attention: "Needs attention",
+  };
   function repoNameOf(repo) {
     for (var i = 0; i < DATA.sources.length; i++) if (DATA.sources[i].repo === repo) return DATA.sources[i].name;
     return repo.split("/").pop();
@@ -2577,10 +3011,39 @@
   }
 
   // ── filter chips ──
+  // What a *place* is worth: clicking a repo or a discipline goes through
+  // goToPlace, which resets to the All-pucks board — so the chip's number has to be
+  // counted with that view's query, not with the source's grand total. The old
+  // number came straight from the harvester and counted the archive too, so "PIA
+  // 52" landed you on six cards. Same rule the views already hold themselves to.
+  // Archive-aware for the same reason the view counts are: `goToPlace()` keeps
+  // `state.showDone`, so with the toggle on a repo click shows its landed cards
+  // while the chip's number excluded them. A place counts what its click shows.
+  // Siffran är vad klicket visar — och ett klick på ett repo behåller en aktiv
+  // disciplinkö (goToPlace byter bara den dimension man klickade i). Så varje
+  // dimension räknas *inuti* den andra: annars kunde ett repo säga 20 och landa på
+  // de 3 som är routade till den valda disciplinen.
+  function placeCounts() {
+    var base = parseQuery(VIEWS.all).concat(state.showDone ? [] : [NOT_DONE]);
+    // The *other* active place, taken from `controlTerms()` rather than hand-built:
+    // one producer for what a place term looks like, so the two can't drift.
+    function withOthers(skip) {
+      return base.concat(controlTerms().filter(function (t) { return t.field !== skip; }));
+    }
+    var repoQ = withOthers("repo"), agentQ = withOthers("agent");
+    var repo = {}, agent = {};
+    DATA.items.forEach(function (it) {
+      if (runQuery(it, repoQ)) repo[it.repo] = (repo[it.repo] || 0) + 1;
+      if (it.agent && runQuery(it, agentQ)) agent[it.agent] = (agent[it.agent] || 0) + 1;
+    });
+    return { repo: repo, agent: agent };
+  }
+
   function buildRepoChips() {
     var wrap = document.getElementById("repoFilters");
     if (!wrap) return;
     wrap.innerHTML = ""; // idempotent — refreshNav rebuilds this on every nav change
+    var live = placeCounts().repo;
     DATA.sources.forEach(function (s) {
       var chip = el("button", "chip repo");
       chip.dataset.repo = s.repo;
@@ -2589,7 +3052,9 @@
       dot.style.background = s.color;
       chip.appendChild(dot);
       chip.appendChild(document.createTextNode(s.name));
-      var n = el("span", "n", String(s.count));
+      // A repo is a permanent place, so its zero is worth showing — unlike a view,
+      // which hides its count when empty because an empty view is not navigation.
+      var n = el("span", "n", String(live[s.repo] || 0));
       chip.appendChild(n);
       chip.title = s.blurb + (s.native ? "" : " — adapted from " + s.adapter);
       chip.addEventListener("click", function () { goToPlace(state.repos, s.repo); });
@@ -2606,8 +3071,9 @@
     var section = document.getElementById("agentSection");
     if (!wrap) return;
     wrap.innerHTML = "";
-    var counts = {};
-    DATA.items.forEach(function (it) { if (it.agent) counts[it.agent] = (counts[it.agent] || 0) + 1; });
+    // The queue is live work, not history: a discipline whose pucks have all landed
+    // has an empty queue, and the same count-is-what-you-land-on rule applies.
+    var counts = placeCounts().agent;
     state.agents.forEach(function (a) { if (!counts[a]) state.agents.delete(a); }); // prune stale filters
     var agents = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
     if (section) section.hidden = agents.length === 0;
@@ -2678,48 +3144,178 @@
   function viewCounts() {
     var c = {}, qs = {};
     // Counted with the views' own queries, so a row's number can never drift from
-    // what clicking it shows. "All pucks" always excludes the archive, whatever the
-    // toggle says, so the count doesn't jump when you show done.
+    // what clicking it shows — the archive toggle included.
+    //
+    // This used to pin the archive out whatever the toggle said, "so the count
+    // doesn't jump". Turning on Show done then left the sidebar saying 2 and the
+    // header saying 4 for one view, which only became visible once two of three
+    // etapps were done. A number that jumps is explained by the switch you just
+    // flipped; two different numbers for one view are never explained.
     Object.keys(VIEWS).forEach(function (k) {
       c[k] = 0;
-      qs[k] = parseQuery(VIEWS[k]).concat(k === "all" ? [NOT_DONE] : []);
+      qs[k] = parseQuery(VIEWS[k]).concat(ARCHIVABLE[k] && !state.showDone ? [NOT_DONE] : []);
     });
     DATA.items.forEach(function (it) {
       Object.keys(qs).forEach(function (k) { if (runQuery(it, qs[k])) c[k]++; });
     });
     return c;
   }
+  // The views, named once and read by both the sidebar and the ⌘K palette — a new
+  // view can't now appear in one and be missing from the other, which is exactly
+  // what happened to Etapps (a sidebar row with no command).
+  var VIEW_DEFS = {
+    // Only Inbox carries a glyph, and that is the point rather than an oversight:
+    // it is the one row that is a *room* and not a slice of the board (see
+    // VIEW_GROUPS), so it stands in its own section and wears the mark of one.
+    // Giving all six an icon would say the opposite — that they are six of a kind.
+    inbox: { label: "Inbox", icon: "inbox", title: "Raw ideas to triage — nothing here is a promise yet" },
+    all: { label: "All pucks", title: "The committed board — now/next/later" },
+    etapps: { label: "Etapps", title: "The pucks that hold other pucks — each with its rollup" },
+    standalone: { label: "Standalone", title: "Pucks in no etapp — the loose ones" },
+    ready: { label: "Ready", title: "Unblocked now/next — pick one up or hand it to an agent" },
+    attention: { label: "Needs attention", title: "Pucks whose declared status disagrees with reality" },
+  };
+  // Two kinds of row, answering two different questions — *Views* is the slice you
+  // chose to look at, *Signals* is the board's own opinion about it. Inbox is
+  // neither: it's a room you go to in order to empty it, so it stands above both
+  // and its number reads as a to-do rather than as a size. (It is also the one
+  // status excluded from every other view — `all` is literally `-status:inbox` —
+  // so it was already a room; only the presentation said otherwise.)
+  var VIEW_GROUPS = [
+    { label: null, keys: ["inbox"] },
+    { label: "Views", keys: ["all", "etapps", "standalone"] },
+    { label: "Signals", keys: ["ready", "attention"] },
+  ];
+  // Which rows this board has earned — the sidebar is navigation, not a feature
+  // list. Each row is gated on the thing it actually adds, not on hierarchy in
+  // general: Etapps earns its place as soon as one exists (it may sit in the inbox,
+  // which the committed board hides — the Etapps view is then the only way to see
+  // it), while Standalone earns its place only when it *differs* from All pucks,
+  // i.e. when at least one member is on the committed board. Gating both on
+  // `counts.etapps` looked right and rendered "All pucks 31 / Standalone 31" — one
+  // list under two names — because the only etapp we had was an inbox one.
+  function viewsShown(counts) {
+    return VIEW_GROUPS.map(function (g) {
+      return {
+        label: g.label,
+        keys: g.keys.filter(function (k) {
+          if (k === "etapps") return !!counts.etapps;
+          if (k === "standalone") return counts.standalone !== counts.all;
+          if (k === "attention") return !!counts.attention;
+          return true;
+        }),
+      };
+    }).filter(function (g) { return g.keys.length; });
+  }
   function buildFocusControl() {
     var counts = viewCounts();
-    var seg = el("div", "focusseg");
-    seg.setAttribute("role", "group");
-    seg.setAttribute("aria-label", "Views");
-    var defs = [
-      { key: "all", label: "All pucks", title: "The committed board — now/next/later" },
-      { key: "ready", label: "Ready", title: "Unblocked now/next — pick one up or hand it to an agent" },
-      { key: "inbox", label: "Inbox", title: "Raw ideas to triage — nothing here is a promise yet" },
-    ];
-    if (counts.attention) defs.push({ key: "attention", label: "Needs attention", title: "Pucks whose declared status disagrees with reality" });
     // A view reads as active only when we're not inside a place — otherwise the
     // sidebar would highlight both "All pucks" and the repo you navigated into.
     var inPlace = placeActive();
-    defs.forEach(function (d) {
-      var on = state.focus === d.key && !inPlace;
-      var b = el("button", "focusbtn focus-" + d.key + (on ? " on" : ""));
-      b.type = "button";
-      b.title = d.title;
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-      b.appendChild(el("span", "focus-label", d.label));
-      if (counts[d.key]) b.appendChild(el("span", "focus-n", String(counts[d.key])));
-      b.addEventListener("click", function () { goToView(d.key); });
-      seg.appendChild(b);
-    });
     var host = document.getElementById("sideViews") || document.getElementById("filters");
-    host.appendChild(seg);
+    viewsShown(counts).forEach(function (g) {
+      if (g.label) host.appendChild(el("div", "side-eyebrow", g.label));
+      var seg = el("div", "focusseg");
+      seg.setAttribute("role", "group");
+      seg.setAttribute("aria-label", g.label || "Inbox");
+      g.keys.forEach(function (key) {
+        var d = VIEW_DEFS[key];
+        var on = state.focus === key && !inPlace;
+        var b = el("button", "focusbtn focus-" + key + (on ? " on" : ""));
+        b.type = "button";
+        b.title = d.title;
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+        if (d.icon) b.appendChild(icon(d.icon, "focus-icn"));
+        b.appendChild(el("span", "focus-label", d.label));
+        if (counts[key]) b.appendChild(el("span", "focus-n", String(counts[key])));
+        b.addEventListener("click", function () { goToView(key); });
+        seg.appendChild(b);
+      });
+      host.appendChild(seg);
+    });
   }
   // Switch the active view (used by the ⌘K palette). Same as a sidebar view click:
   // clears any place so the view is global.
   function setFocus(key) { goToView(key); }
+
+  // ── the view switcher: the title is the control ─────────────────────────────
+  // Saving a view happened in the Display menu (top right) and the result appeared
+  // in the sidebar (far left, behind a drawer on a phone) — two corners for one
+  // action and its result, and the code admitted it: the save hint had to say "and
+  // shows in the sidebar". Both now live behind the title, which is already the
+  // name of the current view on every width. Switching is one tap instead of
+  // opening a drawer.
+  //
+  // The rows come from viewsShown(), the same call the sidebar makes, so the two
+  // lists cannot disagree about which views exist — the drift that produced a
+  // palette without Etapps, and "All pucks 31 / Standalone 31".
+  function buildViewSwitch() {
+    ["viewTitleBtn", "topTitleBtn"].forEach(function (id) {
+      var btn = document.getElementById(id);
+      if (!btn) return;
+      var wrap = btn.parentNode;
+      var open = null;
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (open) { open.close(); return; }
+        btn.setAttribute("aria-expanded", "true");
+        open = openSurface({
+          title: "Views",
+          anchorWrap: wrap,
+          cls: "pick-menu view-menu",
+          onClose: function () { open = null; btn.setAttribute("aria-expanded", "false"); },
+          build: function (host, api) {
+            var counts = viewCounts(), inPlace = placeActive();
+            viewsShown(counts).forEach(function (g, gi) {
+              if (gi) host.appendChild(el("div", "menu-rule"));
+              g.keys.forEach(function (key) {
+                var on = state.focus === key && !inPlace;
+                var r = el("button", "row" + (on ? " on" : ""));
+                r.type = "button";
+                r.title = VIEW_DEFS[key].title;
+                if (VIEW_DEFS[key].icon) r.appendChild(icon(VIEW_DEFS[key].icon, "focus-icn"));
+                r.appendChild(el("span", "focus-label", VIEW_DEFS[key].label));
+                if (counts[key]) r.appendChild(el("span", "focus-n", String(counts[key])));
+                if (on) r.appendChild(icon("check", "pick-check"));
+                r.addEventListener("click", function () { api.close(); goToView(key); });
+                host.appendChild(r);
+              });
+            });
+            var saved = savedViews();
+            if (saved.length) {
+              host.appendChild(el("div", "menu-rule"));
+              host.appendChild(el("div", "vs-section fp-label", "Saved"));
+              var now = viewParamObject();
+              saved.forEach(function (v) {
+                var on = sameParams(paramsOf(v), now);
+                var r = el("button", "row" + (on ? " on" : ""));
+                r.type = "button";
+                r.title = v.q || "Saved view";
+                r.appendChild(el("span", "focus-label", v.name));
+                if (on) r.appendChild(icon("check", "pick-check"));
+                r.addEventListener("click", function () { api.close(); applySavedView(v); });
+                host.appendChild(r);
+              });
+            }
+            if (ghToken()) {
+              host.appendChild(el("div", "menu-rule"));
+              var save = el("button", "row vs-save", "Save this view…");
+              save.type = "button";
+              save.addEventListener("click", function () {
+                api.close();
+                // After the dispatch that closed us: saveCurrentView opens a surface
+                // of its own, and anchoring it inside one that is still unwinding
+                // would attach it to a detached node.
+                setTimeout(function () { saveCurrentView(wrap); }, 0);
+              });
+              host.appendChild(save);
+            }
+          },
+        });
+      });
+    });
+  }
+  buildViewSwitch();
 
   // ── theme ──
   var root = document.documentElement;
@@ -2786,20 +3382,26 @@
   var displayDot = document.getElementById("displayDot");
   function displayDirty() {
     for (var k in DISPLAY_DEFAULTS) if (state[k] !== DISPLAY_DEFAULTS[k]) return true;
-    return false;
+    // A folded group is a display change like any other, so the dot has to see it —
+    // otherwise "Reset to default" would change something the dot said was default.
+    return state.view === "list" && state.collapsed.size > 0;
   }
   function refreshDisplayDot() { if (displayDot) displayDot.hidden = !displayDirty(); }
   function setDisplay(key, value, storeAs) {
+    // A fold belongs to the columns it was folded in. Changing the grouping replaces
+    // every column, so carrying the keys over means folding a group nobody touched —
+    // and the "none" bucket is keyed the same (NO_VALUE) under Agent, Target, Etapp
+    // and Priority, so collapsing "Unrouted" would silently collapse "No priority".
+    if (key === "group" && value !== state.group) state.collapsed.clear();
     state[key] = value;
     saveDisplay(storeAs || key, typeof value === "boolean" ? (value ? "1" : "0") : value);
     refreshDisplayDot();
+    // The sidebar's numbers read `state.showDone` now, so a display change can move
+    // them — and which rows exist at all, since a view whose count is zero is not
+    // navigation. Rebuilding for a layout or sort change costs nothing and means the
+    // rule is "a display change refreshes the chrome", not a list of which ones do.
+    refreshNav();
     renderBoard();
-  }
-  function dpRow(labelText, control) {
-    var row = el("div", "dp-row");
-    row.appendChild(el("span", "dp-label", labelText));
-    row.appendChild(control);
-    return row;
   }
   var displaySurface = null;
   function toggleDisplayMenu() {
@@ -2812,82 +3414,148 @@
       anchorWrap: wrap,
       cls: "filter-pop display-pop",
       onClose: function () { displaySurface = null; displayBtn.setAttribute("aria-expanded", "false"); },
-      build: function (pop) {
-    // Layout — a segmented control, because it's one choice among a few, not a
-    // toggle that has to be pressed twice to learn what it does.
-    var seg = el("div", "dp-seg");
-    [["list", "list", "List"], ["board", "grid", "Board"]].forEach(function (o) {
-      var b = el("button", "dp-segbtn" + (state.view === o[0] ? " on" : ""));
-      b.type = "button";
-      b.appendChild(icon(o[1]));
-      b.appendChild(el("span", null, o[2]));
-      b.setAttribute("aria-pressed", state.view === o[0] ? "true" : "false");
-      b.addEventListener("click", function () {
-        setDisplay("view", o[0]);
-        Array.prototype.forEach.call(seg.children, function (c) {
-          var on = c === b;
-          c.classList.toggle("on", on);
-          c.setAttribute("aria-pressed", on ? "true" : "false");
-        });
-      });
-      seg.appendChild(b);
+      build: function (pop) { renderDisplayRoot(pop); },
     });
+  }
+  // The two fields the menu offers — the columns' own field, and the order inside a
+  // group. `usable` keeps a grouping out where the view has already fixed it.
+  var DISPLAY_FIELDS = [
+    { key: "group", label: "Grouping",
+      current: function () { return effectiveGroup(); },
+      options: function () {
+        return Object.keys(GROUPS).filter(groupUsable).map(function (k) {
+          return { value: k, label: GROUPS[k].label };
+        });
+      } },
+    { key: "sort", label: "Ordering",
+      current: function () { return state.sort; },
+      options: function () {
+        return SORTS.map(function (s) { return { value: s, label: SORT_LABEL[s] || s }; });
+      } },
+  ];
+  function displayLabel(f) {
+    var cur = f.current(), hit = null;
+    f.options().forEach(function (o) { if (o.value === cur) hit = o; });
+    return hit ? hit.label : cur;
+  }
+  // Level 1. Level 2 replaces it *in place*, exactly the way the filter panel does
+  // it — that is the point of this rewrite. The two settings used to open a
+  // separate picker surface, which on a phone took this sheet's place and left no
+  // way back: the only exit was to dismiss and start over. One overlay primitive had
+  // grown two ways to reach a sub-list, and only one of them could be reversed.
+  function renderDisplayRoot(pop) {
+    pop.innerHTML = "";
+    var seg = segmented(
+      [["list", "List", "list"], ["board", "Board", "grid"]],
+      state.view,
+      function (v) {
+        setDisplay("view", v);
+        paintWholesale(); // the empty-columns row is board-only
+      });
+    seg.classList.add("dp-seg");
+    [].forEach.call(seg.children, function (c) { c.classList.add("dp-segbtn"); });
     pop.appendChild(seg);
 
-    // Grouping — the columns' field. This is the row that turns one board into an
-    // agent queue, a fleet view or (once `target` exists) a timeline.
-    var groupSel = selectEl("np-select", Object.keys(GROUPS).map(function (k) {
-      return { value: k, label: GROUPS[k].label };
-    }), state.group);
-    groupSel.addEventListener("change", function () { setDisplay("group", groupSel.value); });
-    pop.appendChild(dpRow("Grouping", groupSel));
+    // Grouping (the columns' field — the row that turns one board into an agent
+    // queue or a fleet view) and Ordering ("Manual" is the puck's own `order`; every
+    // other mode deliberately ignores it). Both read the way iOS writes a setting
+    // that has a sub-list: name on the left, the value it currently holds on the
+    // right, and a chevron saying there is somewhere to go.
+    DISPLAY_FIELDS.forEach(function (f) {
+      if (f.options().length < 2) return; // one option is a fact, not a choice
+      var row = el("button", "fp-row dp-row");
+      row.type = "button";
+      // `dp-row`/`dp-label` stay on the markup as hooks, the way `dp-seg` did when
+      // the layout switch became a `.segmented`.
+      row.appendChild(el("span", "dp-label", f.label));
+      row.appendChild(el("span", "fp-cur", displayLabel(f)));
+      row.appendChild(icon("chev-right", "fp-chev"));
+      row.addEventListener("click", function () { renderDisplayValues(pop, f); });
+      pop.appendChild(row);
+    });
 
-    // Ordering — inside a group. "Manual" is `order` from the puck; every other
-    // mode deliberately ignores it.
-    var sortSel = selectEl("np-select", SORTS.map(function (s) {
-      return { value: s, label: SORT_LABEL[s] || s };
-    }), state.sort);
-    sortSel.addEventListener("change", function () { setDisplay("sort", sortSel.value); });
-    pop.appendChild(dpRow("Ordering", sortSel));
-
-    pop.appendChild(el("div", "dp-rule"));
-
-    // Wholesale inclusion — not filters: these say how complete the list is.
-    var doneRow = el("label", "fp-toggle");
-    var doneCb = document.createElement("input"); doneCb.type = "checkbox"; doneCb.checked = state.showDone;
-    doneCb.addEventListener("change", function () { setDisplay("showDone", doneCb.checked, "done"); });
-    doneRow.appendChild(doneCb); doneRow.appendChild(el("span", null, "Show done & cancelled"));
-    pop.appendChild(doneRow);
-
-    var emptyRow = el("label", "fp-toggle");
-    var emptyCb = document.createElement("input"); emptyCb.type = "checkbox"; emptyCb.checked = state.showEmpty;
-    emptyCb.addEventListener("change", function () { setDisplay("showEmpty", emptyCb.checked, "empty"); });
-    emptyRow.appendChild(emptyCb); emptyRow.appendChild(el("span", null, "Show empty columns"));
-    emptyRow.title = "Board only — an empty column is still a drop target. A list never shows empty groups.";
-    pop.appendChild(emptyRow);
-
-    pop.appendChild(el("div", "dp-rule"));
-    // "Save as view" is Linear's "Set default for everyone", git-native: it writes
-    // board.config.json, and repo permissions decide who may.
-    if (ghToken()) {
-      var save = el("button", "dp-reset dp-save", "Save as view…");
-      save.type = "button";
-      save.addEventListener("click", function () { toggleDisplayMenu(); saveCurrentView(); });
-      pop.appendChild(save);
+    // Wholesale inclusion — not filters: these say how complete the list is. Each is
+    // offered only where it can change something, which is the rule this menu was
+    // breaking twice over: the archive toggle can't matter in a view whose statuses
+    // are never terminal (that's what ARCHIVABLE already says), and empty columns
+    // are read by renderColumns alone — renderList drops empty groups unconditionally,
+    // so in list layout the box was checked and inert in *every* view.
+    // Its own container and repainted by the layout toggle above, because one of the
+    // two conditions is the layout: flipping to List while the menu is open has to
+    // take the empty-columns row with it, or the menu shows a control it has just
+    // made inert.
+    var wholeHost = el("div", "dp-wholesale");
+    pop.appendChild(wholeHost);
+    paintWholesale();
+    function paintWholesale() {
+      wholeHost.innerHTML = "";
+      var rows = [];
+      if (ARCHIVABLE[state.focus]) rows.push(["showDone", "done", "Show done & cancelled", null]);
+      if (state.view === "board") {
+        rows.push(["showEmpty", "empty", "Show empty columns", "An empty column is still a drop target."]);
+      }
+      if (!rows.length) return;
+      wholeHost.appendChild(el("div", "dp-rule"));
+      rows.forEach(function (w) {
+        var row = el("label", "fp-toggle");
+        var cb = document.createElement("input");
+        cb.type = "checkbox"; cb.checked = state[w[0]];
+        cb.addEventListener("change", function () { setDisplay(w[0], cb.checked, w[1]); });
+        row.appendChild(cb); row.appendChild(el("span", null, w[2]));
+        if (w[3]) row.title = w[3];
+        wholeHost.appendChild(row);
+      });
     }
-    var reset = el("button", "dp-reset", "Reset to default");
+
+    pop.appendChild(el("div", "dp-rule"));
+    // "Save as view" used to sit here, and the saved view then appeared in the
+    // sidebar — the action in one corner, its result in another. It lives behind
+    // the title now, next to the views it joins. (It is still Linear's "set default
+    // for everyone", git-native: it writes board.config.json and repo permissions
+    // decide who may.)
+    var reset = el("button", "dp-reset");
     reset.type = "button";
+    reset.appendChild(icon("reset"));
+    reset.appendChild(el("span", null, "Reset to default"));
     reset.addEventListener("click", function () {
       for (var k in DISPLAY_DEFAULTS) state[k] = DISPLAY_DEFAULTS[k];
+      state.collapsed.clear();
       saveDisplay("view", state.view); saveDisplay("sort", state.sort); saveDisplay("group", state.group);
       saveDisplay("done", "0"); saveDisplay("empty", "1");
       refreshDisplayDot();
-      renderBoard();
+      // Navigation, inte bara brädet: `viewCounts()` och `placeCounts()` läser
+      // `showDone`, så en reset som släcker arkivet lämnade sidomenyns siffror — och
+      // rader som bara arkivet fyllde — kvar i sitt gamla läge. Samma väg som
+      // `setDisplay` går, av samma skäl.
+      afterEdit();
       toggleDisplayMenu();
     });
     pop.appendChild(reset);
+  }
+  // Level 2: the values, with a way back. Picking one returns to level 1 rather than
+  // closing the menu — a display choice is rarely the only one you came to make, and
+  // the Display menu holds five.
+  function renderDisplayValues(pop, f) {
+    pop.innerHTML = "";
+    var back = el("button", "fp-back");
+    back.type = "button";
+    back.appendChild(icon("chev-left", "fp-chev"));
+    back.appendChild(el("span", null, f.label));
+    back.addEventListener("click", function () { renderDisplayRoot(pop); });
+    pop.appendChild(back);
 
-      },
+    var cur = f.current();
+    f.options().forEach(function (o) {
+      var row = el("button", "row" + (o.value === cur ? " on" : ""));
+      row.type = "button";
+      row.setAttribute("data-value", o.value);
+      row.appendChild(el("span", null, o.label));
+      if (o.value === cur) row.appendChild(icon("check", "pick-check"));
+      row.addEventListener("click", function () {
+        if (o.value !== cur) setDisplay(f.key, o.value);
+        renderDisplayRoot(pop);
+      });
+      pop.appendChild(row);
     });
   }
   if (displayBtn) displayBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleDisplayMenu(); });
@@ -2916,14 +3584,18 @@
   function paletteCommands() {
     var cmds = [], signedIn = !!ghToken(), vc = viewCounts();
     if (signedIn) cmds.push({ __cmd: true, label: "New puck…", hint: "Create", icon: "plus", run: function () { openNewPuckPanel(); } });
-    cmds.push({ __cmd: true, label: "Go to All pucks", hint: "View", icon: "list", run: function () { setFocus("all"); } });
-    cmds.push({ __cmd: true, label: "Go to Ready", hint: "View", icon: "list", run: function () { setFocus("ready"); } });
-    cmds.push({ __cmd: true, label: "Go to Inbox", hint: "View", icon: "list", run: function () { setFocus("inbox"); } });
-    if (vc.attention) cmds.push({ __cmd: true, label: "Go to Needs attention", hint: "View", icon: "list", run: function () { setFocus("attention"); } });
+    // Straight off the sidebar's own definition, in the same order and under the
+    // same conditions — the palette can't fall behind a view the sidebar has.
+    viewsShown(vc).forEach(function (g) {
+      g.keys.forEach(function (key) {
+        cmds.push({ __cmd: true, label: "Go to " + VIEW_DEFS[key].label, hint: "View", icon: "list",
+          run: function () { setFocus(key); } });
+      });
+    });
     // Display options belong in the palette too — the palette is the extensibility
     // surface, so a new display choice never has to become another button.
-    Object.keys(GROUPS).forEach(function (k) {
-      if (k === state.group) return;
+    Object.keys(GROUPS).filter(groupUsable).forEach(function (k) {
+      if (k === effectiveGroup()) return;
       cmds.push({ __cmd: true, label: "Group by " + GROUPS[k].label.toLowerCase(), hint: "Display", icon: "sliders", run: function () { setDisplay("group", k); } });
     });
     cmds.push({ __cmd: true, label: state.view === "list" ? "Layout: board" : "Layout: list", hint: "Display", icon: state.view === "list" ? "grid" : "list", run: function () { setDisplay("view", state.view === "list" ? "board" : "list"); } });
@@ -2982,7 +3654,7 @@
       return;
     }
     suggestItems.forEach(function (it, idx) {
-      var li = el("li", "suggest-item" + (it.__tag ? " suggest-tag" : "") + (it.__create ? " suggest-create" : "") + (it.__cmd ? " suggest-cmd" : ""));
+      var li = el("li", "row suggest-item" + (it.__tag ? " suggest-tag" : "") + (it.__create ? " suggest-create" : "") + (it.__cmd ? " suggest-cmd" : ""));
       li.setAttribute("role", "option");
       li.setAttribute("aria-selected", idx === suggestIndex ? "true" : "false");
       if (it.__cmd) {
@@ -3192,17 +3864,23 @@
     // "G <letter>" view jumps.
     if (gPending) {
       var jumped = true;
-      if (k === "a") setFocus("all");
-      else if (k === "r") setFocus("ready");
-      else if (k === "i") setFocus("inbox");
-      else if (k === "t") setFocus("attention");
+      // Samma tillgänglighetsvillkor som sidomenyn, titelväxlaren och paletten:
+      // en vy som inte finns i någon av dem ska inte nås av en genväg heller.
+      var open = {};
+      viewsShown(viewCounts()).forEach(function (g) { g.keys.forEach(function (x) { open[x] = 1; }); });
+      var want = { a: "all", r: "ready", i: "inbox", e: "etapps", s: "standalone", t: "attention" }[k];
+      if (want && open[want]) setFocus(want);
       else jumped = false;
       clearG();
       if (jumped) { e.preventDefault(); return; }
     }
 
-    // Field shortcuts only make sense with a puck open.
-    if (detailOpen()) {
+    // Field shortcuts only make sense with a puck open — and only when no surface
+    // is up. Otherwise S/P/A/L stacks a second sheet on the first, and one Escape
+    // takes them both (a capture listener does not stop its siblings on document).
+    // The layers above a surface keep their keys: "?" and the palette are meant to
+    // open on top of one, which is why this sits here and not in the guard above.
+    if (detailOpen() && !openSurfaces.length) {
       if (k === "s") { if (triggerField("status")) e.preventDefault(); return; }
       if (k === "p") { if (triggerField("priority")) e.preventDefault(); return; }
       if (k === "a") { if (triggerField("agent")) e.preventDefault(); return; }
@@ -3224,6 +3902,7 @@
     { keys: ["G", "then", "A"], desc: "Go to All pucks" },
     { keys: ["G", "then", "R"], desc: "Go to Ready" },
     { keys: ["G", "then", "I"], desc: "Go to Inbox" },
+    { keys: ["G", "then", "E"], desc: "Go to Etapps" },
     { keys: ["G", "then", "T"], desc: "Go to Needs attention" },
     { keys: ["S"], desc: "Set status (open puck)" },
     { keys: ["P"], desc: "Set priority (open puck)" },
@@ -3423,11 +4102,37 @@
           { value: "stale", label: "Stale" },
           { value: "adapted", label: "Adapted source" },
           { value: "etapp", label: "Is an etapp" },
-          { value: "orphan", label: "Outside every etapp" },
+          { value: "member", label: "In an etapp" },
+          { value: "standalone", label: "In no etapp" },
         ];
       },
     },
   ];
+  // Can this value match anything at all in this view? One that can't is a trap: it
+  // commits, the board empties, and nothing says why. In Inbox that was every status
+  // but `inbox`, plus `is:ready` and `is:done`. The Etapp field already followed this
+  // rule inside its own `values()` — this makes it the panel's rule instead of one
+  // field's.
+  //
+  // Judged against the *view*, never against the filters already set, so ticking one
+  // box never makes other values vanish from under your hand. (`countFor` answers a
+  // different question — how many pucks the click would leave — and models the
+  // toggle, so it stays non-zero for a value that matches nothing.) An active value
+  // always survives, or there would be no way to un-tick it.
+  function valueReachable(field, value) {
+    var probe = viewTerms();
+    probe.push(field === "is"
+      ? { field: "is", op: "is", values: [value], neg: false }
+      : { field: field, op: "in", values: [value], neg: false });
+    for (var i = 0; i < DATA.items.length; i++) if (runQuery(DATA.items[i], probe)) return true;
+    return false;
+  }
+  function reachableValues(f) {
+    var active = filterValues(f.key, false).concat(filterValues(f.key, true));
+    return f.values().filter(function (v) {
+      return active.indexOf(v.value) !== -1 || valueReachable(f.key, v.value);
+    });
+  }
   function fieldByKey(k) {
     for (var i = 0; i < FILTER_FIELDS.length; i++) if (FILTER_FIELDS[i].key === k) return FILTER_FIELDS[i];
     return null;
@@ -3479,12 +4184,13 @@
     pop.innerHTML = "";
     pop.appendChild(el("div", "fp-label", "Add filter"));
     FILTER_FIELDS.forEach(function (f) {
+      if (!reachableValues(f).length) return; // nothing here could change this view
       var row = el("button", "fp-row");
       row.type = "button";
       row.appendChild(el("span", null, f.label));
       var on = filterValues(f.key, false).length;
       if (on) row.appendChild(el("span", "fp-n", String(on)));
-      row.appendChild(el("span", "fp-chev", "›"));
+      row.appendChild(icon("chev-right", "fp-chev"));
       row.addEventListener("click", function () { renderValueList(pop, f); });
       pop.appendChild(row);
     });
@@ -3493,12 +4199,12 @@
     pop.innerHTML = "";
     var back = el("button", "fp-back");
     back.type = "button";
-    back.appendChild(el("span", "fp-chev", "‹"));
+    back.appendChild(icon("chev-left", "fp-chev"));
     back.appendChild(el("span", null, f.label));
     back.addEventListener("click", function () { renderFieldList(pop); });
     pop.appendChild(back);
 
-    var all = f.values();
+    var all = reachableValues(f);
     var box = el("div", "fp-values");
     var searchBox = null;
     if (f.search && all.length > 8) {
@@ -3553,15 +4259,14 @@
   }
   function paramsOf(v) {
     var o = {};
-    ["view", "q", "group", "layout", "sort", "done", "empty"].forEach(function (k) {
+    VIEW_KEYS.forEach(function (k) {
       if (v[k] != null && v[k] !== "") o[k] = String(v[k]);
     });
     return o;
   }
   function sameParams(a, b) {
-    var keys = ["view", "q", "group", "layout", "sort", "done", "empty"];
-    for (var i = 0; i < keys.length; i++) {
-      if ((a[keys[i]] || "") !== (b[keys[i]] || "")) return false;
+    for (var i = 0; i < VIEW_KEYS.length; i++) {
+      if ((a[VIEW_KEYS[i]] || "") !== (b[VIEW_KEYS[i]] || "")) return false;
     }
     return true;
   }
@@ -3643,7 +4348,7 @@
     inputSurface(wrap || null, {
       title: "Save view",
       placeholder: "Name this view",
-      hint: "Goes in board.config.json and shows in the sidebar.",
+      hint: "Saved to board.config.json as a commit — it joins the list behind the title.",
       action: "Save",
       onSave: function (name) {
         name = String(name).trim();
@@ -3668,16 +4373,13 @@
   var chipRow = document.getElementById("chipRow");
   function chipsData() {
     var out = [];
-    if (state.repos.size) {
-      var repos = [];
-      state.repos.forEach(function (r) { repos.push(repoNameOf(r)); });
-      out.push({ label: "Repo: " + repos.join(", "), place: true, remove: function () { state.repos.clear(); } });
-    }
-    if (state.agents.size) {
-      var ags = [];
-      state.agents.forEach(function (a) { ags.push(agentLabel(a)); });
-      out.push({ label: "Agent: " + ags.join(", "), place: true, remove: function () { state.agents.clear(); } });
-    }
+    // Places are deliberately absent. A repo or a discipline queue is somewhere you
+    // *navigated to*, not a predicate you added: the sidebar marks the row you are on
+    // and the title says its name, so a third statement of the same fact — worded as
+    // `Repo: PIA ×`, in the row that lists what you have narrowed — read as a filter
+    // you had accidentally left on. The way out of a place is the way in: the sidebar
+    // row, or the title switcher's All pucks. (`Clear all` still releases them, since
+    // that one means "put everything back".)
     var terms = parseQuery(state.query);
     terms.forEach(function (t, i) {
       var f = fieldByKey(t.field);
@@ -3708,15 +4410,12 @@
     chipRow.hidden = !chips.length;
     if (!chips.length) return;
     chips.forEach(function (c) {
-      var chip = el("span", "fchip" + (c.place ? " place" : ""));
+      var chip = el("span", "fchip");
       chip.appendChild(el("span", "fchip-label", c.label));
       var x = el("button", "fchip-x", "✕");
       x.type = "button";
       x.setAttribute("aria-label", "Remove filter " + c.label);
-      x.addEventListener("click", function () {
-        c.remove();
-        if (c.place) { refreshNav(); renderBoard(); } // a place also owns the sidebar
-      });
+      x.addEventListener("click", function () { c.remove(); });
       chip.appendChild(x);
       chipRow.appendChild(chip);
     });
@@ -3756,6 +4455,9 @@
   }
   var brandMark = document.getElementById("brandMark");
   if (brandMark) brandMark.appendChild(icon("merge", "brand-glyph"));
+  // The three disclosure carets were the typographic ▾ in the markup; they are the
+  // set's chevrons now, filled here for the same reason the brand glyph is.
+  [].forEach.call(document.querySelectorAll(".ws-caret, .vs-caret"), fillCaret);
   if (CFG.description) {
     var descMeta = document.querySelector('meta[name="description"]');
     if (descMeta) descMeta.setAttribute("content", CFG.description);
@@ -3968,7 +4670,11 @@
       label = keyField + " " + (value == null ? "cleared" : value);
     }
     item.order = order; item.updated = today();
-    renderBoard();
+    // A drop between status columns is a status change that happens to also carry a
+    // rank, so it owes the same derivation the picker's path does — the etapp's
+    // rollup and the puck's own flags. Routing only `changeStatus` left a dragged
+    // etapp with a stale `N/M` and a `rollup-*` warning until the next harvest.
+    afterOrderEdit(item, keyField);
     toast("Saving…");
     commitFields(item, fields, "roadmap: " + item.slug + " " + label)
       .then(function () { toast("✓ Moved — live in ~1 min"); })
@@ -3976,9 +4682,24 @@
         item.order = prevOrder; item.updated = prevU;
         if (keyField) item[keyField] = prevKey;
         noteWriteError(item, err);
-        renderBoard();
+        afterOrderEdit(item, keyField);
         toast("✗ " + err.message, true);
       });
+  }
+
+  // A dropped card only touches the hierarchy when the field it landed in *is* the
+  // status; every other grouping writes its own field and leaves the rollup alone.
+  function afterOrderEdit(item, keyField) {
+    if (keyField === "status") {
+      recountEtapp(item.parentRef);
+      syncRollupSignals(item);
+      // Bägge ändarna, som i changeParent: härledningen uppdaterar etappens objekt,
+      // men bara den puck vi skickar med målas om — och etappen är precis lika
+      // trolig som den öppna sidan när man drar ett av dess barn.
+      afterEdit(item, item.parentRef);
+      return;
+    }
+    afterEdit(item);
   }
 
   // Optimistic: flip in-memory + re-render now, commit in the background, revert on failure.
@@ -3997,6 +4718,23 @@
     return document.body.classList.contains("viewing-puck") &&
       !!currentDetailItem && currentDetailItem.id === item.id;
   }
+  // What every optimistic edit owes the rest of the interface: the board, the
+  // navigation (counts move when a puck changes status or etapp), and the open puck
+  // — whichever end of the edit it happens to be. Written once because each of the
+  // three has been forgotten separately.
+  function afterEdit(/* …items whose page may be open */) {
+    // Navigation first, board second. `buildAgentChips()` prunes a place that has
+    // just been emptied out of `state.agents` — and `state.agents` is part of the
+    // query the board renders. Rendering first therefore drew an empty board for a
+    // scope that was about to be removed, and nothing rendered again afterwards.
+    refreshNav();
+    renderBoard();
+    for (var i = 0; i < arguments.length; i++) {
+      var it = arguments[i];
+      if (typeof it === "string") it = itemById(it);
+      if (it) reopenIfOpen(it);
+    }
+  }
   function reopenIfOpen(item) {
     if (!isOpenPuck(item)) return;
     if (openSurfaces.length) { pendingRefresh = item; return; }
@@ -4014,15 +4752,20 @@
     var prevS = item.status, prevU = item.updated;
     item.status = status; item.updated = today();
     recountEtapp(item.parentRef); // the etapp's rollup follows its pucks
-    renderBoard(); reopenIfOpen(item);
+    syncRollupSignals(item);      // …and its own flag follows its status
+    // refreshNav too: moving a puck between active and terminal changes what a repo
+    // chip, an agent queue and every view row count. Without it the sidebar kept
+    // counting a puck that clicking it no longer shows, until unrelated navigation.
+    afterEdit(item);
     toast("Saving…");
     commitStatus(item, status)
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
         item.status = prevS; item.updated = prevU;
         recountEtapp(item.parentRef);
+        syncRollupSignals(item);
         noteWriteError(item, err);
-        renderBoard(); reopenIfOpen(item);
+        afterEdit(item);
         toast("✗ " + err.message, true);
       });
   }
@@ -4398,6 +5141,27 @@
     p.progress = kids.length
       ? { done: kids.filter(function (k) { return !!TERMINAL[k.status]; }).length, total: kids.length }
       : null;
+    syncRollupSignals(p);
+  }
+  // The rollup pair is a pure function of a puck's own status and its progress, and
+  // the board already maintains both optimistically — so it can be recomputed here
+  // instead of waiting for the next harvest, an hour away. Without it, following a
+  // `rollup-done` warning and marking the etapp done left the warning standing and
+  // the etapp sitting in Needs attention until the harvest caught up.
+  //
+  // The rule is stated twice (here and in harvest.mjs), which is the same trade
+  // `relink`/`recountEtapp` already make for `children`/`progress`: an optimistic
+  // edit has to derive what the harvester derives, or the board contradicts itself
+  // between an edit and the next sync.
+  function syncRollupSignals(item) {
+    if (!item) return;
+    var out = (item.signals || []).filter(function (s) { return s.type.indexOf("rollup-") !== 0; });
+    if (item.progress && item.progress.total) {
+      var closed = item.progress.done === item.progress.total;
+      if (TERMINAL[item.status] && !closed) out.push({ type: "rollup-open" });
+      if (!TERMINAL[item.status] && closed) out.push({ type: "rollup-done" });
+    }
+    item.signals = out;
   }
   // Move a puck between etapps locally (the same derivation the harvester does).
   function relink(item, parentId, raw) {
@@ -4565,7 +5329,10 @@
     var prevRef = item.parentRef, prevRaw = item.parent, prevU = item.updated;
     relink(item, parentId, raw);
     item.updated = today();
-    renderBoard(); reopenIfOpen(item);
+    // Both ends changed, and the etapp is as likely to be the page you're on: adding
+    // from `＋ Add puck` writes the *child*, so refreshing only that left the
+    // Contains list and its rollup stale on the etapp you were looking at.
+    afterEdit(item, prevRef, parentId);
     toast("Saving…");
     commitParent(item, raw)
       .then(function () { toast(raw ? "✓ In etapp " + target.title + " — live in ~1 min" : "✓ Out of its etapp — live in ~1 min"); })
@@ -4573,13 +5340,65 @@
         relink(item, prevRef, prevRaw);
         item.updated = prevU;
         noteWriteError(item, err);
-        renderBoard(); reopenIfOpen(item);
+        afterEdit(item, prevRef, parentId);
         toast("✗ " + err.message, true);
       });
   }
   // Which pucks could be this one's etapp: anything but itself and its own
   // descendants (that would close a loop). Excluded up front, so the loop refusal
   // in changeParent() is a backstop rather than something you meet by clicking.
+  // A member of an etapp, as a row: the status it is in, its title, and its own
+  // rollup when it is an etapp too.
+  function memberRow(k) {
+    var r = el("button", "row member" + (TERMINAL[k.status] ? " done" : ""));
+    r.type = "button";
+    var t = el("span", "member-title", k.title);
+    r.appendChild(t);
+    if (k.progress) r.appendChild(progressBadge(k));
+    if (k.target) r.appendChild(targetEl(k.target, "member-date"));
+    // The status pill, not a coloured dot: Now, Next and Later differed by hue
+    // alone, and the row's `title` is a hover tooltip — nothing a colour-blind
+    // reader on a touch screen can reach.
+    //
+    // Last in the row, at natural width. Leading it took a fixed width to keep the
+    // titles in a column, and a fixed width is wrong for a word: the labels run
+    // from 49px (Now) to 87px (Cancelled), and 62px clipped Inbox. Trailing, the
+    // titles align on the left edge — better than any prefix column managed — and
+    // the pill sits where the eye already goes for state.
+    r.appendChild(el("span", "status-pill status-" + k.status, STATUS_LABEL[k.status] || k.status));
+    r.title = STATUS_LABEL[k.status] || k.status;
+    r.addEventListener("click", function () { openModal(k); });
+    return r;
+  }
+
+  // The relation is authored on the *child* (`parent:`), so adding from here is
+  // the same single-field write with the arguments swapped — no second direction
+  // in the data, just one in the interface.
+  // Who could join this etapp: a native puck that isn't already in it, isn't itself,
+  // and wouldn't close a loop — and whose *own* file we can write, because that is
+  // the file this writes. One predicate, asked twice: once to decide whether to
+  // offer the control at all, once to fill it.
+  function memberCandidate(item, other) {
+    return other !== item && other.parentRef !== item.id && other.native &&
+      canWrite(other) && !wouldLoop(other, item.id);
+  }
+  function canAddMember(item) {
+    if (!ghToken()) return false;
+    for (var i = 0; i < DATA.items.length; i++) {
+      if (memberCandidate(item, DATA.items[i])) return true;
+    }
+    return false;
+  }
+  function addPuckPicker(item) {
+    return puckPicker("\uff0b  Add puck", {
+      title: "Add a puck to " + item.title,
+      current: null,
+      repo: item.repo,
+      exclude: function (other) { return !memberCandidate(item, other); },
+      onPick: function (chosen) { if (chosen) changeParent(chosen, item.id); },
+    });
+  }
+
   function etappCandidates(item) {
     return function (other) { return other === item || wouldLoop(item, other.id); };
   }
@@ -4718,10 +5537,16 @@
     toast("Deleting…");
     commitDelete(item)
       .then(function () {
+        // Ur etappen först, sen ur listan: annars stod föräldern kvar med ett barn
+        // som inte finns, fel `progress` och en `rollup-open`-varning om delar som
+        // inte längre är öppna — ända till nästa skörd.
+        var parent = item.parentRef;
+        relink(item, null, null);
         var i = DATA.items.indexOf(item);
         if (i >= 0) DATA.items.splice(i, 1);
+        if (parent) { recountEtapp(parent); syncRollupSignals(itemById(parent)); }
         closeModal();
-        renderBoard();
+        afterEdit(parent);
         toast("✓ Deleted — live after next sync");
       })
       .catch(function (err) { noteWriteError(item, err); toast("✗ " + (err && err.message || "delete failed"), true); });
@@ -4791,10 +5616,22 @@
 
   // slugify — a byte-for-byte copy of scripts/lib/adapters.mjs so a GUI-created
   // puck lands at the same path the harvester derives from the title.
-  function slugify(s) {
+  // The slug transform, and the filename guarantee, as two things.
+  //
+  // `slugify` ends in `|| "item"` so a puck titled "???" still gets a filename —
+  // right for a filename, wrong for a query, where empty has to stay empty. The
+  // labels box normalised its search text with slugify() and so searched for "item"
+  // the moment the field was empty: `Create #item` was offered before a key was
+  // pressed, all 81 real labels were filtered away (none contains "item"), and
+  // Enter on an empty field would have added the label `#item`.
+  //
+  // Callers that need a filename take `slugify`; callers that need "what was typed,
+  // normalised" take `slugChars` and decide for themselves what empty means.
+  function slugChars(s) {
     return s.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "item";
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
   }
+  function slugify(s) { return slugChars(s) || "item"; }
 
   // The new-puck file body — mirrors `roadmap new` in scripts/roadmap.mjs.
   // New-puck body skeleton: a spiked-but-driftable structure. Config-driven via
@@ -4957,7 +5794,7 @@
     var menu = el("div", "ws-menu user-menu");
     menu.setAttribute("role", "menu");
     function settingsItem() {
-      var s = el("button", "user-mi", "Settings");
+      var s = el("button", "row user-mi", "Settings");
       s.type = "button";
       s.addEventListener("click", function () { menu.remove(); openSettingsPanel(); });
       return s;
@@ -4983,17 +5820,17 @@
           } else { name.textContent = "token invalid"; head.classList.add("bad"); }
         })
         .catch(function () { name.textContent = "signed in"; });
-      var change = el("button", "user-mi", "Change token");
+      var change = el("button", "row user-mi", "Change token");
       change.type = "button";
       change.addEventListener("click", function () { menu.remove(); openTokenPanel(afterAuth); });
-      var out = el("button", "user-mi danger", "Sign out");
+      var out = el("button", "row user-mi danger", "Sign out");
       out.type = "button";
       out.addEventListener("click", function () { menu.remove(); setGhToken(""); afterAuth(); });
       menu.appendChild(change);
       menu.appendChild(out);
     } else {
       menu.appendChild(settingsItem());
-      var signin = el("button", "user-mi", "Sign in to edit");
+      var signin = el("button", "row user-mi", "Sign in to edit");
       signin.type = "button";
       signin.addEventListener("click", function () { menu.remove(); openTokenPanel(afterAuth); });
       menu.appendChild(signin);
@@ -5011,12 +5848,6 @@
     var d = el("div", "np-field");
     var l = el("label", null, labelText); d.appendChild(l); d.appendChild(control);
     return d;
-  }
-  function selectEl(cls, opts, value) {
-    var s = document.createElement("select"); s.className = cls;
-    opts.forEach(function (o) { var e = document.createElement("option"); e.value = o.value; e.textContent = o.label; s.appendChild(e); });
-    if (value != null) s.value = value;
-    return s;
   }
   // One capture flow for New *and* ⌘K: Title + Repo (+ optional context). Repo is
   // permanent (the file lives there, can't move later), so it's always shown —
@@ -5054,6 +5885,11 @@
     }
     function onEsc(e) {
       if (e.key !== "Escape" || cmdkVisible() || helpOpen()) return;
+      // A surface opened *from inside* the panel — the Repo picker in New puck — is a
+      // layer above it and owns the press. Without this the panel's capture listener
+      // ran first and the surface never saw the key: one press closed the whole form
+      // and left the picker orphaned over a panel that no longer existed.
+      if (openSurfaces.length) return;
       // Immediate: this layer owns the press outright. Plain stopPropagation leaves
       // any other listener on document — a surface's, the puck's — free to act on
       // the same key.
@@ -5074,17 +5910,31 @@
     var p = el("div", "token-panel");
     p.appendChild(el("h3", "token-title", "New puck"));
     var defRepo = preset.repo || defaultCaptureRepo() || (DATA.sources[0] && DATA.sources[0].repo);
-    var proj = selectEl("np-select", DATA.sources.map(function (s) { return { value: s.repo, label: s.name }; }), defRepo);
+    // The last native <select> in the app. Same reason as the Display menu's two: on
+    // iOS it draws the system wheel, and a focused native field drags the 16px zoom
+    // floor along with it. The value lives in a variable now instead of in the DOM.
+    var repo = defRepo;
+    var projHost = el("div", "prop-pick-host");
+    function paintProj() {
+      projHost.innerHTML = "";
+      projHost.appendChild(propPicker({
+        title: "Repo", editable: true, boxed: true, current: repo,
+        options: DATA.sources.map(function (s) { return { value: s.repo, label: s.name }; }),
+        valueNode: function (o) { return el("span", null, o.label); },
+        onPick: function (v) { repo = v; paintProj(); updatePreview(); },
+      }));
+    }
     var title = el("input", "token-input"); title.type = "text"; title.placeholder = "Title"; title.autocomplete = "off";
     if (preset.title) title.value = preset.title;
     var ctx = el("textarea", "token-input np-context"); ctx.placeholder = "Context (optional) — a line more than the title"; ctx.rows = 2;
     var preview = el("div", "np-preview", "");
     function updatePreview() {
-      var m = sourceMeta(proj.value);
+      var m = sourceMeta(repo);
       preview.textContent = title.value.trim() ? "→ " + m.dir + "/" + slugify(title.value) + ".md" : "";
     }
-    title.addEventListener("input", updatePreview); proj.addEventListener("change", updatePreview);
-    p.appendChild(field("Repo", proj));
+    title.addEventListener("input", updatePreview);
+    paintProj();
+    p.appendChild(field("Repo", projHost));
     p.appendChild(field("Title", title));
     p.appendChild(preview);
     p.appendChild(field("Context", ctx));
@@ -5096,7 +5946,7 @@
       var t = title.value.trim();
       if (!t) { title.focus(); return; }
       close();
-      createPuck(proj.value, t, preset.status || "inbox", [], null, ctx.value.trim());
+      createPuck(repo, t, preset.status || "inbox", [], null, ctx.value.trim());
     });
     cancel.addEventListener("click", close);
     actions.appendChild(create); actions.appendChild(cancel);
@@ -5159,20 +6009,16 @@
   function themeControl() {
     var wrap = el("div", "np-field");
     wrap.appendChild(el("label", null, "Theme"));
-    var seg = el("div", "set-seg");
     var cur = root.getAttribute("data-theme") || "auto";
-    [["light", "Light"], ["dark", "Dark"], ["auto", "Auto"]].forEach(function (o) {
-      var b = el("button", "set-seg-btn" + (cur === o[0] ? " on" : ""), o[1]);
-      b.type = "button";
-      b.addEventListener("click", function () {
-        if (o[0] === "auto") { root.removeAttribute("data-theme"); try { localStorage.removeItem("roadmap-theme"); } catch (e) {} }
-        else { root.setAttribute("data-theme", o[0]); try { localStorage.setItem("roadmap-theme", o[0]); } catch (e) {} }
+    var seg = segmented(
+      [["light", "Light"], ["dark", "Dark"], ["auto", "Auto"]],
+      cur,
+      function (v) {
+        if (v === "auto") { root.removeAttribute("data-theme"); try { localStorage.removeItem("roadmap-theme"); } catch (e) {} }
+        else { root.setAttribute("data-theme", v); try { localStorage.setItem("roadmap-theme", v); } catch (e) {} }
         applyThemeColor(); updateThemeButton();
-        seg.querySelectorAll(".set-seg-btn").forEach(function (x) { x.classList.remove("on"); });
-        b.classList.add("on");
       });
-      seg.appendChild(b);
-    });
+    seg.classList.add("set-seg");
     wrap.appendChild(seg);
     return wrap;
   }

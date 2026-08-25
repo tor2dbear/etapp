@@ -85,6 +85,16 @@ function computeSignals(item, nowMs, cycles, depCycles) {
   if (depCycles.has(item)) out.push({ type: "dependency-cycle" });
   if (item.issueState === "closed" && !TERMINAL.has(item.status)) out.push({ type: "issue-closed" });
   if (item.issueState === "open" && item.status === "done") out.push({ type: "issue-open" });
+  // An etapp's own status and its parts can disagree, exactly the way a puck and
+  // its linked issue can — so the same pair of flags, for the same reason. Found by
+  // dog-fooding: `productize` sat at done with 2 of 3 parts landed and the board
+  // said nothing, because nothing was ever asked to compare the two.
+  // Computed after resolveHierarchy(), which is where `progress` is derived.
+  if (item.progress && item.progress.total) {
+    const closed = item.progress.done === item.progress.total;
+    if (TERMINAL.has(item.status) && !closed) out.push({ type: "rollup-open" });
+    if (!TERMINAL.has(item.status) && closed) out.push({ type: "rollup-done" });
+  }
   // The horizon has passed and the puck hasn't landed. Same shape as the others —
   // a flag for a human to resolve, never a rewrite of the source.
   if (item.target && !TERMINAL.has(item.status)) {
@@ -410,6 +420,8 @@ function renderDigest(payload) {
     : s.type === "parent-cycle" ? `parent "${it.parent}" closes a loop`
     : s.type === "depends-missing" ? `depends on ${it.missingDepends.map((d) => `"${d}"`).join(", ")}, which doesn't exist`
     : s.type === "dependency-cycle" ? "in a dependency loop"
+    : s.type === "rollup-open" ? `${it.progress.total - it.progress.done} of ${it.progress.total} parts still open`
+    : s.type === "rollup-done" ? "every part is done"
     : s.type;
   const flagged = payload.items.filter((it) => (it.signals || []).length);
   if (flagged.length) {
