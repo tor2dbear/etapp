@@ -760,6 +760,12 @@
     sidebar: ["M3.125 1.875h8.75s1.25 0 1.25 1.25v8.75s0 1.25 -1.25 1.25H3.125s-1.25 0 -1.25 -1.25V3.125s0 -1.25 1.25 -1.25", "m5.625 1.875 0 11.25"],
     search: ["M1.875 6.875a5 5 0 1 0 10 0 5 5 0 1 0 -10 0", "m13.125 13.125 -2.71875 -2.71875"],
     plus: ["m7.5 3.125 0 8.75", "m3.125 7.5 8.75 0"],
+    // x (Feather), scaled to the same 15 grid. Every remove/close affordance drew the
+    // literal "✕" (U+2715) — the same defect as `warn`: a character takes its weight,
+    // its optical size and its baseline from whatever font the platform falls back to,
+    // so the mark that dismisses a modal and the mark that drops a filter chip were two
+    // different pictures at two different weights, neither matching `plus` beside them.
+    x: ["M11.25 3.75 3.75 11.25", "m3.75 3.75 7.5 7.5"],
     filter: ["M13.75 1.875 1.25 1.875l5 5.9125000000000005L6.25 11.875l2.5 1.25 0 -5.3374999999999995L13.75 1.875z"],
     edit: ["M6.875 2.5H2.5a1.25 1.25 0 0 0 -1.25 1.25v8.75a1.25 1.25 0 0 0 1.25 1.25h8.75a1.25 1.25 0 0 0 1.25 -1.25v-4.375", "M11.5625 1.5625a1.325625 1.325625 0 0 1 1.875 1.875L7.5 9.375l-2.5 0.625 0.625 -2.5 5.9375 -5.9375z"],
     // git-commit — a puck is a commit-like unit in git (our "project" glyph)
@@ -1115,7 +1121,8 @@
     modalPanel = panel;
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-modal", "true");
-    var close = el("button", "modal-close", "✕");
+    var close = el("button", "modal-close");
+    close.appendChild(icon("x", "x-icn"));
     close.setAttribute("aria-label", "Close");
     close.addEventListener("click", closeModal);
     modalContent = el("div", "modal-content");
@@ -1931,7 +1938,8 @@
               dot.style.background = t.color || "var(--ink-3)";
               tok.appendChild(dot);
               tok.appendChild(el("span", "token-label", t.label));
-              var x = el("button", "token-x", "\u2715");
+              var x = el("button", "token-x");
+              x.appendChild(icon("x", "x-icn"));
               x.type = "button";
               x.setAttribute("aria-label", "Remove " + t.label);
               x.addEventListener("click", function () { api.close(); t.onRemove(); });
@@ -1997,7 +2005,9 @@
     return openSurface({
       title: opts.title,
       anchorWrap: anchorWrap,
-      cls: "inputpop",
+      // A caller that anchors at the right edge of its row has to say so — see
+      // `.pop.menu-right`, which is the mirror that keeps the menu on-page.
+      cls: "inputpop" + (opts.cls ? " " + opts.cls : ""),
       help: opts.help,
       onClose: opts.onClose,
       build: function (host, api) {
@@ -2171,7 +2181,8 @@
             chosen.forEach(function (t) {
               var tok = el("span", "token");
               tok.appendChild(el("span", null, "#" + t));
-              var x = el("button", "token-x", "\u2715");
+              var x = el("button", "token-x");
+              x.appendChild(icon("x", "x-icn"));
               x.type = "button";
               x.setAttribute("aria-label", "Remove label " + t);
               x.addEventListener("click", function () { toggle(t); });
@@ -3491,6 +3502,17 @@
   // source for both the view header and the detail breadcrumb's back label, so a
   // place-scoped view reads the same whether or not a puck is open.
   function currentViewTitle() {
+    // A saved view first, because it is the most specific true name for where you
+    // are. `activeSavedView()` only answers when the board matches the view
+    // *exactly* — every one of VIEW_KEYS — so its name already covers the whole
+    // tuple: the query, the grouping, the layout, and any place inside it. There is
+    // nothing layered on top to append. Change one thing and the match breaks, and
+    // the composition below takes over again.
+    // Without this the header said "All pucks" while the sidebar lit "High" and the
+    // chip row listed its predicates: three pieces of chrome, two different answers
+    // to "where am I". #17 made the right *row* light; the title never asked.
+    var saved = activeSavedView();
+    if (saved) return saved.name;
     var base = VIEW_TITLES[state.focus] || "All pucks";
     var scope = scopeParts();
     if (!scope.length) return base;
@@ -4139,6 +4161,23 @@
           run: function () { setFocus(key); } });
       });
     });
+    // Saved views are views. The comment above holds for them too: the palette can't
+    // fall behind a view the sidebar has, and a saved view is the only kind that used
+    // to be reachable from exactly one control.
+    savedViews().forEach(function (v) {
+      cmds.push({ __cmd: true, label: "Go to " + v.name, hint: "Saved view", icon: "list",
+        run: function () { applySavedView(v); } });
+    });
+    // …and so is making one. The chip row is where you actually finish building a
+    // filter and the title is where the result lands; this is the keyboard's way to
+    // the same call, so ⌘K never has less reach than the chrome.
+    if (signedIn) {
+      cmds.push({ __cmd: true, label: "Save this view…", hint: "Saved view", icon: "plus",
+        // Deferred for the same reason the switcher defers it: this opens a surface of
+        // its own, and the pointer event that picked the command is still unwinding —
+        // its tail would reach the new surface as an outside click and shut it.
+        run: function () { setTimeout(function () { saveCurrentView(null); }, 0); } });
+    }
     // Display options belong in the palette too — the palette is the extensibility
     // surface, so a new display choice never has to become another button.
     Object.keys(GROUPS).filter(groupUsable).forEach(function (k) {
@@ -4470,7 +4509,11 @@
     var card = el("div", "sc-card");
     var head = el("div", "sc-head");
     head.appendChild(el("h2", "sc-title", "Keyboard shortcuts"));
-    var x = el("button", "sc-close", "✕"); x.type = "button";
+    var x = el("button", "sc-close"); x.type = "button";
+    // The "✕" it drew was also its accessible name; a path is aria-hidden, so the
+    // name has to be said out loud now.
+    x.setAttribute("aria-label", "Close");
+    x.appendChild(icon("x", "x-icn"));
     x.addEventListener("click", closeShortcutHelp);
     head.appendChild(x);
     card.appendChild(head);
@@ -4504,6 +4547,7 @@
   }
 
   var searchClear = document.getElementById("searchClear");
+  searchClear.appendChild(icon("x", "x-icn"));
   var cmdkHint = document.getElementById("cmdkHint");
   function updateSearchClear() { searchClear.hidden = !searchInput.value; if (cmdkHint) cmdkHint.hidden = !!searchInput.value; }
 
@@ -4854,7 +4898,8 @@
       b.appendChild(el("span", "focus-label", v.name));
       b.addEventListener("click", function () { applySavedView(v); });
       if (ghToken()) {
-        var del = el("button", "saved-del", "✕");
+        var del = el("button", "saved-del");
+        del.appendChild(icon("x", "x-icn"));
         del.type = "button";
         del.title = "Remove this saved view";
         del.setAttribute("aria-label", "Remove saved view " + v.name);
@@ -4874,7 +4919,13 @@
       .then(function () {
         DATA.config = DATA.config || {};
         DATA.config.views = views; // optimistic: the harvest will confirm it
-        buildSavedViews();
+        // The same repaint a navigation does, and for the same reason: this write
+        // changes the answer to "which saved view describes the board", which the
+        // header, the built-in view rows and the saved rows all read. Rebuilding
+        // only the saved rows left the other two on the previous answer — the
+        // header naming a view you just deleted, and `All pucks` still lit beside
+        // the view you just saved. One store, one repaint.
+        refreshNav(); renderBoard();
         if (done) done();
         toast("✓ Saved — live in ~1 min");
       })
@@ -4900,10 +4951,11 @@
       })
       .then(function (r) { assertOk(r, errItem); });
   }
-  function saveCurrentView(wrap) {
+  function saveCurrentView(wrap, cls) {
     var params = viewParamObject();
     if (!Object.keys(params).length) { toast("✗ Nothing to save — this is the default board", true); return; }
     inputSurface(wrap || null, {
+      cls: cls,
       title: "Save view",
       placeholder: "Name this view",
       hint: "Saved to board.config.json as a commit — it joins the list behind the title.",
@@ -5001,13 +5053,21 @@
     chips.forEach(function (c) {
       var chip = el("span", "fchip");
       chip.appendChild(el("span", "fchip-label", c.label));
-      var x = el("button", "fchip-x", "✕");
+      var x = el("button", "fchip-x");
+      x.appendChild(icon("x", "x-icn"));
       x.type = "button";
       x.setAttribute("aria-label", "Remove filter " + c.label);
       x.addEventListener("click", function () { c.remove(); });
       chip.appendChild(x);
       chipRow.appendChild(chip);
     });
+    // The row's two actions, right-aligned as a pair. Saving lived only behind the
+    // title, which is the right *home* for it — the saved view appears there — but
+    // it is not where you are standing when you finish building a filter. You are
+    // standing here, looking at the predicates you just assembled, and this is the
+    // one row that exists only because they do. So the door goes where the work is;
+    // the title keeps the list. (Linear puts Clear and Save in exactly this band.)
+    var acts = el("div", "fchip-acts");
     if (chips.length > 1) {
       var clear = el("button", "fchip-clear", "Clear all");
       clear.type = "button";
@@ -5015,8 +5075,25 @@
         setQueryTerms([]); // one store, so "put everything back" is one line
         refreshNav();
       });
-      chipRow.appendChild(clear);
+      acts.appendChild(clear);
     }
+    // Only when a token can commit it: this writes board.config.json, and an
+    // affordance that cannot do its job is worse than an absent one.
+    if (ghToken()) {
+      var wrap = el("div", "filter-wrap"); // the positioned parent the popover anchors in
+      var save = el("button", "fchip-save", "Save view");
+      save.type = "button";
+      save.title = "Save these filters as a named view";
+      save.addEventListener("click", function (e) {
+        e.stopPropagation(); // this row is not a surface; the tail would read as an outside click
+        // The trigger is the last thing on its row, so the menu hangs from its right
+        // edge or it runs off the page.
+        saveCurrentView(wrap, "menu-right");
+      });
+      wrap.appendChild(save);
+      acts.appendChild(wrap);
+    }
+    if (acts.childNodes.length) chipRow.appendChild(acts);
   }
 
   if (filterBtn) filterBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleFilterMenu(); });
@@ -5857,7 +5934,8 @@
         chip.appendChild(el("span", "prop-muted", ref)); // unresolved — the ⚠ says why
       }
       if (editable) {
-        var x = el("button", "dep-x", "✕");
+        var x = el("button", "dep-x");
+        x.appendChild(icon("x", "x-icn"));
         x.type = "button";
         x.setAttribute("aria-label", "Remove blocker " + (d ? d.title : ref));
         x.addEventListener("click", function () { removeDepend(item, ref); });
@@ -6312,7 +6390,16 @@
   function refreshEditControls() {
     newBtns.forEach(function (b) { b.hidden = !ghToken(); });
   }
-  function afterAuth() { writableRepos = null; readOnlyRepos = new Set(); refreshEditControls(); refreshUser(); loadWritableRepos(); }
+  function afterAuth() {
+    writableRepos = null; readOnlyRepos = new Set();
+    refreshEditControls(); refreshUser(); loadWritableRepos();
+    // Chrome that a token *renders* rather than merely checks. Every write path
+    // re-asks `ghToken()` and returns, so nothing corrupt happens — but a control
+    // that only fails when you press it is not gated, it is decorated. These two
+    // are built once rather than on each open, so signing out has to take them
+    // away: the saved views' ✕ (`buildSavedViews`) and the chip row's Save.
+    refreshNav(); renderChips();
+  }
   function buildEditControls() {
     // New: primary create action in the sidebar (desktop) + the mobile topbar
     // (next to search, so it's reachable without opening the menu). Token-gated.
@@ -6712,7 +6799,10 @@
   // Deep link: open the puck named in the URL hash on load, and react to the
   // hash changing (pasted link in the same tab, or Back after opening a modal).
   var detailCloseBtn = document.getElementById("detailClose");
-  if (detailCloseBtn) detailCloseBtn.addEventListener("click", closeModal);
+  if (detailCloseBtn) {
+    detailCloseBtn.appendChild(icon("x", "x-icn"));
+    detailCloseBtn.addEventListener("click", closeModal);
+  }
   var topShareBtn = document.getElementById("topShare");
   if (topShareBtn) topShareBtn.appendChild(icon("share"));
   if (topShareBtn) topShareBtn.addEventListener("click", function () {

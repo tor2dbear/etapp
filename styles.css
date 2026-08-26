@@ -882,6 +882,13 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
 /* Icons are decorative — never let the SVG become the tap target (which can eat
    taps on touch); the click always lands on the button. */
 .icn { width: 16px; height: 16px; display: inline-block; vertical-align: middle; flex: none; pointer-events: none; }
+/* The remove/close mark. The path draws across half its box (7.5 of a 15 grid),
+   so a 14px box puts ~7px of ink on screen — the height the 11px "✕" character it
+   replaced actually had. Overridden only where the button is bigger than the
+   chrome default. */
+.x-icn { width: 14px; height: 14px; }
+.modal-close .x-icn { width: 18px; height: 18px; }
+.shortcut-help .sc-close .x-icn { width: 16px; height: 16px; }
 .icn.inline { width: 13px; height: 13px; vertical-align: -2px; margin-right: 4px; }
 /* icon-only ghost buttons: center the glyph */
 #viewToggle, #theme { display: inline-flex; align-items: center; justify-content: center; }
@@ -1354,9 +1361,14 @@ body.preload * { transition: none !important; }
 
 /* The chip row: one chip per active predicate, under the view header. It is the
    filter's display — which is why the Filter button needs no count of its own. */
+/* Symmetric padding, because this is a band of its own. It had none on top: the
+   air above the chips was the *view header's* bottom padding, borrowed across a
+   1px rule — which is not air this row owns. Every layout that hides or shrinks
+   the header (mobile puts the title in the topbar) left the chips hard against
+   the rule with 10px hanging below them. */
 .chiprow {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-  padding: 0 var(--pad) 10px; border-bottom: 1px solid var(--line);
+  padding: 10px var(--pad); border-bottom: 1px solid var(--line);
 }
 .fchip {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1369,8 +1381,20 @@ body.preload * { transition: none !important; }
   color: var(--ink-3); font-size: var(--fs-sm); line-height: 1;
 }
 .fchip-x:hover { color: var(--ink); }
+/* The row's actions, pinned right. `margin-left: auto` inside the wrapping flex
+   means they sit at the end of the last chip line when there is room and drop to a
+   line of their own — still right — when the chips fill the width. That is the
+   phone case, and it is the shape Linear's filter bar has. */
+.fchip-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .fchip-clear { background: none; border: 0; font-size: var(--fs-base); color: var(--ink-3); cursor: pointer; padding: 0 4px; }
 .fchip-clear:hover { color: var(--ink); text-decoration: underline; }
+/* Bordered against the plain-text Clear beside it: one of these two changes what
+   you are looking at, the other writes a file. They should not read alike. */
+.fchip-save {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-pill);
+  padding: 4px 12px; font-size: var(--fs-base); color: var(--ink); cursor: pointer;
+}
+@media (hover: hover) { .fchip-save:hover { border-color: var(--accent); color: var(--accent); } }
 
 /* Filter panel, two levels: fields, then that field's values. */
 .fp-row, .fp-back {
