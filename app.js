@@ -369,6 +369,17 @@
           terms.push({ field: "is", op: "is", values: [lower(rest)], neg: neg });
           return;
         }
+        // `has:<field>` — does the puck carry this field at all. The one question the
+        // grammar could not ask, and the only way to say "hide the column of pucks
+        // that have no priority": that column's key is the absence of a value, so
+        // there is no `-priority:x` that names it. Listing every real value instead
+        // (`priority:urgent,high,medium,low`) works only for a closed set and goes
+        // quietly wrong for agents and etapps, where a new value would arrive already
+        // hidden. Symmetrical with `is:` — one field per term, negatable.
+        if (name === "has" && FIELDS[FIELD_ALIAS[lower(rest)] || lower(rest)]) {
+          terms.push({ field: "has", op: "is", values: [FIELD_ALIAS[lower(rest)] || lower(rest)], neg: neg });
+          return;
+        }
         if (FIELDS[name] && rest) {
           if (FIELDS[name].dateOf) {
             var m = /^(>=|<=|>|<|=)?(.+)$/.exec(rest);
@@ -390,6 +401,7 @@
       var p = t.neg ? "-" : "";
       if (t.field === "text") return p + quoted(t.values[0]);
       if (t.field === "is") return p + "is:" + t.values[0];
+      if (t.field === "has") return p + "has:" + t.values[0];
       if (t.op !== "in" && t.op !== "=") return p + t.field + ":" + t.op + t.values[0];
       return p + t.field + ":" + t.values.map(quoted).join(",");
     }).join(" ");
@@ -412,6 +424,10 @@
       hit = hay.indexOf(t.values[0]) !== -1;
     } else if (t.field === "is") {
       hit = !!IS_STATES[t.values[0]](item);
+    } else if (t.field === "has") {
+      // A date field carries no `vals()`, so ask it the way it answers.
+      var hf = FIELDS[t.values[0]];
+      hit = hf.dateOf ? !!hf.dateOf(item) : hf.vals(item).filter(Boolean).length > 0;
     } else {
       var f = FIELDS[t.field];
       if (f.dateOf) hit = cmpDate(f.dateOf(item), t.op, t.values[0]);
@@ -502,12 +518,12 @@
   }
   function toggleFilterValue(field, value, neg) {
     var terms = parseQuery(state.query), hit = -1;
-    if (field === "is") {
+    if (field === "is" || field === "has") {
       for (var i = 0; i < terms.length; i++) {
-        if (sameField(terms[i], "is", neg) && terms[i].values[0] === value) { hit = i; break; }
+        if (sameField(terms[i], field, neg) && terms[i].values[0] === value) { hit = i; break; }
       }
       if (hit >= 0) terms.splice(hit, 1);
-      else terms.push({ field: "is", op: "is", values: [value], neg: !!neg });
+      else terms.push({ field: field, op: "is", values: [value], neg: !!neg });
       return setQueryTerms(terms);
     }
     for (var j = 0; j < terms.length; j++) if (sameField(terms[j], field, neg)) { hit = j; break; }
@@ -724,6 +740,21 @@
   var SVGNS = "http://www.w3.org/2000/svg";
   var ICONS = {
     slash: ["M1.25 7.5a6.25 6.25 0 1 0 12.5 0 6.25 6.25 0 1 0 -12.5 0", "m3.08125 3.08125 8.8375 8.8375"],
+    // alert-triangle (Feather), scaled to the 15 grid the set draws on. The set had no
+    // warning mark, so the drift flag was the literal "⚠" — a text character sitting
+    // inches from `slash`, which is a real path from this set. A character takes its
+    // weight, its optical size and its baseline from whatever font the platform falls
+    // back to (U+26A0 is in none of the stack's faces), and on a machine that resolves
+    // it to a colour emoji `color: var(--later)` does nothing at all. Two flags on one
+    // card, drawn by two different systems.
+    warn: ["M6.43125 2.4125 1.1375 11.25a1.25 1.25 0 0 0 1.06875 1.875h10.5875a1.25 1.25 0 0 0 1.06875 -1.875L8.56875 2.4125a1.25 1.25 0 0 0 -2.1375 0z",
+           "m7.5 5.625 0 2.5", "m7.5 10.625 0.00625 0"],
+    // eye / eye-off (Feather) — the column menu's two halves: narrow to this column,
+    // or take it out of the view.
+    eye: ["M0.625 7.5s2.5 -5 6.875 -5 6.875 5 6.875 5 -2.5 5 -6.875 5 -6.875 -5 -6.875 -5z",
+          "M5.625 7.5a1.875 1.875 0 1 0 3.75 0 1.875 1.875 0 1 0 -3.75 0"],
+    "eye-off": ["M11.2125 11.2125A6.29375 6.29375 0 0 1 7.5 12.5c-4.375 0 -6.875 -5 -6.875 -5a11.53125 11.53125 0 0 1 3.1625 -3.7125M6.1875 2.65A5.7 5.7 0 0 1 7.5 2.5c4.375 0 6.875 5 6.875 5a11.5625 11.5625 0 0 1 -1.35 1.99375m-4.2 -0.66875a1.875 1.875 0 1 1 -2.65 -2.65",
+                "m0.625 0.625 13.75 13.75"],
     share: ["M2.5 7.5v5a1.25 1.25 0 0 0 1.25 1.25h7.5a1.25 1.25 0 0 0 1.25 -1.25v-5", "m10 3.75 -2.5 -2.5 -2.5 2.5", "m7.5 1.25 0 8.125"],
     sidebar: ["M3.125 1.875h8.75s1.25 0 1.25 1.25v8.75s0 1.25 -1.25 1.25H3.125s-1.25 0 -1.25 -1.25V3.125s0 -1.25 1.25 -1.25", "m5.625 1.875 0 11.25"],
     search: ["M1.875 6.875a5 5 0 1 0 10 0 5 5 0 1 0 -10 0", "m13.125 13.125 -2.71875 -2.71875"],
@@ -840,6 +871,16 @@
     span.appendChild(icon("chev-up", "caret-up"));
   }
 
+  // Drift badge: the signals a puck's declared status disagrees with. Built in two
+  // places (card and list row) from the same three lines, so it lives here.
+  function warnBadge(sig) {
+    var w = el("span", "warn-badge");
+    w.appendChild(icon("warn"));
+    w.title = sig.join("\n");
+    w.setAttribute("aria-label", "Needs attention: " + sig.join("; "));
+    return w;
+  }
+
   // Blocked badge for a puck waiting on unfinished dependencies (tooltip lists them).
   function blockBadge(item) {
     var b = el("span", "block-badge");
@@ -952,11 +993,7 @@
     var repo = el("span", "card-repo");
     repo.appendChild(document.createTextNode(item.repoName));
     meta.appendChild(repo);
-    if (sig.length) {
-      var warn = el("span", "warn-badge", "⚠");
-      warn.title = sig.join("\n");
-      meta.appendChild(warn);
-    }
+    if (sig.length) meta.appendChild(warnBadge(sig));
     if (item.priority) meta.appendChild(priorityBadge(item.priority));
     if (item.agent) meta.appendChild(agentBadge(item.agent));
     if (item.progress) meta.appendChild(progressBadge(item));
@@ -2507,7 +2544,12 @@
     var sig = signalMessages(item);
     if (sig.length) {
       var flags = el("div", "card-flags");
-      sig.forEach(function (m) { flags.appendChild(el("div", "flag", "⚠ " + m)); });
+      sig.forEach(function (m) {
+        var f = el("div", "flag");
+        f.appendChild(icon("warn"));
+        f.appendChild(el("span", null, m));
+        flags.appendChild(f);
+      });
       overview.appendChild(flags);
     }
 
@@ -2794,11 +2836,7 @@
     // Name: title (truncates) + inline drift/blocked badges.
     var name = el("div", "list-name");
     name.appendChild(el("span", "list-title", item.title));
-    if (sig.length) {
-      var warn = el("span", "warn-badge", "⚠");
-      warn.title = sig.join("\n");
-      name.appendChild(warn);
-    }
+    if (sig.length) name.appendChild(warnBadge(sig));
     if (item.progress) name.appendChild(progressBadge(item));
     if (item.parentRef && state.group !== "parent") name.appendChild(etappChip(item));
     if ((item.blockedBy || []).length) name.appendChild(blockBadge(item));
@@ -2872,6 +2910,7 @@
     },
     repo: {
       label: "Repo",
+      field: "repo",
       keyOf: function (i) { return i.repo; },
       keys: function (items) {
         var order = {};
@@ -2962,7 +3001,236 @@
       var k = g.keyOf(it);
       if (byKey[k]) byKey[k].push(it); // a key outside the list (e.g. a filtered status) is dropped
     });
-    return keys.map(function (k) { return { key: k, label: g.labelOf(k), items: byKey[k] }; });
+    // A hidden column has to lose its *header*, not just its cards. The derived
+    // groupings drop it for free — their keys come from the items that survived the
+    // filter — but `status` builds its columns from a fixed list, so `-status:later`
+    // emptied LATER and left the empty column standing, which is the one thing "Hide
+    // column" must not do. The rule is about the filter, not about hiding: an empty
+    // column is a drop target worth keeping until the filter speaks about the very
+    // field the columns are made of, and then it is a hole where a column used to be.
+    // So filtering by an unrelated field (`tag:ui`) keeps every column as a target,
+    // while any term on the grouping's own field takes the emptied ones away — which
+    // is `Hide column`, `Show only this` and a hand-typed query, all by one rule.
+    // Stated here and not in either renderer: the board and the list share this.
+    var constrained = groupConstrained(g);
+    return keys.filter(function (k) { return !constrained || byKey[k].length; })
+      .map(function (k) { return { key: k, label: g.labelOf(k), items: byKey[k] }; });
+  }
+
+  // ── a column, as a filter term ───────────────────────────────────────────────
+  // Linear's column menu has "Hide column", and ours needs no store to match it: a
+  // column *is* a value of the grouping field, so hiding one is a negated term in the
+  // query we already have. That buys the whole feature for free — it serialises into
+  // `?q=`, saves into a view, shows up as a removable `Not Status: Later ×` chip (the
+  // way back, and better than a "2 hidden" footer because it names what is hidden),
+  // and it is automatically right per grouping, because it is written in the grouping's
+  // own field. A `hidden: { status: [...], repo: [...] }` store would have been a
+  // second source of truth for something the query can already say.
+  //
+  // Returns { field, value, hideNeg } or null when the column cannot be named by one
+  // term. `hideNeg` is the polarity that *hides* it; showing only this column is the
+  // other one. The none-bucket inverts: its key is the absence of a value, so it is
+  // `has:<field>` that hides it, not a negation.
+  function columnTerm(g, key) {
+    if (!g.field) return null;
+    // A target column is a *month bucket* over a date, so naming it takes a range —
+    // two terms, and negating a conjunction is not something this grammar can say.
+    // The "No target" column is still nameable, because absence is a single question.
+    if (g.field === "target" && key !== NO_VALUE) return null;
+    if (key === NO_VALUE) {
+      // The etapp grouping buckets on `parentRef` — the *resolved* link — while
+      // `has:parent` asks whether the file says anything, and answers yes for a
+      // `parent:` that resolves to nothing. Such a puck sits in "No etapp" and would
+      // have survived hiding it. `is:member` is the same question the column asks.
+      if (g.field === "parent") return { field: "is", value: "member", hideNeg: false };
+      return { field: "has", value: g.field, hideNeg: false };
+    }
+    return { field: g.field, value: key, hideNeg: true };
+  }
+  // Does this term speak about the field the grouping columns by? Asked in three places
+  // — is a column constrained, which term hid it, which terms must go when you say
+  // "only this" — and getting it wrong in any one of them is a board that disagrees
+  // with itself. One predicate, three callers. The three shapes a group can be spoken
+  // about in: its own field, the `has:` pair for its absence bucket, and (for etapps)
+  // `is:member`, which is that bucket said in the grammar the column actually uses.
+  function termAboutGroup(t, g) {
+    if (!g.field) return false;
+    if (t.field === "has") return t.values[0] === g.field;
+    if (t.field === "is") return g.field === "parent" && t.values[0] === "member";
+    return t.field === g.field && t.field !== "text";
+  }
+  function groupConstrained(g) {
+    if (!g.field) return false;
+    return parseQuery(state.query).some(function (t) { return termAboutGroup(t, g); });
+  }
+
+  // The tray, at the end of the board where the columns it holds would have been.
+  // Board only: it is a *place* on the board ("these would be over here"), and a flat
+  // list has no columns for it to be at the end of — there the chip row still says
+  // what is filtered out.
+  function renderHiddenTray(g, groups) {
+    var hidden = hiddenColumns(g, groups);
+    if (!hidden.length) return;
+    var tray = el("div", "column hidden-cols");
+    var head = el("div", "col-head");
+    head.appendChild(el("h2", null, "Hidden"));
+    head.appendChild(el("span", "count", String(hidden.length)));
+    tray.appendChild(head);
+    var list = el("div", "cards");
+    hidden.forEach(function (h) {
+      var b = el("button", "row hidden-col");
+      b.type = "button";
+      b.title = "Show " + h.label + " again";
+      if (g.cls) b.classList.add(g.cls(h.key));
+      b.appendChild(el("span", "swatch"));
+      b.appendChild(el("span", "hidden-label", h.label));
+      // The count is the point: it is what the chip row cannot say, and what you
+      // actually want to know before deciding to bring a column back.
+      b.appendChild(el("span", "count", String(h.n)));
+      b.appendChild(icon("eye"));
+      b.addEventListener("click", function () { unhideColumn(g, h.key); });
+      list.appendChild(b);
+    });
+    tray.appendChild(list);
+    board.appendChild(tray);
+  }
+
+  // Which columns the *filter* took away, and how much is behind each. A hidden column
+  // is otherwise invisible in the one place it matters — the board — and `Not Status:
+  // Later ×` in the chip row says what is gone but never how much, which is the whole
+  // question you ask before deciding to bring it back.
+  //
+  // Terms are stripped from `state.query` only, never from the view's own or a place's.
+  // `-status:inbox` is what "All pucks" *means*, not something you hid; a repo place is
+  // where you navigated. Dropping those too would list Inbox as hidden on every board.
+  function hiddenColumns(g, shown) {
+    if (!g.field || !groupConstrained(g)) return [];
+    var free = viewTerms().concat(controlTerms()).concat(
+      parseQuery(state.query).filter(function (t) {
+        if (t.field === "has") return t.values[0] !== g.field;
+        return t.field !== g.field;
+      })
+    );
+    var would = DATA.items.filter(function (it) { return runQuery(it, free); });
+    var here = {};
+    shown.forEach(function (grp) { here[grp.key] = 1; });
+    var count = {};
+    would.forEach(function (it) { var k = g.keyOf(it); count[k] = (count[k] || 0) + 1; });
+    return g.keys(would).filter(function (k) { return !here[k] && columnTerm(g, k); })
+      .map(function (k) { return { key: k, label: g.labelOf(k), n: count[k] || 0 }; });
+  }
+  // Putting a column back means editing the term that actually excluded it — which is
+  // not always the term that names it. Adding this column's own predicate instead was
+  // wrong in a way that showed: with `priority:high` set, the tray listed "No priority",
+  // and its eye added `-has:priority`. Terms are ANDed, so `priority:high -has:priority`
+  // matches nothing at all — the column stayed hidden and the board went empty.
+  //
+  // So walk the terms that speak about this grouping and mend each one:
+  //   a negation naming me      → take my name out of it
+  //   a positive leaving me out → put my name in
+  //   the absence pair          → drop it, when it is the polarity that hides me
+  // Everything else is left alone, so hiding two columns and restoring one keeps the
+  // other hidden.
+  function unhideColumn(g, key) {
+    var t = columnTerm(g, key);
+    if (!t) return;
+    var none = key === NO_VALUE;
+    var out = [];
+    parseQuery(state.query).forEach(function (term) {
+      if (!termAboutGroup(term, g)) { out.push(term); return; }
+      var absence = term.field === "has" || term.field === "is"; // `has:x` / `is:member`
+      if (none) {
+        // The absence bucket has no value to add or remove. `has:<field>` hides it, and
+        // so does any *positive* term on the field — there is no term that says "high,
+        // or nothing at all", so both have to go. Negations never hide it: a puck with
+        // no priority matches `-priority:low` and `-has:priority` alike.
+        if (!term.neg) return;
+        out.push(term); return;
+      }
+      // A real value. `-has:<field>` (and `-is:member`) empties every real column.
+      if (absence) { if (term.neg) return; out.push(term); return; }
+      var vals = term.values.slice();
+      var at = vals.map(lower).indexOf(lower(t.value));
+      if (term.neg) { if (at >= 0) vals.splice(at, 1); }
+      else if (at < 0) vals.push(t.value);
+      if (vals.length) { term.values = vals; out.push(term); }
+    });
+    setQueryTerms(out);
+  }
+
+  // "Show only this" is a statement, not a switch. `toggleFilterValue` would have taken
+  // `now` *out* of `status:now,next` — leaving the opposite column — and cleared a
+  // singleton `status:now` back to every column. Both are the command's own negation.
+  // So: drop everything the filter says about this grouping, then say the one thing.
+  function showOnlyColumn(g, key) {
+    var t = columnTerm(g, key);
+    if (!t) return;
+    var set = placeSetFor(g.field);
+    if (set && key !== NO_VALUE) {
+      // Already the sole place → the command is satisfied; `pickScope` would read that
+      // as a toggle and widen the board back to all, which is what the label denies.
+      if (set.size === 1 && set.has(key)) return;
+      goToPlace(set, key);
+      return;
+    }
+    var rest = parseQuery(state.query).filter(function (term) { return !termAboutGroup(term, g); });
+    rest.push({ field: t.field, op: t.field === "has" || t.field === "is" ? "is" : "in",
+                values: [t.value], neg: !t.hideNeg });
+    setQueryTerms(rest);
+  }
+  // Repo and agent are the sidebar's places; every other grouping lives in the query.
+  function placeSetFor(field) {
+    return field === "repo" ? state.repos : field === "agent" ? state.agents : null;
+  }
+
+  // The column head's ⋯ — same shape as the puck's, and the only two things you can
+  // say about a column that aren't about the pucks in it.
+  function colMenu(g, key, label) {
+    var wrap = el("div", "prop-pick col-more");
+    var btn = el("button", "btn btn--icon");
+    btn.type = "button";
+    btn.title = "Column options";
+    btn.setAttribute("aria-label", "Options for " + label);
+    btn.setAttribute("aria-haspopup", "true");
+    btn.setAttribute("aria-expanded", "false");
+    btn.appendChild(icon("more"));
+    var open = null;
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (open) { open.close(); return; }
+      btn.setAttribute("aria-expanded", "true");
+      open = openSurface({
+        title: label,
+        anchorWrap: wrap,
+        cls: "pick-menu menu-right",
+        onClose: function () { open = null; btn.setAttribute("aria-expanded", "false"); },
+        build: function (host, api) {
+          var t = columnTerm(g, key);
+          function row(iconName, text, run) {
+            var b = el("button", "row");
+            b.type = "button";
+            b.appendChild(icon(iconName));
+            b.appendChild(el("span", null, text));
+            b.addEventListener("click", function () { api.close(); run(); });
+            host.appendChild(b);
+          }
+          // "Show only this" on a repo or agent column is *navigation*, not a filter.
+          // Those two are the sidebar's places, and `readUrl` already turns a positive
+          // `repo:`/`agent:` term back into one on load — so writing it as a query term
+          // made the same URL render two different chromes: sidebar dark with a chip
+          // right after the click, sidebar lit with no chip after a reload, nothing
+          // touched in between. One state, two pictures, and a link that looked
+          // different to whoever opened it fresh. `showOnlyColumn` takes the door the
+          // model already has, for the positive half of a real value only: there is no
+          // place called "not PIA" — which is what `readUrl`'s `!t.neg` guard says — and
+          // an absence bucket is not somewhere you can stand.
+          row("eye", "Show only this", function () { showOnlyColumn(g, key); });
+          row("eye-off", "Hide column", function () { toggleFilterValue(t.field, t.value, t.hideNeg); });
+        },
+      });
+    });
+    wrap.appendChild(btn);
+    return wrap;
   }
 
   function renderColumns(groups) {
@@ -2976,6 +3244,9 @@
       head.appendChild(el("h2", null, grp.label));
       head.appendChild(el("span", "count", String(grp.items.length)));
       if (g.headExtra) { var hx = g.headExtra(grp.key); if (hx) head.appendChild(hx); }
+      // Only where the column can actually be named by a term — a target month
+      // cannot, and offering a dead menu item is worse than offering none.
+      if (columnTerm(g, grp.key)) head.appendChild(colMenu(g, grp.key, grp.label));
       col.appendChild(head);
       var cards = el("div", "cards");
       if (grp.items.length === 0) cards.appendChild(el("div", "empty", "—"));
@@ -3054,6 +3325,8 @@
       }
       board.appendChild(col);
     });
+    // Last, where the columns it holds would have been.
+    renderHiddenTray(g, groups);
   }
 
   // Fold a group shut or open it. Display state, so it travels the same road as the
@@ -4610,10 +4883,24 @@
       var label;
       if (t.field === "text") label = "“" + t.values[0] + "”";
       else if (t.field === "is") label = (t.neg ? "Not " : "") + t.values[0];
+      // Read as the column it hides, not as the predicate it is: `has:priority` is
+      // how "hide the No priority column" is spelled, so that is what it should say.
+      else if (t.field === "has") {
+        var hl = (fieldByKey(t.values[0]) || {}).label || t.values[0];
+        label = t.neg ? "No " + lower(hl) : "Has " + lower(hl);
+      }
       else if (f) label = f.label + ": " + t.values.map(function (v) { return valueLabel(f, v); }).join(", ");
-      else label = serializeTerms([t]);
+      else if (PLACE_FIELDS[t.field]) {
+        var pf = PLACE_FIELDS[t.field];
+        label = pf.label + ": " + t.values.map(pf.value).join(", ");
+      }
+      // The last resort prints the term itself — with its sign stripped, because the
+      // "Not " prefix below adds one. Together they read "Not -repo:roadmap": two
+      // minus signs for one negation. Any field that lands here from now on is only
+      // missing a name, not a second negative.
+      else label = serializeTerms([{ field: t.field, op: t.op, values: t.values, neg: false }]);
       out.push({
-        label: (t.neg && t.field !== "is" ? "Not " : "") + label,
+        label: (t.neg && t.field !== "is" && t.field !== "has" ? "Not " : "") + label,
         remove: function () {
           var rest = parseQuery(state.query).filter(function (_, j) { return j !== i; });
           setQueryTerms(rest);
@@ -4622,6 +4909,17 @@
     });
     return out;
   }
+  // Repo and agent are absent from FILTER_FIELDS on purpose — they are the sidebar's
+  // places, not panel dimensions — so `fieldByKey` finds nothing for them and the chip
+  // row fell through to printing the raw term. Naming them here rather than adding them
+  // to FILTER_FIELDS keeps that decision intact: this is how a term is *written*, not a
+  // dimension you can filter by. Reachable in one click ever since a repo column could
+  // be hidden; before that it needed a hand-typed query, which is why it sat unseen.
+  var PLACE_FIELDS = {
+    repo: { label: "Repo", value: function (v) { return repoNameOf(resolveRepo(v) || v) || v; } },
+    agent: { label: "Agent", value: function (v) { return agentLabel(v); } },
+  };
+
   function valueLabel(f, v) {
     var all = f.values();
     for (var i = 0; i < all.length; i++) if (all[i].value === v) return all[i].label;

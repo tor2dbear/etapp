@@ -10,14 +10,28 @@
 @font-face { font-family: "Switzer"; font-style: italic; font-weight: 400 800; font-display: swap; src: url("fonts/switzer-400-italic.woff2") format("woff2"); }
 @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 100 800; font-display: swap; src: url("fonts/jetbrains-mono.woff2") format("woff2"); }
 
+/* Every colour that carries *words* clears 4.5:1 against the darkest surface it can
+   land on — in light that is --sidebar-bg, in dark it is --panel-2. The rule is not
+   a preference: --ink-3 alone sets the column counts, the card dates, the tag pills,
+   the property keys, every empty-value state, the breadcrumbs, the eyebrows and the
+   resting tabs, and it sat at 2.4-3.1:1 in both themes. That is most of the
+   interface's second voice, at 10-13px, below the readable floor — which is why the
+   light board looked washed beside a screenshot of Linear and the fix was never
+   layout. The semantic six carry words too (a status pill, a drift flag, `.disc-*`),
+   so they move by the same rule rather than getting text-only twins: the swatch is
+   the same token at 10px, and a dot that clears 4.5 clears the 3:1 a mark needs with
+   room to spare. It cost the light --later its gold — #b8944a read at 2.6:1, and
+   bronze is what an amber that can be read looks like on warm paper. --done and
+   --cancelled keep their old order (done the more present of the two, in both
+   themes) because the line-through can't be the only thing separating them. */
 :root {
   --bg: #f5f3ee;
   --panel: #fffefb;
   --panel-2: #ebe8e1;
   --sidebar-bg: #e9e6df;
   --ink: #262320;
-  --ink-2: #6a635a;
-  --ink-3: #9c948a;
+  --ink-2: #504a44;
+  --ink-3: #6e665d;
   --line: #e6e2d9;
   --accent: #87414b;
   --shadow: 0 1px 2px rgba(45, 38, 30, 0.07), 0 2px 8px rgba(45, 38, 30, 0.05);
@@ -76,18 +90,36 @@
   --sans: -apple-system, BlinkMacSystemFont, "Switzer", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --now: #87414b;
-  --next: #567f66;
-  --later: #b8944a;
-  --inbox: #5f6590;
-  --done: #8f887c;
-  --cancelled: #b0a89c;
+  --next: #4b6f59;
+  --later: #7d6431;
+  --inbox: #5b6089;
+  --done: #5f5a51;
+  --cancelled: #6f6659;
+  /* The amber, once more, for the two places it sits on a wash of *itself* — the
+     drift flag and the pressed attention chip. A 12-18% tint pulls the ground toward
+     the text and eats the margin the token was chosen for (4.7 down to 4.0), so those
+     two need a step darker. Defined once and only here: `--later` and `--ink` are
+     both redefined per theme, and the mix re-resolves with them, so this darkens in
+     light and lightens in dark without a second declaration. */
+  --later-ink: color-mix(in srgb, var(--later) 85%, var(--ink));
   /* Three reds with three jobs, named so they stop being literals: a destructive
      *word* (Delete), the urgent priority *mark*, and the one solid surface that
      carries white text. The link red and the menu-item red were the same job in two
      shades, forty lines apart. */
-  --danger: #c0564f;
-  --urgent: #d64545;
+  --danger: #ae453e;
+  --urgent: #c42b2b;
   --danger-solid: #b91c1c;
+  /* The ink that sits ON a filled brand or semantic surface — a chosen status pill,
+     the primary button, a pressed label chip, the urgent mark. It is the mirror of the
+     rule above: those tokens are tuned to be *read against* the page, and in dark that
+     makes them light, so white on them fails everywhere — `--later` at 2.37:1, `--next`
+     at 2.78, and that was true before the palette moved. The page's own ground reads on
+     all of them (5.35-7.49), and in light white still does (5.62-7.27). One token, not
+     nine background twins. `.demo-ribbon` had already found this and hard-coded a dark
+     ink for itself; this is that fix, generalised — and it covers the `auto` theme,
+     which the bespoke one missed. `--danger-solid` is the exception and keeps white:
+     it is dark in both themes, which is the whole reason it exists. */
+  --on-solid: #fff;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -97,20 +129,21 @@
     --panel-2: #2a2722;
     --sidebar-bg: #141210;
     --ink: #eae6de;
-    --ink-2: #9d968a;
-    --ink-3: #6d665b;
+    --ink-2: #b7b1a9;
+    --ink-3: #958d80;
     --line: #322e28;
-    --accent: #c07682;
+    --accent: #c17985;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.35);
-    --now: #c07682;
+    --now: #c17985;
     --next: #79a58a;
     --later: #c9a35b;
     --inbox: #8b93c0;
-    --done: #8f887c;
-    --cancelled: #7e776c;
+    --done: #a09889;
+    --cancelled: #948d82;
     --danger: #d98d84;
     --urgent: #e07070;
     --danger-solid: #a83232;
+    --on-solid: var(--bg);
     color-scheme: dark;
   }
 }
@@ -120,20 +153,21 @@
   --panel-2: #2a2722;
   --sidebar-bg: #141210;
   --ink: #eae6de;
-  --ink-2: #9d968a;
-  --ink-3: #6d665b;
+  --ink-2: #b7b1a9;
+  --ink-3: #958d80;
   --line: #322e28;
-  --accent: #c07682;
+  --accent: #c17985;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.35);
-  --now: #c07682;
+  --now: #c17985;
   --next: #79a58a;
   --later: #c9a35b;
   --inbox: #8b93c0;
-  --done: #8f887c;
-  --cancelled: #7e776c;
+  --done: #a09889;
+  --cancelled: #948d82;
   --danger: #d98d84;
   --urgent: #e07070;
   --danger-solid: #a83232;
+  --on-solid: var(--bg);
   color-scheme: dark;
 }
 
@@ -248,7 +282,18 @@ body {
   background: none; border: 0; border-radius: var(--r-sm); padding: 7px 9px;
   cursor: pointer; text-decoration: none; /* a row can be an <a> — see the ⋯ menu */
 }
-.row:hover, .row[aria-selected="true"], .row.on { background: var(--panel-2); }
+/* The lit row was a full `--panel-2` slab — the same token a filled badge uses for
+   its own surface, so a selected label row swallowed its pill whole and the band
+   read heavier than anything it contained. Two fixes, one idea: the highlight is a
+   *wash* under the content rather than a step level with it, and the row declares
+   what a chip standing on it should be. The field above already worked this way —
+   `.token` sits on `--panel` inside a `--panel-2` box — so this is that move, made
+   general instead of local. `--chip-bg` inherits, so a badge anywhere inside a lit
+   row picks it up without knowing it is in one. */
+.row:hover, .row[aria-selected="true"], .row.on {
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  --chip-bg: var(--panel);
+}
 .row.danger { color: var(--danger); }
 .suggest-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .suggest-title {
@@ -316,7 +361,7 @@ body {
 .chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .chip[aria-pressed="true"] { color: var(--ink); border-color: currentColor; }
 .chip.repo[aria-pressed="true"] { background: var(--panel-2); }
-.chip.tag[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+.chip.tag[aria-pressed="true"] { background: var(--accent); color: var(--on-solid); border-color: var(--accent); }
 .chip .n { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: var(--fs-md); cursor: pointer; }
 
@@ -356,6 +401,43 @@ body {
 /* square: an icon carries the meaning, so there is no label to pad around */
 .btn--icon { padding: 5px; }
 
+/* The hidden-columns tray — a column-shaped place at the end of the board holding the
+   ones the filter took away. It is not a column: nothing drops into it, and it carries
+   rows rather than cards, so it sets itself apart by weight — a dashed edge and a
+   quieter head — instead of by size. The count on each row is the reason it exists:
+   the chip row can say *what* is hidden, never how much is behind it. */
+.hidden-cols { border: 1px dashed var(--line); border-radius: var(--r-lg); padding: 10px; align-self: start; }
+.hidden-cols .col-head { position: static; background: none; color: var(--ink-3); }
+.hidden-cols .col-head h2 { color: var(--ink-3); }
+.hidden-col { gap: 8px; font-size: var(--fs-md); }
+.hidden-col .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); flex: none; background: var(--ink-3); }
+.hidden-col .hidden-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The count sits with the label; the eye takes the right edge, where the action is. */
+.hidden-col .count { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.hidden-col .icn { margin-left: auto; width: 15px; height: 15px; color: var(--ink-3); }
+@media (hover: hover) { .hidden-col:hover .icn { color: var(--accent); } }
+/* The status swatches already have their colours; a hidden column keeps its identity. */
+.hidden-col.col-status-now .swatch { background: var(--now); }
+.hidden-col.col-status-next .swatch { background: var(--next); }
+.hidden-col.col-status-later .swatch { background: var(--later); }
+.hidden-col.col-status-inbox .swatch { background: var(--inbox); }
+.hidden-col.col-status-done .swatch { background: var(--done); }
+.hidden-col.col-status-cancelled .swatch { background: var(--cancelled); }
+
+/* column ⋯ — the two things you can say about a column rather than about its pucks.
+   Pushed to the right end of the head, and revealed on reach like `.col-add`: a head
+   that carried a visible button per column read as six controls before it read as six
+   columns. `.col-add` already sets the precedent, and `(hover: none)` keeps both
+   reachable where there is no hover to reveal them. */
+/* Beside the count, not out at the column's right edge. Linear can hang it on the
+   edge because its columns are boxed; ours are borderless and packed close, so an
+   edge-anchored ⋯ sat 60px from the *next* column's swatch and read as that one's. */
+.col-more { opacity: 0; transition: opacity .12s; }
+.col-more .btn { color: var(--ink-3); border-color: transparent; background: none; }
+.col-more .btn svg { width: 15px; height: 15px; }
+.column:hover .col-more, .col-more:focus-within, .col-more:has([aria-expanded="true"]) { opacity: 1; }
+@media (hover: hover) { .col-more .btn:hover { color: var(--ink); border-color: var(--line); } }
+@media (hover: none) { .col-more { opacity: 1; } }
 /* in-column "+" — add a puck already in this column */
 .col-add {
   margin-top: 10px; width: 100%; display: flex; align-items: center; justify-content: center;
@@ -471,6 +553,15 @@ body {
 }
 @media (hover: hover) { .card:hover { border-color: var(--accent); } }
 .card:active { transform: translatey(1px); }
+/* The glyph's rail. The mark leads the title, so the title starts 22px in — and the
+   two rows under it started at the card's padding, which made the title the one
+   indented line on the card and left the mark hanging off nothing. Linear's card has
+   the same mark and puts the second row's icon on the same x; this is that column,
+   derived from the two numbers that draw it so they cannot drift apart. */
+.card { --glyph: 15px; --rail: 7px; }
+/* Direct children only: `.card-tags` is also the LABELS row on the puck page, which
+   has its own rail and must not inherit this one. */
+.card > .card-meta, .card > .card-tags { padding-left: calc(var(--glyph) + var(--rail)); }
 .card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .card h3 { margin: 0; font-size: var(--fs-xl); line-height: var(--lh-tight); font-weight: var(--fw-semibold); }
 .repo-name { font-size: var(--fs-sm); color: var(--repo, var(--ink-3)); font-weight: var(--fw-semibold); white-space: nowrap; }
@@ -491,7 +582,8 @@ body {
 .badge, .status-pill, .issue-state, .rollup, .agent-badge, .tagpill, .adapted-badge, .token {
   display: inline-flex; align-items: center; gap: 3px; flex: none;
   font-size: var(--fs-xs); color: var(--ink-2);
-  background: var(--panel-2); border: 1px solid var(--line);
+  /* `--chip-bg` is the ground a lit row hands down; --panel-2 is the resting one. */
+  background: var(--chip-bg, var(--panel-2)); border: 1px solid var(--line);
   border-radius: var(--r-sm); padding: 1px 7px;
 }
 .badge--pill, .status-pill, .rollup, .agent-badge { border-radius: var(--r-pill); }
@@ -504,25 +596,32 @@ body {
 .tagpill { font-size: var(--fs-sm); color: var(--ink-3); cursor: default; }
 .updated { font-size: var(--fs-sm); color: var(--ink-3); font-variant-numeric: tabular-nums; margin-left: auto; }
 .adapted-badge { color: var(--ink-3); padding: 0 5px; }
-.warn-badge { color: var(--later); font-size: var(--fs-md); line-height: 1; cursor: help; flex: none; }
-.block-badge { font-size: var(--fs-md); line-height: 1; cursor: help; flex: none; }
+/* The drift flag and the blocked flag sit next to each other in the meta row and are
+   now the same species: one set, one stroke, one 14px box. */
+.warn-badge { color: var(--later); display: inline-flex; line-height: 0; cursor: help; flex: none; }
+.warn-badge .icn { width: 14px; height: 14px; }
+.block-badge { display: inline-flex; line-height: 0; cursor: help; flex: none; }
 .owner { display: inline-flex; align-items: center; gap: 5px; flex: none; text-decoration: none; color: var(--ink-2); }
 .owner-avatar { width: 16px; height: 16px; border-radius: 50%; flex: none; background: var(--panel-2); object-fit: cover; }
 .owner-name { font-weight: var(--fw-semibold); }
 @media (hover: hover) { a.owner:hover .owner-name { text-decoration: underline; } }
 .card-flags { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
 .flag {
+  display: flex; align-items: flex-start; gap: 6px;
   font-size: var(--fs-sm);
-  color: var(--later);
+  color: var(--later-ink);
   background: color-mix(in srgb, var(--later) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--later) 30%, transparent);
   border-radius: var(--r-sm);
   padding: 3px 7px;
 }
+/* Nudged down to the first line's x-height: the mark leads a wrapping sentence, so it
+   aligns to the text's top rather than to the box's. */
+.flag .icn { width: 13px; height: 13px; margin-top: 1px; }
 .chip.attention { color: var(--later); border-color: color-mix(in srgb, var(--later) 40%, var(--line)); }
 .chip.attention[aria-pressed="true"] {
   background: color-mix(in srgb, var(--later) 18%, var(--panel));
-  color: var(--later);
+  color: var(--later-ink);
   border-color: var(--later);
 }
 .card-body { margin-top: 8px; font-size: var(--fs-md); line-height: var(--lh-snug); color: var(--ink-2); display: none; overflow-wrap: anywhere; }
@@ -691,7 +790,7 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
 }
 .edit-btn:hover:not(:disabled) { color: var(--ink); border-color: currentColor; }
 .edit-btn.active {
-  color: #fff; cursor: default; font-weight: var(--fw-semibold);
+  color: var(--on-solid); cursor: default; font-weight: var(--fw-semibold);
   border-color: transparent;
 }
 .edit-btn.active.status-now { background: var(--now); }
@@ -713,6 +812,7 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
   transition: opacity .18s ease, transform .18s ease; z-index: 10000; max-width: 90vw;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+/* The one surface that stays white: --danger-solid is dark in both themes. */
 .toast.err { background: var(--danger-solid); color: #fff; }
 
 /* token panel */
@@ -741,7 +841,7 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
 .token-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
 .tbtn:hover { border-color: var(--ink-3); }
-.tbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tbtn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-solid); }
 .tbtn.primary:hover { filter: brightness(1.05); }
 .tbtn:disabled { opacity: .5; cursor: not-allowed; }
 .tbtn:disabled:hover { border-color: var(--accent); filter: none; }
@@ -1135,7 +1235,7 @@ body.preload * { transition: none !important; }
 .pri.pri-medium .pri-bar.on { background: var(--later); }
 .pri.pri-high .pri-bar.on { background: var(--now); }
 .pri.pri-urgent {
-  width: 13px; height: 13px; border-radius: var(--r-xs); background: var(--urgent); color: #fff;
+  width: 13px; height: 13px; border-radius: var(--r-xs); background: var(--urgent); color: var(--on-solid);
   font-size: var(--fs-xs); font-weight: var(--fw-semibold); align-items: center; justify-content: center;
 }
 /* detail rail: static badge + label */
@@ -1183,7 +1283,7 @@ body.preload * { transition: none !important; }
 .filter-btn svg { width: 15px; height: 15px; }
 .filter-btn.on { border-color: var(--accent); color: var(--accent); }
 .filter-count {
-  font-family: var(--mono); font-size: var(--fs-xs); background: var(--accent); color: #fff;
+  font-family: var(--mono); font-size: var(--fs-xs); background: var(--accent); color: var(--on-solid);
   border-radius: var(--r-pill); min-width: 16px; text-align: center; padding: 0 4px;
 }
 /* Anchored under its own button (Filter and Display both sit at the left of the
@@ -1323,7 +1423,7 @@ body.preload * { transition: none !important; }
    low in an 18px box whatever the line-height says. */
 .fp-toggle input:checked::after {
   content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px;
-  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  border: solid var(--on-solid); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 .fp-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fp-label { font-family: var(--mono); font-size: var(--fs-xs); letter-spacing: var(--tr-eyebrow); text-transform: uppercase; color: var(--ink-3); margin-top: 2px; }
@@ -1333,7 +1433,7 @@ body.preload * { transition: none !important; }
   border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); cursor: pointer;
 }
 .fp-chip:hover { color: var(--ink); border-color: var(--ink-3); }
-.fp-chip.on { color: #fff; border-color: transparent; background: var(--accent); font-weight: var(--fw-semibold); }
+.fp-chip.on { color: var(--on-solid); border-color: transparent; background: var(--accent); font-weight: var(--fw-semibold); }
 .fp-chip.on.pri-urgent { background: var(--urgent); }
 .fp-chip.on.pri-high { background: var(--now); }
 .fp-chip.on.pri-medium { background: var(--later); }
@@ -1357,7 +1457,7 @@ body.preload * { transition: none !important; }
 .fp-search:focus { outline: none; border-color: var(--accent); }
 .fp-tags { display: flex; flex-wrap: wrap; gap: 5px; max-height: 168px; overflow-y: auto; }
 .fp-chip.tag .fp-n { color: var(--ink-3); font-family: var(--mono); font-size: var(--fs-xs); margin-left: 4px; }
-.fp-chip.tag.on .fp-n { color: rgba(255, 255, 255, 0.8); }
+.fp-chip.tag.on .fp-n { color: color-mix(in srgb, var(--on-solid) 80%, transparent); }
 .fp-empty { color: var(--ink-3); font-size: var(--fs-base); padding: 4px 0; }
 .fp-more { align-self: flex-start; background: none; border: 0; padding: 2px 0; margin-top: 2px; font-size: var(--fs-base); color: var(--accent); cursor: pointer; }
 .fp-more:hover { text-decoration: underline; }
@@ -1373,11 +1473,12 @@ body.preload * { transition: none !important; }
 .detail-icon svg { width: 26px; height: 26px; }
 
 /* puck glyph on cards — a repo-colored leading mark before the title */
-.card-head { display: flex; align-items: flex-start; gap: 7px; }
+.card-head { display: flex; align-items: flex-start; gap: var(--rail, 7px); }
 .card-head .card-title { flex: 1; min-width: 0; margin: 0; }
 .puck-glyph { display: inline-flex; flex: none; line-height: 0; }
 .card-head .puck-glyph { margin-top: 2px; }
 .puck-glyph svg { width: 15px; height: 15px; }
+.card-head .puck-glyph svg { width: var(--glyph, 15px); height: var(--glyph, 15px); }
 
 /* discipline shortcuts in the ⌘K palette */
 .suggest-tagmark { width: 16px; text-align: center; flex: none; color: var(--accent); font-family: var(--mono); font-weight: var(--fw-semibold); }
@@ -1780,7 +1881,6 @@ body.preload * { transition: none !important; }
 .token { font-size: var(--fs-sm); background: var(--panel); padding: 1px 4px 1px 6px; }
 .token-x { font: inherit; font-size: var(--fs-xs); line-height: 1; background: none; border: 0; padding: 2px; color: var(--ink-3); cursor: pointer; }
 @media (hover: hover) { .token-x:hover { color: var(--ink); } }
-.pick-new .tagpill { background: var(--panel-2); }
 .token .repo-dot { flex: none; }
 .token-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }
 
@@ -1938,8 +2038,7 @@ body.viewing-puck .detail-crumb { display: none; }
 .demo-ribbon {
   display: block; text-align: center; text-decoration: none;
   font-family: var(--mono); font-size: var(--fs-md); font-weight: var(--fw-medium);
-  padding: 9px 12px; background: var(--accent); color: #fff8f3;
+  padding: 9px 12px; background: var(--accent); color: var(--on-solid);
 }
-:root[data-theme="dark"] .demo-ribbon { color: #140d08; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .demo-ribbon { color: #140d08; } }
 .demo-ribbon b, .demo-ribbon strong { font-weight: var(--fw-semibold); }

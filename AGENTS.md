@@ -68,7 +68,16 @@ issue:42               the linked issue number
 target:<=2026-11-30    the horizon (updated/created take the same operators)
 parent:auth            the etapp — slug, id or owner/repo#slug (alias: etapp)
 "grep context"         free text over title, body, tags and repo name
+has:priority           the field is set at all; -has:priority is "no priority"
 ```
+
+`has:<field>` asks only whether a puck carries the field, and takes any field name
+above (aliases included). It is the one way to name an *absence* — `-has:priority` is
+"no priority", `-has:agent` is the unrouted queue, `-has:target` is everything without
+a horizon — because there is no value to write on the left of a `:` for something that
+isn't there, and listing every real value instead breaks the moment a new one appears.
+The board's column menu uses it to hide the "No …" bucket. One field per term, and it
+negates like everything else.
 
 `is:` is the namespace for states that are **derived**, not stored — giving each a
 field of its own would invent a second truth:
@@ -83,7 +92,7 @@ field of its own would invent a second truth:
 | `is:adapted` | the source isn't native pucks |
 | `is:done` | `done` **or** `cancelled` (the archive) |
 | `is:etapp` | the puck has children — it *is* an etapp |
-| `is:member` | it has a resolved `parentRef` — it sits in an etapp |
+| `is:member` | it has a resolved `parentRef` — it sits in an etapp (this, not `has:parent`, is what the etapp columns bucket on: a `parent:` that resolves to nothing is not membership) |
 | `is:standalone` | neither a parent nor children: in no etapp (`is:orphan` is the old name, still accepted) |
 
 The board's own views are just queries — `Ready` is `is:ready`, `Needs attention`
