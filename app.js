@@ -3178,7 +3178,7 @@
       // as a toggle and widen the board back to all, which is what the label denies.
       var vals = placeValues(g.field);
       if (vals.length === 1 && vals[0] === lower(key)) return;
-      goToPlace(g.field, key);
+      scopeToPlace(g.field, key);
       return;
     }
     var rest = parseQuery(state.query).filter(function (term) { return !termAboutGroup(term, g); });
@@ -3616,12 +3616,6 @@
   function placeActive() {
     return PLACE_FIELDS_ORDER.some(function (f) { return placeValues(f).length > 0; });
   }
-  // Everything the query says about the places, dropped — what "go to a view" means.
-  function clearPlaces() {
-    return parseQuery(state.query).filter(function (t) {
-      return t.neg || PLACE_FIELDS_ORDER.indexOf(t.field) === -1;
-    });
-  }
   // Rebuild the whole sidebar nav so views + repo + agent pressed states stay in
   // sync after any navigation (they're one mutually-exclusive dimension now).
   function refreshNav() {
@@ -3637,7 +3631,13 @@
     closeSurfaces(); // same as openDetail: the palette gets here without a hash change
     exitPuckView();
     state.focus = key;
-    setQueryTerms(clearPlaces()); // the view is global, not still scoped to where you were
+    // Navigation is a fresh start. Clearing only the *places* left the rest of the
+    // filter riding along: apply a saved view called High, click Ready, and you were in
+    // "Ready, still only high priority" — with the chip the one thing saying so. A saved
+    // view is a complete description of the board (`applySavedView` resets everything),
+    // so leaving one has to leave all of it, or the rows in the sidebar stop meaning
+    // what they say. A refinement is something you add *after* arriving.
+    setQueryTerms([]);
     refreshNav();
     renderBoard();
     maybeCloseMenu();
@@ -3647,11 +3647,36 @@
   function goToPlace(field, key) {
     closeSurfaces(); // same as goToView — the board changes under whatever is open
     exitPuckView();
-    pickScope(field, key);
     state.focus = "all";
+    // Read the toggle *before* anything is cleared. `pickScope` answers "did you click
+    // the row you are already in?" from the query, so wiping the query first made the
+    // question unanswerable and the row could never be switched off again — it just
+    // re-added itself. Captured here, the radio, the toggle-off and the replace all
+    // survive a navigation that also drops the refinement.
+    var vals = placeValues(field);
+    var wasSole = vals.length === 1 && vals[0] === lower(key);
+    // What a place navigation drops: the *refinement* — the tag, the text, the priority
+    // you had on top. What it keeps: the other place. The two dimensions are orthogonal
+    // on purpose ("Backend, within Etapp" composes), and the sidebar counts each one
+    // *inside* the other — so clearing the agent while landing on a repo would make
+    // every repo number a promise the click immediately breaks.
+    var rest = parseQuery(state.query).filter(function (t) {
+      return !t.neg && t.field !== field && PLACE_FIELDS_ORDER.indexOf(t.field) !== -1;
+    });
+    if (!wasSole) rest.push({ field: field, op: "in", values: [key], neg: false });
+    setQueryTerms(rest);
     refreshNav();
     renderBoard();
     maybeCloseMenu();
+  }
+  // Narrow to a place *without* disturbing the rest of the filter, and without leaving
+  // the view you are in. This is what the column menu's "Show only this" wants: it is a
+  // refinement made from inside the board, not navigation from the sidebar — dropping
+  // the tag filter you already had, or throwing you out of Ready, would both be the
+  // command doing more than it says.
+  function scopeToPlace(field, key) {
+    pickScope(field, key);
+    refreshNav();
   }
 
   // Views — the primary navigation: All pucks (the committed board) · Ready (the
@@ -3725,9 +3750,14 @@
   }
   function buildFocusControl() {
     var counts = viewCounts();
-    // A view reads as active only when we're not inside a place — otherwise the
-    // sidebar would highlight both "All pucks" and the repo you navigated into.
-    var inPlace = placeActive();
+    // A view reads as active only when nothing more specific already describes the
+    // board. That was written for places — "otherwise the sidebar would highlight both
+    // 'All pucks' and the repo you navigated into" — and the same sentence is true of a
+    // saved view, which was never asked. Apply one and both it and "All pucks" lit up;
+    // and `Testvy`, which carries only `empty:0` and no query at all, did it with no
+    // filter involved, so "is there a query" would not have caught it either. The
+    // question is not what is set, it is whether something more specific is on.
+    var inPlace = placeActive(), inSaved = !!activeSavedView();
     var host = document.getElementById("sideViews") || document.getElementById("filters");
     viewsShown(counts).forEach(function (g) {
       if (g.label) host.appendChild(el("div", "side-eyebrow", g.label));
@@ -3736,7 +3766,7 @@
       seg.setAttribute("aria-label", g.label || "Inbox");
       g.keys.forEach(function (key) {
         var d = VIEW_DEFS[key];
-        var on = state.focus === key && !inPlace;
+        var on = state.focus === key && !inPlace && !inSaved;
         var b = el("button", "focusbtn focus-" + key + (on ? " on" : ""));
         b.type = "button";
         b.title = d.title;
@@ -3781,11 +3811,11 @@
           cls: "pick-menu view-menu",
           onClose: function () { open = null; btn.setAttribute("aria-expanded", "false"); },
           build: function (host, api) {
-            var counts = viewCounts(), inPlace = placeActive();
+            var counts = viewCounts(), inPlace = placeActive(), inSaved = !!activeSavedView();
             viewsShown(counts).forEach(function (g, gi) {
               if (gi) host.appendChild(el("div", "menu-rule"));
               g.keys.forEach(function (key) {
-                var on = state.focus === key && !inPlace;
+                var on = state.focus === key && !inPlace && !inSaved;
                 var r = el("button", "row" + (on ? " on" : ""));
                 r.type = "button";
                 r.title = VIEW_DEFS[key].title;
@@ -4794,6 +4824,16 @@
     refreshNav();
     renderBoard();
     maybeCloseMenu();
+  }
+  // Which saved view, if any, describes the board exactly as it stands. Asked in three
+  // places — which saved row lights, and whether a built-in row should light in the
+  // sidebar and in the title switcher — and all three must agree, or the chrome marks
+  // two rows at once.
+  function activeSavedView() {
+    var now = viewParamObject();
+    var vs = savedViews();
+    for (var i = 0; i < vs.length; i++) if (sameParams(paramsOf(vs[i]), now)) return vs[i];
+    return null;
   }
   function buildSavedViews() {
     var host = document.getElementById("savedViews");
