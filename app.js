@@ -59,11 +59,17 @@
     return b;
   }
   var state = {
-    // Places — the sidebar's navigation dimension (see goToPlace). Everything else
-    // you can filter by lives in `query`, so a filter has exactly one home.
-    repos: new Set(), // empty = all
-    agents: new Set(), // empty = all — PO-layer discipline queues
-    query: "", // the filter, as text: the store behind the chips and the panel
+    // One store. Repo and agent used to live in Sets of their own, because the sidebar
+    // calls them *places* — where you are, rather than something you narrowed to. That
+    // distinction is real and the rows stay, but it was never a reason for a second
+    // memory: `controlTerms()` projected the Sets into terms and `readUrl` read them
+    // back, "one model, two directions", which is a long way of saying the query could
+    // always express it. Two stores that must agree eventually don't — the same URL drew
+    // two different chromes depending on whether you clicked or reloaded, and the chip
+    // row could not spell "repo" because repo lived somewhere the labeller never looked.
+    // Both were symptoms of the pair, so the pair goes and the rows derive from the
+    // query like every other control.
+    query: "", // the filter, as text: the store behind the chips, the panel and the rows
     showDone: false,
     focus: "all", // "all" | "ready" (unblocked now/next) | "inbox" (triage) | "attention" (flagged)
     view: "board", // "board" (kanban columns) | "list" (one column, grouped)
@@ -463,22 +469,14 @@
   var ARCHIVABLE = { all: 1, etapps: 1, standalone: 1 };
   var NOT_DONE = { field: "is", op: "is", values: ["done"], neg: true };
 
-  // Places and the filter popover, projected into terms. A place is just a filter
-  // the navigation happens to have set to exactly one value.
-  function controlTerms() {
-    var t = [];
-    function fromSet(field, set, map) {
-      if (!set.size) return;
-      var vals = [];
-      set.forEach(function (v) { vals.push(map ? map(v) : v); });
-      t.push({ field: field, op: "in", values: vals, neg: false });
-    }
-    fromSet("repo", state.repos, shortRepo);
-    fromSet("agent", state.agents);
-    return t;
-  }
-  // The filter half of the view — what goes in ?q= and, later, on the chip row.
-  function filterTerms() { return controlTerms().concat(parseQuery(state.query)); }
+  // The two fields the sidebar navigates by. They are ordinary query fields; what makes
+  // them "places" is only that a nav row shows them, which is a fact about the chrome.
+  var PLACE_FIELDS_ORDER = ["repo", "agent"];
+  // A place's active values: the positive term on that field, if any. Negations are not
+  // places — there is nowhere called "not PIA" — so they stay ordinary filter chips.
+  function placeValues(field) { return filterValues(field, false); }
+  // The filter half of the view — what goes in ?q= and on the chip row.
+  function filterTerms() { return parseQuery(state.query); }
   // What the view itself says, before any filter the user added. Split out because
   // two questions need it separately: "what does the board show" (below) and "what
   // could this view ever show" (the filter panel, deciding which values are real).
@@ -623,7 +621,6 @@
   // because there is nothing to reset yet.
   function applyParams(got, reset) {
     if (reset) {
-      state.repos.clear(); state.agents.clear();
       state.query = "";
       state.focus = "all";
       state.showDone = DISPLAY_DEFAULTS.showDone;
@@ -646,22 +643,26 @@
     if (SORTS.indexOf(got.sort) !== -1) state.sort = got.sort;
     if (VIEWS[got.view]) state.focus = got.view;
     if (!got.q) return;
-    // Hand each incoming term back to the control that owns it, so the sidebar and
-    // the filter popover show what the link describes; the rest stays as text in the
-    // search box. This is controlTerms() run backwards — one model, two directions.
-    var rest = [];
-    parseQuery(got.q).forEach(function (t) {
-      if (!t.neg && t.op === "in") {
-        if (t.field === "repo") {
-          var ids = t.values.map(resolveRepo).filter(Boolean);
-          if (ids.length === t.values.length) { ids.forEach(function (r) { state.repos.add(r); }); return; }
-        } else if (t.field === "agent") {
-          t.values.forEach(function (v) { state.agents.add(v); }); return;
-        }
-      }
-      rest.push(t);
-    });
-    state.query = serializeTerms(rest);
+    // Nothing to hand back to anyone: `?q=` is the store. The sidebar rows read it for
+    // their pressed state, the panel reads it for its values, and the chip row skips
+    // what a row already shows. A link and the live board are the same string.
+    state.query = canonicalQuery(got.q);
+  }
+  // A repo term said as a short or display name, rewritten to the full `owner/name`.
+  // Two things need it: a link written by hand still lights the row it names, and a
+  // board with two repos of the same name under different owners cannot light both —
+  // `FIELDS.repo` matches the short name for every owner, so the ambiguity is real.
+  //
+  // It has to be one producer. Rewriting only on the way in left a saved view whose `q`
+  // uses the short name comparing its *configured* string against the board's
+  // canonicalised one, so the view you had just applied lit up for no one. Both sides
+  // of that comparison come through here now.
+  function canonicalQuery(q) {
+    return serializeTerms(parseQuery(q).map(function (t) {
+      if (t.field !== "repo" || t.neg) return t;
+      return { field: t.field, op: t.op, neg: t.neg,
+               values: t.values.map(function (v) { return resolveRepo(v) || v; }) };
+    }));
   }
 
   function el(tag, cls, text) {
@@ -3105,10 +3106,17 @@
   // where you navigated. Dropping those too would list Inbox as hidden on every board.
   function hiddenColumns(g, shown) {
     if (!g.field || !groupConstrained(g)) return [];
-    var free = viewTerms().concat(controlTerms()).concat(
+    var free = viewTerms().concat(
       parseQuery(state.query).filter(function (t) {
-        if (t.field === "has") return t.values[0] !== g.field;
-        return t.field !== g.field;
+        // A place is where you navigated, not a column you hid — so its term stays in,
+        // and the repos you are not in never show up as "hidden". Whatever the board
+        // groups by: `&group=repo` while scoped to one repo made `t.field === g.field`,
+        // the guard fell through to the group rule, and every *other* repo was offered
+        // in the tray as if you had hidden it — with an eye that would have widened the
+        // scope. The old code got this right by accident, because `controlTerms()` was
+        // concatenated separately and never filtered at all.
+        if (!t.neg && PLACE_FIELDS_ORDER.indexOf(t.field) !== -1) return true;
+        return !termAboutGroup(t, g);
       })
     );
     var would = DATA.items.filter(function (it) { return runQuery(it, free); });
@@ -3165,12 +3173,12 @@
   function showOnlyColumn(g, key) {
     var t = columnTerm(g, key);
     if (!t) return;
-    var set = placeSetFor(g.field);
-    if (set && key !== NO_VALUE) {
+    if (PLACE_FIELDS_ORDER.indexOf(g.field) !== -1 && key !== NO_VALUE) {
       // Already the sole place → the command is satisfied; `pickScope` would read that
       // as a toggle and widen the board back to all, which is what the label denies.
-      if (set.size === 1 && set.has(key)) return;
-      goToPlace(set, key);
+      var vals = placeValues(g.field);
+      if (vals.length === 1 && vals[0] === lower(key)) return;
+      goToPlace(g.field, key);
       return;
     }
     var rest = parseQuery(state.query).filter(function (term) { return !termAboutGroup(term, g); });
@@ -3178,11 +3186,6 @@
                 values: [t.value], neg: !t.hideNeg });
     setQueryTerms(rest);
   }
-  // Repo and agent are the sidebar's places; every other grouping lives in the query.
-  function placeSetFor(field) {
-    return field === "repo" ? state.repos : field === "agent" ? state.agents : null;
-  }
-
   // The column head's ⋯ — same shape as the puck's, and the only two things you can
   // say about a column that aren't about the pucks in it.
   function colMenu(g, key, label) {
@@ -3480,8 +3483,8 @@
   // the view header reflects "you're in a filtered view" — not just a smaller count.
   function scopeParts() {
     var p = [];
-    state.repos.forEach(function (r) { p.push(repoNameOf(r)); });
-    state.agents.forEach(function (a) { p.push("→ " + agentLabel(a)); });
+    placeValues("repo").forEach(function (r) { p.push(repoNameOf(resolveRepo(r) || r)); });
+    placeValues("agent").forEach(function (a) { p.push("→ " + agentLabel(a)); });
     return p;
   }
   // The full view title, place scope included ("Inbox · Etapp") — the single
@@ -3522,10 +3525,12 @@
   // de 3 som är routade till den valda disciplinen.
   function placeCounts() {
     var base = parseQuery(VIEWS.all).concat(state.showDone ? [] : [NOT_DONE]);
-    // The *other* active place, taken from `controlTerms()` rather than hand-built:
-    // one producer for what a place term looks like, so the two can't drift.
+    // The *other* active place, read out of the query rather than hand-built: one
+    // producer for what a place term looks like, so the two can't drift.
     function withOthers(skip) {
-      return base.concat(controlTerms().filter(function (t) { return t.field !== skip; }));
+      return base.concat(parseQuery(state.query).filter(function (t) {
+        return !t.neg && t.field !== skip && PLACE_FIELDS_ORDER.indexOf(t.field) !== -1;
+      }));
     }
     var repoQ = withOthers("repo"), agentQ = withOthers("agent");
     var repo = {}, agent = {};
@@ -3544,7 +3549,7 @@
     DATA.sources.forEach(function (s) {
       var chip = el("button", "chip repo");
       chip.dataset.repo = s.repo;
-      chip.setAttribute("aria-pressed", state.repos.has(s.repo) ? "true" : "false");
+      chip.setAttribute("aria-pressed", placeValues("repo").indexOf(lower(s.repo)) !== -1 ? "true" : "false");
       var dot = el("span", "dot");
       dot.style.background = s.color;
       chip.appendChild(dot);
@@ -3554,7 +3559,7 @@
       var n = el("span", "n", String(live[s.repo] || 0));
       chip.appendChild(n);
       chip.title = s.blurb + (s.native ? "" : " — adapted from " + s.adapter);
-      chip.addEventListener("click", function () { goToPlace(state.repos, s.repo); });
+      chip.addEventListener("click", function () { goToPlace("repo", s.repo); });
       wrap.appendChild(chip);
     });
   }
@@ -3571,17 +3576,20 @@
     // The queue is live work, not history: a discipline whose pucks have all landed
     // has an empty queue, and the same count-is-what-you-land-on rule applies.
     var counts = placeCounts().agent;
-    state.agents.forEach(function (a) { if (!counts[a]) state.agents.delete(a); }); // prune stale filters
+    // No pruning any more. A discipline whose pucks have all landed used to be quietly
+    // deleted out of `state.agents`, because a *place* that names nothing is a place you
+    // are stranded in. As a term it is just a filter that matches nothing — visible in
+    // the URL, removable, and honest about why the board is empty.
     var agents = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
     if (section) section.hidden = agents.length === 0;
     agents.forEach(function (a) {
       var chip = el("button", "chip agent");
       chip.dataset.agent = a;
-      chip.setAttribute("aria-pressed", state.agents.has(a) ? "true" : "false");
+      chip.setAttribute("aria-pressed", placeValues("agent").indexOf(lower(a)) !== -1 ? "true" : "false");
       chip.appendChild(el("span", "agent-arrow", "→"));
       chip.appendChild(document.createTextNode(agentLabel(a)));
       chip.appendChild(el("span", "n", String(counts[a])));
-      chip.addEventListener("click", function () { goToPlace(state.agents, a); });
+      chip.addEventListener("click", function () { goToPlace("agent", a); });
       wrap.appendChild(chip);
     });
   }
@@ -3591,17 +3599,29 @@
     else { set.add(key); chip.setAttribute("aria-pressed", "true"); }
   }
 
-  // Sidebar repos/agents are places, not filters: single-select within their own
-  // dimension (radio, not checkbox). Clicking a repo scopes to exactly that repo;
-  // clicking the one that's already the sole scope clears it (back to All pucks).
-  // Repo and agent stay orthogonal, so "Backend, within Etapp" still composes.
-  function pickScope(set, key) {
-    var wasSole = set.size === 1 && set.has(key);
-    set.clear();
-    if (!wasSole) set.add(key);
+  // Sidebar repos/agents are single-select within their own dimension (radio, not
+  // checkbox). Clicking a repo scopes to exactly that repo; clicking the one that is
+  // already the sole scope clears it (back to All pucks). Repo and agent stay
+  // orthogonal, so "Backend, within Etapp" still composes — they are two fields, and
+  // the query ANDs them for free. The same three behaviours the Set version had, said
+  // as a term operation: the radio, the toggle-off, and the replace.
+  function pickScope(field, key) {
+    var vals = placeValues(field);
+    var wasSole = vals.length === 1 && vals[0] === lower(key);
+    var rest = parseQuery(state.query).filter(function (t) { return !sameField(t, field, false); });
+    if (!wasSole) rest.push({ field: field, op: "in", values: [key], neg: false });
+    setQueryTerms(rest);
   }
-  // A place (repo/agent) is active → the sidebar is "in" that place, not in a view.
-  function placeActive() { return state.repos.size > 0 || state.agents.size > 0; }
+  // A place is active → the sidebar is "in" that place, not in a view.
+  function placeActive() {
+    return PLACE_FIELDS_ORDER.some(function (f) { return placeValues(f).length > 0; });
+  }
+  // Everything the query says about the places, dropped — what "go to a view" means.
+  function clearPlaces() {
+    return parseQuery(state.query).filter(function (t) {
+      return t.neg || PLACE_FIELDS_ORDER.indexOf(t.field) === -1;
+    });
+  }
   // Rebuild the whole sidebar nav so views + repo + agent pressed states stay in
   // sync after any navigation (they're one mutually-exclusive dimension now).
   function refreshNav() {
@@ -3617,18 +3637,17 @@
     closeSurfaces(); // same as openDetail: the palette gets here without a hash change
     exitPuckView();
     state.focus = key;
-    state.repos.clear();
-    state.agents.clear();
+    setQueryTerms(clearPlaces()); // the view is global, not still scoped to where you were
     refreshNav();
     renderBoard();
     maybeCloseMenu();
   }
   // Go to a place: single-select it and reset to its whole board (focus "all"), so a
   // place always shows the same thing regardless of the view you came from.
-  function goToPlace(set, key) {
+  function goToPlace(field, key) {
     closeSurfaces(); // same as goToView — the board changes under whatever is open
     exitPuckView();
-    pickScope(set, key);
+    pickScope(field, key);
     state.focus = "all";
     refreshNav();
     renderBoard();
@@ -4069,7 +4088,8 @@
   // Where a ⌘K quick-capture lands: the single scoped repo if you're in one,
   // else this board's own aggregator repo, else the first source.
   function defaultCaptureRepo() {
-    if (state.repos && state.repos.size === 1) return state.repos.values().next().value;
+    var scoped = placeValues("repo");
+    if (scoped.length === 1) return resolveRepo(scoped[0]) || scoped[0];
     var agg = aggregatorRepo();
     if (agg && DATA.sources.some(function (s) { return s.repo === agg; })) return agg;
     return DATA.sources[0] && DATA.sources[0].repo;
@@ -4759,6 +4779,7 @@
     VIEW_KEYS.forEach(function (k) {
       if (v[k] != null && v[k] !== "") o[k] = String(v[k]);
     });
+    if (o.q) o.q = canonicalQuery(o.q); // compare like against like — see canonicalQuery
     return o;
   }
   function sameParams(a, b) {
@@ -4879,6 +4900,11 @@
     // that one means "put everything back".)
     var terms = parseQuery(state.query);
     terms.forEach(function (t, i) {
+      // A place the sidebar already shows is not chipped twice. This used to happen by
+      // accident — places lived in their own Sets and simply were not in `state.query`
+      // — and is now a stated rule about *presentation*, which is all it ever was. The
+      // negation is not a place (there is no row for "not PIA"), so it keeps its chip.
+      if (!t.neg && PLACE_FIELDS_ORDER.indexOf(t.field) !== -1) return;
       var f = fieldByKey(t.field);
       var label;
       if (t.field === "text") label = "“" + t.values[0] + "”";
@@ -4904,6 +4930,7 @@
         remove: function () {
           var rest = parseQuery(state.query).filter(function (_, j) { return j !== i; });
           setQueryTerms(rest);
+          refreshNav(); // a removed term can change what the sidebar reads as pressed
         },
       });
     });
@@ -4945,8 +4972,7 @@
       var clear = el("button", "fchip-clear", "Clear all");
       clear.type = "button";
       clear.addEventListener("click", function () {
-        state.repos.clear(); state.agents.clear();
-        setQueryTerms([]);
+        setQueryTerms([]); // one store, so "put everything back" is one line
         refreshNav();
       });
       chipRow.appendChild(clear);
@@ -5245,10 +5271,11 @@
   // — whichever end of the edit it happens to be. Written once because each of the
   // three has been forgotten separately.
   function afterEdit(/* …items whose page may be open */) {
-    // Navigation first, board second. `buildAgentChips()` prunes a place that has
-    // just been emptied out of `state.agents` — and `state.agents` is part of the
-    // query the board renders. Rendering first therefore drew an empty board for a
-    // scope that was about to be removed, and nothing rendered again afterwards.
+    // Navigation first, board second. That order used to matter because
+    // `buildAgentChips()` pruned an emptied place out of `state.agents`, which was part
+    // of the query the board rendered — render first and you drew an empty board for a
+    // scope about to be removed. Nothing prunes anything now, so the order is only
+    // habit; it is kept because the counts should not lag the board by a frame either.
     refreshNav();
     renderBoard();
     for (var i = 0; i < arguments.length; i++) {
