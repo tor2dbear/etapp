@@ -773,8 +773,10 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
 /* The chosen position is a raised surface inside the track, so the frame stays the
    control's outline and the fill stays the answer to "which one". */
 .segmented-btn.on { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); font-weight: var(--fw-semibold); }
-.set-linkbtn { display: block; margin-top: 12px; font-size: var(--fs-md); background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; }
-.set-linkbtn:hover { text-decoration: underline; }
+/* The only delta a reset in the Settings panel needs: room above it — the rest comes
+   from `.resetbtn`, which is what it is now. (main tokenised the old accent-link rule
+   that used to live here; this branch is what deletes it.) */
+.set-linkbtn { margin-top: 12px; }
 
 /* ── inline SVG icons (Feather-style, inherit currentColor) ──────────────── */
 /* Icons are decorative — never let the SVG become the tap target (which can eat
@@ -1218,13 +1220,19 @@ body.preload * { transition: none !important; }
    way, or the two autos would split the free space and park the value mid-row. */
 .fp-cur { margin-left: auto; color: var(--ink-3); }
 .dp-rule { height: 1px; background: var(--line); margin: 2px 0; }
-.dp-reset {
+/* ── .resetbtn — put this back the way it was ───────────────────────────────── */
+/* There were two of these and they wore different colours: the Display menu's in
+   `--ink-3`, Settings' sidebar-width one in the accent red. Neither is destructive —
+   they restore, they don't remove — so red was wrong on the one that had it, and two
+   colours for one act was wrong on both. Quiet at rest, since a reset is never the
+   thing you came to the menu to do. `dp-reset`/`set-linkbtn` stay as hooks. */
+.resetbtn {
   align-self: flex-start; background: none; border: 0; padding: 2px 0;
   font-size: var(--fs-base); color: var(--ink-3); cursor: pointer;
   display: inline-flex; align-items: center; gap: 6px;
 }
-.dp-reset .icn { width: 13px; height: 13px; }
-.dp-reset:hover { color: var(--ink); text-decoration: underline; }
+.resetbtn .icn { width: 13px; height: 13px; }
+.resetbtn:hover { color: var(--ink); text-decoration: underline; }
 /* A column grouped by something without its own palette (agent, repo, priority)
    still gets a swatch — tinted where the field has a colour, neutral otherwise. */
 .col-plain .swatch { background: var(--tint, var(--ink-3)); }
@@ -1281,6 +1289,14 @@ body.preload * { transition: none !important; }
 .fp-back .fp-chev { margin-right: -4px; }
 .fp-back { color: var(--ink-2); }
 .fp-values { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; }
+/* On a phone the values are not a box inside the sheet — they *are* the sheet's
+   content, and the one scrolling region runs from under the pinned field to the
+   screen edge. `.pick-list` already had this rule; `.fp-values` is the same kind of
+   list and was simply missed. A scroller inside a scroller gives the finger two
+   places to land and neither of them the whole distance. */
+@media (max-width: 640px) {
+  .sheet .fp-values { max-height: none; overflow: visible; }
+}
 .fp-val {
   display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-radius: var(--r-sm);
   font-size: var(--fs-md); color: var(--ink); cursor: pointer;
@@ -1561,7 +1577,11 @@ body.preload * { transition: none !important; }
   .sheet {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 59;
     display: flex; flex-direction: column;
-    max-height: 88dvh;
+    /* The resting detent. It used to be 88dvh, six points under `.full` — so a sheet
+       already stood at nearly full height and "drag up to see more" had almost
+       nothing to reveal. A medium rest is what makes the gesture mean something:
+       the sheet grows to full first, and only then does its content scroll. */
+    max-height: 60dvh;
     background: var(--panel); border-top: 1px solid var(--line);
     border-radius: 16px 16px 0 0; box-shadow: var(--shadow);
     /* The sheet's own edge inset is `--sheet-gap`, not `--pad`: the widest thing it
@@ -1601,7 +1621,15 @@ body.preload * { transition: none !important; }
   /* Keep overscroll from chaining out to the page behind the sheet — on the sheet
      itself too, not just its list: a short sheet (the one-field editor) has nothing
      scrollable inside, so a drag there would otherwise reach the page. */
-  .sheet, .sheet .surface-body { overscroll-behavior: contain; }
+  .sheet { overscroll-behavior: contain; }
+  /* `none` och inte `contain` för listan: `contain` stoppar bara kedjan vidare till
+     sidan, studsen på plats blir kvar — och den studsen är fel person i det här arket.
+     Vid listans topp är nedåt *arkets* gest, så webbläsarens gummiband öppnar ett band
+     ovanför den fastnålade raden där listan syns röra sig (WebKits sticky halkar
+     dessutom en bildruta under studsen, så en rad blinkar fram i glappet). Med `none`
+     tar listan slut vid sin topp, och resten av fingerresan är vår att lämna över till
+     arket (se `handoff` i app.js). */
+  .sheet .surface-body { overscroll-behavior: none; }
   /* The title needs room on both sides of it: pressed up against the grip above and
      the field below, it read as a label on the field rather than the sheet's name. */
   .sheet-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 18px; flex: none; }
@@ -1630,6 +1658,22 @@ body.preload * { transition: none !important; }
      which is also its clip edge — reaches all the way out to `--sheet-gap`, so a row
      that bleeds that far is painted instead of cut off. */
   .sheet .surface-body { overflow-y: auto; gap: 8px; padding-inline: calc(var(--pad) - var(--sheet-gap)); }
+  /* Below the full detent the list does not scroll: a drag there grows the sheet.
+     This is not politeness, it is the only way the gesture can be unambiguous — with
+     both live, the browser pans the list from the same finger the sheet is reading,
+     and `preventDefault` cannot take a pan back once it has begun. So the sheet is
+     the only thing that can move until there is no sheet left to reveal. */
+  .sheet:not(.full) .surface-body { overflow-y: hidden; touch-action: none; }
+  /* Och gesten måste *deklareras* som arkets, inte bara hoppas på. `.sheet` bär
+     `touch-action: pan-y`, som bjuder in webbläsaren att ta det vertikala draget —
+     och tar den det, kommer `pointercancel` innan arket hunnit röra sig. Med
+     scrollningen avstängd i samma regel hade draget då sett ut att göra ingenting,
+     medan draghandtaget (`touch-action: none`) fungerade.
+     Grundvärdet är därför `none` även vid full höjd: panoreringen lämnas tillbaka
+     till listan av `syncPan()` i app.js, som skriver `pan-y` inline först när
+     listans scrollposition bevisar att den har någonstans att ta vägen. Regeln kan
+     inte stå här, för den beror på ett mätvärde som ändras medan arket lever. */
+  .sheet.full .surface-body { touch-action: none; }
   .sheet.kb .surface-body { padding-bottom: 42dvh; }
   /* The field is wrapped in .sheet-pin (see openSurface) and that wrapper is what
      stays put — with tokens the input sits inside .tokenbox, so pinning the input
@@ -1638,8 +1682,16 @@ body.preload * { transition: none !important; }
      It also reaches back out to the clip edge (and pads its own content back in), so
      the rows scrolling under it are hidden across the sheet's full width — otherwise
      a lit row would show through in the 14px band beside the field. */
+  /* `top: -1px` med en pixels egen padding och marginal tillbaka: nålen hänger en
+     pixel ut över scrollerns klippkant, innehållet står kvar på samma rad. Sömmen
+     mellan klippkanten och nålens målade överkant avrundas till olika enhetspixlar vid
+     en bråkdels scrollposition — vilket en tröghetsscroll ger hela tiden — och listan
+     blinkade fram i hårfinan. Går inte att återskapa i Chromium (0 genomlysande
+     enhetspixelrader i 2x och 3x, vid åtta bråkdelslägen), så överhänget är
+     försiktighet mot WebKits sticky-komposition, inte en mätt rättelse. */
   .sheet .surface-body > .sheet-pin {
-    position: sticky; top: 0; z-index: 1; background: var(--panel); padding-bottom: 12px;
+    position: sticky; top: -1px; z-index: 1; background: var(--panel); padding-bottom: 12px;
+    margin-top: -1px; padding-top: 1px;
     margin-inline: calc(var(--sheet-gap) - var(--pad));
     padding-inline: calc(var(--pad) - var(--sheet-gap));
   }
@@ -1666,14 +1718,14 @@ body.preload * { transition: none !important; }
      half a row, and "Reset to default" was a text-height target against the screen
      edge. */
   .sheet .fp-toggle { min-height: 40px; }
-  .sheet .dp-reset { min-height: 40px; align-items: center; display: inline-flex; }
+  .sheet .resetbtn { min-height: 40px; align-items: center; display: inline-flex; }
   /* A sheet is a thumb surface, and that governs its *text* as much as its targets:
      the rows step up to --fs-xl, and the labels and controls beside them follow. It
      started as a fix for a native <select> stuck at the 16px iOS floor while its
      neighbours sat at 13 — the select is a picker now, but the step is right on its
      own terms and stays. */
   .sheet .dp-label,
-  .sheet .dp-reset,
+  .sheet .resetbtn,
   .sheet .segmented-btn,
   .sheet .fp-toggle,
   .sheet .fp-row,
@@ -1799,6 +1851,20 @@ body.preload * { transition: none !important; }
    as every other badge — no second card type, no second visual language. */
 .rollup {
   cursor: help;
+  /* The proportion is a rule along the bottom, not a wash behind the digits.
+     Behind them it cost contrast the badge did not have to spare: the 10px count in
+     `--ink-2` sits at 4.58:1 on the bare chip in light mode and 4.67:1 in dark —
+     barely over the 4.5:1 that small text needs — and any fill visible enough to
+     read dropped it to 4.09 and 4.15. There was no opacity that was both visible and
+     safe, which is the answer: the measurement has to leave the glyphs alone.
+     Still a `background-image`, so it costs no element and cannot push the text; and
+     free of the text it can carry its own weight instead of whispering. The hard
+     stop keeps it an edge — this is a measurement, not a sheen. */
+  background-image: linear-gradient(to right,
+    var(--ink-3) var(--frac, 0%), transparent var(--frac, 0%));
+  background-size: 100% 2px;
+  background-position: bottom left;
+  background-repeat: no-repeat;
 }
 .rollup .icn { width: 11px; height: 11px; }
 /* A state inside a badge changes its *colour*, never its construction. Every badge
@@ -1809,6 +1875,8 @@ body.preload * { transition: none !important; }
    reader has to be told the meaning of. `--done` is the board's quieting colour
    (2.9:1 against the fill where --ink-2 is 4.7); a finished etapp recedes here the
    same way a done card does everywhere else, and the numbers carry the rest. */
+/* Complete: the fill is the whole chip, so it says "done" on its own and the text
+   recedes with it — the same quieting `--done` every finished thing wears here. */
 .rollup.full { color: var(--done); }
 .rollup-n { font-variant-numeric: tabular-nums; }
 .etapp-chip {

@@ -857,6 +857,17 @@
   function progressBadge(item) {
     var p = item.progress;
     var b = el("span", "rollup" + (p.done === p.total ? " full" : ""));
+    // The proportion, as a fill behind the count — not instead of it.
+    //
+    // The finding this closes said the rollup was "a number where a shape would do",
+    // and the puck deliberately waited for real etapps before choosing the shape. The
+    // real ones have 1, 2, 3 and 5 parts, and at those sizes a ring is the *worse*
+    // instrument: 0/1, 1/2 and 2/3 draw 0%, 50% and 67% while the reader's actual
+    // question — how many are left — is "one" for all three. A ring earns its place
+    // where the count stops meaning anything (37/120 → "about a third"), and nothing
+    // on this board is close. So the count stays exact and the fill is what the
+    // glance gets; it also degrades to any N, which a row of dots would not.
+    b.style.setProperty("--frac", (p.total ? Math.round((p.done / p.total) * 100) : 0) + "%");
     // The puck mark, not the etapp mark: this badge counts *pucks*, and the etapp
     // it belongs to already wears its own mark beside the title. Carrying `etapp`
     // here put the same glyph on one card twice and had the count of two dots
@@ -1229,20 +1240,62 @@
   var SHEET_CLOSE = 96, SHEET_FULL = 0.94;
   function draggableSheet(root, body, close) {
     var startY = 0, dy = 0, slid = 0, pending = false, dragging = false, fromBody = false;
-    var baseH = 0, naturalH = 0, maxH = 0;
+    var atTop = true, wasFull = false, mode = "";
+    var baseH = 0, naturalH = 0, maxH = 0, restCap = 0;
+    var startTop = 0, lastY = 0, lastT = 0, vy = 0, glide = 0;
+    var clock = window.performance && performance.now
+      ? function () { return performance.now(); }
+      : function () { return +new Date(); };
+
+    function canScroll() { return body.scrollHeight > body.clientHeight + 1; }
 
     function heights() {
       maxH = Math.round(window.innerHeight * SHEET_FULL);
-      // Its content height, measured without the full-height override.
-      if (root.classList.contains("full")) return;
-      naturalH = root.offsetHeight;
+      if (!root.classList.contains("full")) {
+        naturalH = root.offsetHeight;          // innehållets höjd, direkt avläst
+        // Vilodetentens tak, läst ur CSS medan regeln som bär det gäller. Vid full
+        // höjd är `max-height` full-lägets — och det är just där taket behövs.
+        var cap = parseFloat(getComputedStyle(root).maxHeight);
+        if (cap) restCap = cap;
+        return;
+      }
+      // Vid full höjd är vilohöjden inte den man ser, och innehållet byts medan arket
+      // står uppfällt: filtret går från sin rotlista till en värdelista. En vilohöjd
+      // från förra listan ger fel golv att glida ur och fel mittpunkt att snäppa mot —
+      // mätt vilade rotlistan på 239, och efter bytet till 34 etiketter tog ett drag på
+      // 420 px arket till 506 i stället för att stänga det.
+      // Räknas fram i stället för att mätas: att mäta den kräver att `.full` tas av,
+      // och en klass som tas av och sätts tillbaka runt en påtvingad layout startar
+      // övergången tillbaka. Arkets höjd duger inte som utgångspunkt heller — kroppen
+      // växer inte med arket, så en kort lista lämnar tomrum under sig.
+      var rr = root.getBoundingClientRect();
+      var chrome = body.getBoundingClientRect().top - rr.top
+        + (parseFloat(getComputedStyle(root).paddingBottom) || 0);
+      var want = chrome + body.scrollHeight;
+      naturalH = Math.round(restCap ? Math.min(want, restCap) : want);
+      // Aldrig 0: ett ark som nått full höjd utan att ha mätts skulle få `floor = 0`,
+      // och ett drag nedåt hade skalat om det i evighet i stället för att glida undan —
+      // `slid` växer aldrig, så det kan aldrig passera stängningströskeln.
+      if (!naturalH) naturalH = root.offsetHeight;
     }
     function down(e) {
       if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (glide) { cancelAnimationFrame(glide); glide = 0; }
       fromBody = body.contains(e.target);
-      if (fromBody && body.scrollTop > 0) return;
+      // A drag that starts in the list is still the sheet's, unless the list has
+      // somewhere to go itself. Downward: only from its top. Upward: only while the
+      // sheet is already full — below that there is sheet left to reveal, and
+      // revealing it is what the finger meant.
+      wasFull = root.classList.contains("full");
+      // "At its top" means "has nothing to give this gesture", and below full height a
+      // list that cannot scroll at all never has anything to give — whatever offset it
+      // is holding. Asking only about the offset discarded the drag on a collapsed
+      // sheet whose list still remembered where it stood.
+      atTop = !wasFull || body.scrollTop <= 0;
+      if (fromBody && !atTop) return;
       heights();
-      pending = true; dragging = false; startY = e.clientY; dy = 0; slid = 0;
+      pending = true; dragging = false; mode = ""; startY = e.clientY; dy = 0; slid = 0;
+      startTop = body.scrollTop; lastY = e.clientY; lastT = clock(); vy = 0;
       baseH = root.offsetHeight;
       // Pin the height for the whole gesture, from the very first touch. Putting a
       // finger on the sheet blurs the search field, which drops the keyboard
@@ -1262,11 +1315,33 @@
       dy = e.clientY - startY;
       if (!dragging) {
         if (Math.abs(dy) < 6) return;
-        if (fromBody && dy < 0) { pending = false; return; } // that's a scroll
+        // Up from the list is a scroll only once the sheet is full; down only once
+        // the list is at its own top. Two guards, because they are two questions —
+        // the old code asked neither for the upward case and simply gave it away.
+        if (fromBody && dy < 0 && wasFull) {
+          // The list has `touch-action: none` while it sits at its top (syncPan),
+          // so this scroll is nobody's unless we do it. See the note there.
+          if (!canScroll()) { pending = false; return; }
+          mode = "list";
+        } else if (fromBody && dy > 0 && !atTop) { pending = false; return; }
+        else mode = "sheet";
         dragging = true;
-        root.classList.add("dragging");
+        if (mode === "sheet") root.classList.add("dragging");
         try { root.setPointerCapture(e.pointerId); } catch (err) { /* older engines */ }
       }
+      if (mode === "list") {
+        var t = clock();
+        if (t > lastT) vy = (e.clientY - lastY) / (t - lastT);
+        lastY = e.clientY; lastT = t;
+        body.scrollTop = startTop - dy;
+        e.preventDefault();
+        return;
+      }
+      applySheet(e.clientY);
+      e.preventDefault();
+    }
+    function applySheet(clientY) {
+      dy = clientY - startY;
       var want = baseH - dy;              // finger up → taller
       var floor = Math.min(naturalH, baseH);
       if (want >= floor) {
@@ -1278,7 +1353,6 @@
         root.style.height = floor + "px";
         root.style.transform = "translateY(" + slid + "px)";
       }
-      e.preventDefault();
     }
     function up() {
       if (!dragging) {
@@ -1289,7 +1363,13 @@
         setTimeout(function () { if (!pending && !dragging) root.style.height = ""; }, 0);
         return;
       }
-      pending = false; dragging = false;
+      pending = false; dragging = false; handOn = false;
+      if (mode === "list") {
+        mode = "";
+        root.style.height = "";
+        coast();
+        return;
+      }
       root.classList.remove("dragging");
       if (slid > SHEET_CLOSE) { close(); return; }
       var h = root.offsetHeight;
@@ -1298,12 +1378,156 @@
       // Settle at the nearer detent, so a drag that got most of the way there
       // finishes the journey instead of springing back.
       if (h > (naturalH + maxH) / 2) root.classList.add("full");
-      else root.classList.remove("full");
+      else {
+        // Give the list back its top on the way down. Below full height the body is
+        // `overflow: hidden` but still holds whatever offset it had, so the rows above
+        // it would be clipped out of a box that can no longer be scrolled — gone until
+        // the sheet is expanded again.
+        root.classList.remove("full");
+        body.scrollTop = 0;
+      }
+      syncPan();
+    }
+    // A hand-rolled fling, for the one gesture the browser isn't allowed to have:
+    // the first upward drag from the list's top. Every later one is native again —
+    // the moment the offset leaves 0, panning is the list's and momentum with it.
+    function coast() {
+      var v = vy;                                  // px/ms, finger direction
+      syncPan();
+      // En hastighet är färsk eller ingen alls. Står fingret stilla skickas inga
+      // pointermove, så `vy` behåller sitt sista värde hur länge som helst — svep,
+      // håll kvar, släpp, och listan flög iväg som om fingret fortfarande rörde sig.
+      // Ingen native scroll gör det. En bildruta är 17 ms; 80 räcker för ett glapp i
+      // händelseströmmen och är långt under en paus någon hinner uppfatta.
+      if (clock() - lastT > 80) return;
+      if (Math.abs(v) < 0.05) return;
+      var last = clock();
+      var step = function () {
+        var t = clock(), dt = t - last;
+        last = t;
+        // Ett avbrutet fling är inget fling. Ställs sidan åt sidan står
+        // `requestAnimationFrame` stilla, och att bara klippa `dt` hade låtit
+        // trögheten överleva pausen och rulla vidare när man kommer tillbaka — samma
+        // fel som ett gammalt hastighetsprov, en våning ned. Förflyttningen klipps
+        // ändå, så ett kortare hack ger en långsammare bildruta och inte ett skutt.
+        if (dt > 100) { glide = 0; syncPan(); return; }
+        body.scrollTop -= v * Math.min(dt, 32);    // finger up (v < 0) → offset grows
+        v *= Math.pow(0.995, dt);
+        var live = Math.abs(v) > 0.02 && body.scrollTop > 0
+          && body.scrollTop < body.scrollHeight - body.clientHeight - 1;
+        glide = live ? requestAnimationFrame(step) : 0;
+        if (!live) syncPan();
+      };
+      glide = requestAnimationFrame(step);
     }
     root.addEventListener("pointerdown", down);
     root.addEventListener("pointermove", move);
     root.addEventListener("pointerup", up);
     root.addEventListener("pointercancel", up);
+
+    // Överlämningen: gesten webbläsaren redan har tagit.
+    //
+    // Börjar draget en bit ned i listan äger listan panoreringen — den har någonstans
+    // att ta vägen, och `down()` lämnar därför gesten ifred. Men listan tar slut. Drar
+    // man vidare nedåt därifrån hände ingenting med arket förrän man släppte och tog
+    // om, för vår pointer-ström är död: iOS skickar `pointercancel` så fort den börjat
+    // scrolla. `touchmove` fortsätter däremot att komma under hela scrollen, och det
+    // är den tråden vi hänger kvar i.
+    //
+    // Vid listans topp finns inget kvar för webbläsaren att göra med resten av
+    // fingerresan — `overscroll-behavior: none` tog bort studsen — så vi tar den. Ingen
+    // `preventDefault` behövs eller vore möjlig; vi tävlar inte om gesten, vi ärver den
+    // när den lagts ned.
+    var handY = 0, handOn = false, handArmed = false;
+    // Ankaret måste sättas när fingret landar. Utan det stod `handY` kvar på 0 —
+    // skärmens överkant — och första röresen räknades som femhundra pixlars resa
+    // nedåt: arket föll ihop till vilohöjd och sköts av skärmen, för att sedan klättra
+    // tillbaka med fingret. (Mätt: 506@469 → 654@190 under ett drag *uppåt*.)
+    // Armeras på det som är sant när fingret landar: listan äger gesten om den har
+    // någonstans att ta vägen — samma villkor som `touch-action` låses vid, och exakt
+    // de gester webbläsaren tar ifrån oss. Att i stället vänta på ett `touchmove` som
+    // ser `scrollTop > 0` hade missat ett drag som börjar några pixlar från toppen och
+    // är nere på 0 redan vid första röresen.
+    body.addEventListener("touchstart", function (e) {
+      var t = e.touches && e.touches.length === 1 && e.touches[0];
+      handY = t ? t.clientY : 0;
+      handOn = false;
+      handArmed = root.classList.contains("full") && body.scrollTop > 0;
+    }, { passive: true });
+    function handoff(e) {
+      var t = e.touches && e.touches.length === 1 && e.touches[0];
+      if (!t) return;
+      if (handOn) { applySheet(t.clientY); return; }
+      if (pending || dragging) return;                 // gesten är redan vår
+      // Bara en gest listan faktiskt tagit går att ärva. Deklinerar pointer-vägen av
+      // andra skäl — ett drag uppåt i en lista som inte kan scrolla — finns ingenting
+      // att ärva, och överlämningen ska hålla sig utanför den.
+      if (!handArmed) return;
+      if (body.scrollTop > 0) { handY = t.clientY; return; }
+      // Listan står på sin topp. Räkna resan härifrån, och bara nedåt: uppåt finns
+      // ingenting att ge arket, och då ska handY följa med så en vändning mäts rätt.
+      if (t.clientY - handY < 8) { if (t.clientY < handY) handY = t.clientY; return; }
+      heights();
+      fromBody = true; atTop = true; wasFull = true; mode = "sheet";
+      dragging = true; handOn = true; startY = handY; dy = 0; slid = 0;
+      baseH = root.offsetHeight;
+      root.style.height = baseH + "px";
+      root.classList.add("dragging");
+      applySheet(t.clientY);
+    }
+    body.addEventListener("touchmove", handoff, { passive: true });
+    body.addEventListener("touchend", function () { if (handOn) up(); }, { passive: true });
+    body.addEventListener("touchcancel", function () { if (handOn) up(); }, { passive: true });
+    // Panoreringen är listans bara när listan har någonstans att ta vägen *åt det
+    // håll webbläsaren låser sig vid*.
+    //
+    // `touch-action` läses en gång, vid touch-start, innan någon riktning finns. Den
+    // kan alltså inte koda en riktning — bara något som redan är sant då. Ett
+    // icke-passivt `touchmove` ser riktningen men kommer för sent: Chromium skickar
+    // `pointermove` först och har redan bestämt sig för panoreringen (mätt:
+    // preventDefault på första touchmove, `pointercancel` två drag senare ändå).
+    //
+    // Förra regeln frågade bara *om* listan kunde scrolla. Den räckte för en kort
+    // lista, och gick sönder på exakt det fall användaren körde: tolv etiketter som
+    // verkligen svämmar över, arket på full höjd, listan vid sin topp — `pan-y`, och
+    // det nedåtgående draget gick till webbläsaren som studsade listan i stället för
+    // att stänga arket. (Testet höll med, för jag hade skrivit in fel förväntan.)
+    //
+    // Det som *är* avgjort vid touch-start är listans scrollposition. Vid toppen
+    // tillhör nedåt arket, och då får listan inte gesten alls — den uppåtgående
+    // scrollen kör vi själva den gången (se `coast`). Så fort positionen lämnat 0 är
+    // panoreringen listans igen, med webbläsarens egen tröghet. Räknas om när arket
+    // ändrar storlek, innehåll eller scrollposition.
+    function syncPan() {
+      var scrollable = root.classList.contains("full") && canScroll();
+      body.style.touchAction = scrollable && body.scrollTop > 0 ? "pan-y" : "none";
+    }
+    body.addEventListener("scroll", syncPan, { passive: true });
+    root.__syncPan = syncPan;
+    syncPan();
+    var watchers = [];
+    // Två observatörer, för `scrollHeight` kan ändras utan att rutan gör det.
+    // `ResizeObserver` ser bara kroppens *ruta*. Filtrerar man en lång lista ned till
+    // några rader i ett ark som redan står på full höjd ändras `scrollHeight` men inte
+    // kroppens mått, och panoreringen hade blivit kvar hos en lista som inte längre
+    // har någonstans att ta vägen. I mina mätningar råkade rutan ändras med innehållet
+    // (433 → 360 → 433) och synken höll — men det är en tillfällighet i den här
+    // layouten, inte en garanti, och en regel som vilar på en tillfällighet är en regel
+    // som faller när layouten rör sig.
+    if (window.ResizeObserver) {
+      var ro = new ResizeObserver(syncPan);
+      ro.observe(body);
+      watchers.push(ro);
+    }
+    if (window.MutationObserver) {
+      var mo = new MutationObserver(syncPan);
+      mo.observe(body, { childList: true, subtree: true });
+      watchers.push(mo);
+    }
+    // Varje ark får sina egna observatörer, och ett ark lever bara till nästa
+    // stängning. Lyssnarna går med noderna de sitter på; observatörerna hänger på
+    // dokumentet, så de lämnas tillbaka och kopplas ur av `onDestroy`.
+    return function () { watchers.forEach(function (w) { w.disconnect(); }); watchers = []; };
   }
 
   // Every open surface, so navigation and viewport changes can clear them: a sheet
@@ -1446,7 +1670,7 @@
       document.body.appendChild(root);
       lockScroll();
       popLayer = pushLayer([root, scrim]); // the scrim stays live: tap-outside still closes
-      draggableSheet(root, body, close);
+      onDestroy.push(draggableSheet(root, body, close));
       // While a *text field* inside is focused the keyboard is up; pad the scroll
       // area so the last row can still be brought above it.
       //
@@ -3513,7 +3737,7 @@
     // the title now, next to the views it joins. (It is still Linear's "set default
     // for everyone", git-native: it writes board.config.json and repo permissions
     // decide who may.)
-    var reset = el("button", "dp-reset");
+    var reset = el("button", "resetbtn dp-reset");
     reset.type = "button";
     reset.appendChild(icon("reset"));
     reset.appendChild(el("span", null, "Reset to default"));
@@ -6074,8 +6298,10 @@
 
     p.appendChild(el("div", "set-eyebrow", "Preferences"));
     p.appendChild(themeControl());
-    var resetW = el("button", "set-linkbtn", "Reset sidebar width");
+    var resetW = el("button", "resetbtn set-linkbtn");
     resetW.type = "button";
+    resetW.appendChild(icon("reset"));
+    resetW.appendChild(el("span", null, "Reset sidebar width"));
     resetW.addEventListener("click", function () {
       document.documentElement.style.removeProperty("--sidebar-w");
       try { localStorage.removeItem("roadmap-sidebar-w"); } catch (e) {}
