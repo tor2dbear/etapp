@@ -5153,33 +5153,32 @@
   }
   // How many pucks each candidate value would leave — counted against the *other*
   // active terms, so the numbers describe the click you're about to make.
+  // How many of the cards you are looking at carry this value. One sentence, and the
+  // same one on every row whether it is ticked or not.
+  //
+  // It used to model the *click* instead — "how many you would get if you pressed
+  // this" — which for a ticked row meant "if you unticked it". Two different sentences
+  // on rows that look identical, with nothing to say which you were reading: ticking
+  // `Is an etapp` on a board of 33 made its own number jump from 1 to 32, and 32 read
+  // as a claim about how many etapps there are.
+  //
+  // The other sections still apply, so the numbers describe the board you are on;
+  // only this section's own ticks are lifted, or every unticked sibling would read 0
+  // as soon as you ticked one of them. The values within a section overlap (a puck can
+  // be blocked and blocking), so the numbers do not add up to what two ticks give —
+  // which is true of every facet count anywhere and is not what they are for.
   function countFor(f, value) {
-    // The probe has to be what the click *does*, and the click only ever touches this
-    // section's values — `setSectionValues` leaves the rest of a term standing. So the
-    // base strips those values out rather than dropping whole terms, which matters
-    // twice over.
-    //
-    // Three sections share the `is:` field, so dropping every `is:` term would count a
-    // Membership click against a board that had quietly forgotten the Readiness ticks
-    // still on screen. And dropping the whole of a *mixed* term — `is:stale,member`,
-    // which the panel does not write but a link or a saved view can carry — counted
-    // against no filter at all: the row beside In an etapp advertised 7 where clicking
-    // it gave 0, because unticking leaves `is:stale` standing and nothing is stale.
-    var base = [];
+    // Strip this section's values rather than dropping whole terms: a *mixed* term —
+    // `is:stale,member`, which the panel does not write but a link or a saved view can
+    // carry — would otherwise take its `stale` half out of the count with it, and the
+    // row would be counted against a board nobody is looking at.
+    var probe = [];
     activeTerms().forEach(function (t) {
-      if (!termInSection(t, f, false)) { base.push(t); return; }
+      if (!termInSection(t, f, false)) { probe.push(t); return; }
       var kept = t.values.filter(function (v) { return !ownsState(f, v); });
-      if (kept.length) base.push({ field: t.field, op: t.op, values: kept, neg: t.neg });
+      if (kept.length) probe.push({ field: t.field, op: t.op, values: kept, neg: t.neg });
     });
-    // Model the toggle, not the value: with `status:now` on, clicking Next gives
-    // `status:now,next` (an OR — a *bigger* set), and clicking Now removes the
-    // filter entirely. Counting the candidate alone would predict neither.
-    var current = sectionValues(f, false);
-    var next = current.indexOf(value) === -1
-      ? current.concat([value])
-      : current.filter(function (v) { return v !== value; });
-    var probe = base.slice();
-    if (next.length) probe.push({ field: qfieldOf(f), op: f.states ? "is" : "in", values: next, neg: false });
+    probe.push({ field: qfieldOf(f), op: f.states ? "is" : "in", values: [value], neg: false });
     var n = 0;
     DATA.items.forEach(function (it) { if (runQuery(it, probe)) n++; });
     return n;
