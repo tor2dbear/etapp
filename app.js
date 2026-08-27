@@ -70,6 +70,15 @@
     // Both were symptoms of the pair, so the pair goes and the rows derive from the
     // query like every other control.
     query: "", // the filter, as text: the store behind the chips, the panel and the rows
+    // Which saved view you navigated into, by name — and *only* that. It is not a
+    // second copy of the filter: the query above still says what the board shows.
+    // This says where the board came from, which nothing else can answer, because a
+    // modified saved view is indistinguishable from any other filter by inspection.
+    // Deliberately not in the URL. The parameters are what a link has to carry; adding
+    // provenance would make it a second thing the link must agree with them about, and
+    // a stale one the moment either side is hand-edited. So a reload of a modified view
+    // is honestly just a filter, and says so.
+    fromView: null,
     showDone: false,
     focus: "all", // "all" | "ready" (unblocked now/next) | "inbox" (triage) | "attention" (flagged)
     view: "board", // "board" (kanban columns) | "list" (one column, grouped)
@@ -623,6 +632,7 @@
     if (reset) {
       state.query = "";
       state.focus = "all";
+      state.fromView = null; // applySavedView sets it back; every other reset means "no view"
       state.showDone = DISPLAY_DEFAULTS.showDone;
       state.showEmpty = DISPLAY_DEFAULTS.showEmpty;
       state.group = DISPLAY_DEFAULTS.group;
@@ -3426,6 +3436,13 @@
   }
 
   function renderBoard() {
+    // Back to the plain default board is *leaving* the view, and it has to be written
+    // down rather than hidden at read time. `editedSavedView()` merely declined to
+    // answer, so the name stayed set: remove a view's last chip and add any other
+    // filter, and the view you had already walked out of came back as "(edited)" with
+    // an Update offering to overwrite it with the new filter. Every mutation ends in a
+    // render, so this is where the transition can be seen at all.
+    if (state.fromView && !Object.keys(viewParamObject()).length) state.fromView = null;
     board.innerHTML = "";
     // The layout is whatever the toggle says — in every view.
     //
@@ -3513,6 +3530,11 @@
     // to "where am I". #17 made the right *row* light; the title never asked.
     var saved = activeSavedView();
     if (saved) return saved.name;
+    // Still in the view, with changes on top. Without this the header read "All pucks"
+    // while the chip row offered `Update "Allt nu"` — the same split brain, one step
+    // milder: two pieces of chrome disagreeing about which view you are in.
+    var edited = editedSavedView();
+    if (edited) return edited.name + " (edited)";
     var base = VIEW_TITLES[state.focus] || "All pucks";
     var scope = scopeParts();
     if (!scope.length) return base;
@@ -3659,6 +3681,7 @@
     // view is a complete description of the board (`applySavedView` resets everything),
     // so leaving one has to leave all of it, or the rows in the sidebar stop meaning
     // what they say. A refinement is something you add *after* arriving.
+    state.fromView = null; // you have left the view, not modified it
     setQueryTerms([]);
     refreshNav();
     renderBoard();
@@ -3675,6 +3698,10 @@
     // question unanswerable and the row could never be switched off again — it just
     // re-added itself. Captured here, the radio, the toggle-off and the replace all
     // survive a navigation that also drops the refinement.
+    // Navigation, so the provenance goes too — same reason `goToView` drops it.
+    // `scopeToPlace` below deliberately does not: that one is a refinement made from
+    // inside the board, which is exactly the "you changed the view" case.
+    state.fromView = null;
     var vals = placeValues(field);
     var wasSole = vals.length === 1 && vals[0] === lower(key);
     // What a place navigation drops: the *refinement* — the tag, the text, the priority
@@ -3853,9 +3880,13 @@
             if (saved.length) {
               host.appendChild(el("div", "menu-rule"));
               host.appendChild(el("div", "vs-section fp-label", "Saved"));
-              var now = viewParamObject();
+              // Through the producer, not a second `sameParams` of its own: with two
+              // entries carrying identical parameters — which is what a duplicate is —
+              // an independent test lights both, and only `activeSavedView()` knows
+              // which one you are actually in.
+              var activeSaved = activeSavedView();
               saved.forEach(function (v) {
-                var on = sameParams(paramsOf(v), now);
+                var on = v === activeSaved;
                 var r = el("button", "row" + (on ? " on" : ""));
                 r.type = "button";
                 r.title = v.q || "Saved view";
@@ -4865,6 +4896,7 @@
   function applySavedView(v) {
     exitPuckView();
     applyParams(paramsOf(v), true); // a saved view describes the whole board
+    state.fromView = v.name; // after applyParams — its reset branch clears this
     refreshNav();
     renderBoard();
     maybeCloseMenu();
@@ -4874,10 +4906,93 @@
   // sidebar and in the title switcher — and all three must agree, or the chrome marks
   // two rows at once.
   function activeSavedView() {
-    var now = viewParamObject();
+    var now = viewParamObject(), vs = savedViews(), first = null, from = null;
+    for (var i = 0; i < vs.length; i++) {
+      if (vs[i].name === state.fromView) from = vs[i];
+      if (!first && sameParams(paramsOf(vs[i]), now)) first = vs[i];
+    }
+    // Parameters are not an identity — duplicate a view and two entries describe the
+    // board equally well — so provenance decides whenever it names a view that still
+    // exists, and a match on some *other* view never outvotes it. Editing A until it
+    // happened to equal B retitled you into B and took away A's own Update: you were
+    // looking at B with no way to save the thing you were editing.
+    if (from) return sameParams(paramsOf(from), now) ? from : null;
+    // No provenance, or it named a view since deleted: the board was not reached
+    // through a row (a pasted link, a reload) and can only speak for itself.
+    return first;
+  }
+  // The saved view you are *in*, with changes on top. `activeSavedView()` answers
+  // "does the board match a view exactly"; this answers "did you come from one and
+  // change it", which no amount of looking at the board can tell you — hence the
+  // remembered name. Both are needed and they are never both true: the pair is what
+  // lets the chip row offer Update instead of a name field you have to retype.
+  // A name whose view has since been deleted answers null, so the row can't offer to
+  // update something that is gone.
+  function editedSavedView() {
+    if (!state.fromView || activeSavedView()) return null;
+    // Emptied all the way back to the plain default board. That is not a view with
+    // changes on top, it is having left the view — and the chip row is hidden here, so
+    // an "(edited)" title would be the only thing left claiming you were still in one.
+    if (!Object.keys(viewParamObject()).length) return null;
     var vs = savedViews();
-    for (var i = 0; i < vs.length; i++) if (sameParams(paramsOf(vs[i]), now)) return vs[i];
+    for (var i = 0; i < vs.length; i++) if (vs[i].name === state.fromView) return vs[i];
     return null;
+  }
+  // The ⋯ on a saved-view row. Its own positioned wrapper, because the surface anchors
+  // inside it — and a <button> inside the row's <button> would be invalid, so the
+  // wrapper is what the row actually contains.
+  function savedViewMenu(v) {
+    var wrap = el("span", "filter-wrap saved-more-wrap");
+    // This wrapper sits inside the row's own <button>, and `openSurface` appends the
+    // menu *into* it — so without this every click on a menu row also activated the row
+    // behind it: `applySavedView` → `refreshNav` → the sidebar rebuilt and took the
+    // still-open menu with it, before the action it had just picked could run. The ✕
+    // this replaced guarded its single click the same way; a menu has more clicks than
+    // one, so the guard belongs on the container rather than on each of them.
+    wrap.addEventListener("click", function (e) { e.stopPropagation(); });
+    var btn = el("button", "saved-more");
+    btn.type = "button";
+    btn.title = "Rename, duplicate or remove this view";
+    btn.setAttribute("aria-label", "Actions for saved view " + v.name);
+    btn.appendChild(icon("more"));
+    var open = null;
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation(); // the row behind navigates; the ⋯ is not navigation
+      e.preventDefault();
+      if (open) { open.close(); open = null; return; }
+      open = openSurface({
+        title: v.name,
+        anchorWrap: wrap,
+        // Mirrored, so the menu opens *into* the sidebar. `.sidebar` is a scroll
+        // container (`overflow-y: auto`), which clips in both axes — hanging right from
+        // a trigger at the sidebar's right edge put the labels behind that edge. This is
+        // the one anchoring that fits: the menu is narrower than the sidebar's minimum.
+        cls: "pick-menu menu-right",
+        onClose: function () { open = null; },
+        build: function (host, api) {
+          function row(iconName, text, cls, run) {
+            var b = el("button", "row" + (cls ? " " + cls : ""));
+            b.type = "button";
+            b.appendChild(icon(iconName));
+            b.appendChild(el("span", null, text));
+            // Deferred past the click that picked it, like the view switcher's own save
+            // row: Rename opens a surface anchored in this same wrapper, and the tail of
+            // the pointer event that closed us would reach it as an outside click.
+            b.addEventListener("click", function () {
+              api.close();
+              setTimeout(run, 0);
+            });
+            host.appendChild(b);
+          }
+          row("edit", "Rename…", null, function () { renameSavedView(v); });
+          row("plus", "Duplicate", null, function () { duplicateSavedView(v); });
+          host.appendChild(el("div", "menu-rule"));
+          row("trash", "Remove view", "danger", function () { removeSavedView(v); });
+        },
+      });
+    });
+    wrap.appendChild(btn);
+    return wrap;
   }
   function buildSavedViews() {
     var host = document.getElementById("savedViews");
@@ -4887,25 +5002,21 @@
     section.hidden = !views.length;
     host.innerHTML = "";
     if (!views.length) return;
-    var now = viewParamObject();
+    var active = activeSavedView(); // one producer — see the note in the title switcher
     var seg = el("div", "focusseg");
     views.forEach(function (v) {
-      var on = sameParams(paramsOf(v), now);
+      var on = v === active;
       var b = el("button", "focusbtn" + (on ? " on" : ""));
       b.type = "button";
       b.title = v.q || "Saved view";
       b.setAttribute("aria-pressed", on ? "true" : "false");
       b.appendChild(el("span", "focus-label", v.name));
       b.addEventListener("click", function () { applySavedView(v); });
-      if (ghToken()) {
-        var del = el("button", "saved-del");
-        del.appendChild(icon("x", "x-icn"));
-        del.type = "button";
-        del.title = "Remove this saved view";
-        del.setAttribute("aria-label", "Remove saved view " + v.name);
-        del.addEventListener("click", function (e) { e.stopPropagation(); removeSavedView(v); });
-        b.appendChild(del);
-      }
+      // A ✕ and nothing else was the whole of "what can happen to this view once it
+      // exists" — so renaming meant saving a copy under the new name and deleting the
+      // old one: two commits, and two identical-looking rows in between. Three actions
+      // do not fit on one button, so it becomes the same ⋯ the columns use.
+      if (ghToken()) b.appendChild(savedViewMenu(v));
       seg.appendChild(b);
     });
     host.appendChild(seg);
@@ -4915,10 +5026,23 @@
     var repo = aggregatorRepo();
     if (!repo) { toast("✗ No aggregator repo configured", true); return; }
     toast("Saving…");
+    // Where the board stood when the request left. A commit is a network round trip,
+    // and every one of these callbacks claims a provenance — so if you navigate while
+    // one is in flight, the reply would land on top of where you went: the destination
+    // titled as the view you just wrote, with an Update aimed at overwriting it with
+    // the destination's own parameters. Your navigation is the newer truth. The write
+    // still lands; only the claim on "which view you are in" defers to it.
+    var wroteFrom = state.fromView;
     commitViews(repo, views, message)
       .then(function () {
         DATA.config = DATA.config || {};
         DATA.config.views = views; // optimistic: the harvest will confirm it
+        // Before the repaint, not after: every one of these callbacks adjusts the
+        // provenance the repaint is about to read. Renaming the view you were editing
+        // ran it afterwards, so the paint in between looked up a name that no longer
+        // existed, decided you were in no view at all, and dropped the edited title and
+        // its Reset/Update — with nothing scheduled to paint again and put them back.
+        if (done && state.fromView === wroteFrom) done();
         // The same repaint a navigation does, and for the same reason: this write
         // changes the answer to "which saved view describes the board", which the
         // header, the built-in view rows and the saved rows all read. Rebuilding
@@ -4926,7 +5050,6 @@
         // header naming a view you just deleted, and `All pucks` still lit beside
         // the view you just saved. One store, one repaint.
         refreshNav(); renderBoard();
-        if (done) done();
         toast("✓ Saved — live in ~1 min");
       })
       .catch(function (err) { toast("✗ " + err.message, true); });
@@ -4963,17 +5086,99 @@
       onSave: function (name) {
         name = String(name).trim();
         if (!name) return;
-        var views = savedViews().filter(function (v) { return v.name !== name; }); // same name = replace
-        var entry = { name: name };
-        for (var k in params) entry[k] = params[k];
-        views.push(entry);
-        writeViews(views, "roadmap: save view “" + name + "”");
+        // Same name = replace, **in place**. It used to filter the old one out and push
+        // the new one on the end, so saving over a view silently moved it to the bottom
+        // of the sidebar: an edit that reorders the list is doing something it never
+        // said it would.
+        writeViews(withView(savedViews(), name, params), "roadmap: save view “" + name + "”",
+          function () { state.fromView = name; }); // you are now in the view you just made
       },
     });
   }
+  // The one place a view's parameters are written into the list: replace the entry of
+  // that name where it stands, or append when the name is new. Save and update both go
+  // through it, so neither can invent its own ordering rule.
+  function withView(views, name, params) {
+    var out = views.slice(), entry = { name: name }, at = -1;
+    for (var k in params) entry[k] = params[k];
+    for (var i = 0; i < out.length; i++) if (out[i].name === name) { at = i; break; }
+    if (at < 0) out.push(entry); else out[at] = entry;
+    return out;
+  }
+  // "Update High" — the action that was missing. Editing a saved view meant pressing
+  // Save and retyping its name exactly: replace-by-collision, where nothing said it
+  // would overwrite, a typo made a duplicate, and the name field was the only way to
+  // aim. Here the target is the view you are standing in, so there is nothing to aim.
+  function updateSavedView(v) {
+    var params = viewParamObject();
+    if (!Object.keys(params).length) { toast("✗ Nothing to save — this is the default board", true); return; }
+    writeViews(withView(savedViews(), v.name, params), "roadmap: update view “" + v.name + "”",
+      function () { state.fromView = v.name; });
+  }
+  function renameSavedView(v) {
+    // Unanchored — a centred surface on desktop, a sheet on a phone. The field is 340px
+    // at its widest and the sidebar can be dragged down to 190, so anchoring it to the
+    // row would either hang it off the left of the page (mirrored) or bury it behind the
+    // sidebar's own overflow (not mirrored). There is no width where both hold, and a
+    // one-field rename is the kind of task a centred surface is for anyway.
+    inputSurface(null, {
+      title: "Rename view",
+      value: v.name,
+      placeholder: "Name this view",
+      hint: "Only the name changes — the view keeps its parameters and its place in the list.",
+      action: "Rename",
+      onSave: function (name) {
+        name = String(name).trim();
+        if (!name || name === v.name) return;
+        // Renaming onto a name that already exists would leave two rows labelled the
+        // same and `withView` unable to say which one a later save means. Drop the
+        // other — the rule the save path has always applied to a name clash.
+        var views = savedViews().filter(function (x) { return x === v || x.name !== name; });
+        var at = views.indexOf(v);
+        if (at < 0) return;
+        var entry = {};
+        for (var k in v) entry[k] = v[k];
+        entry.name = name;
+        views[at] = entry;
+        writeViews(views, "roadmap: rename view “" + v.name + "” → “" + name + "”",
+          function () {
+            // Provenance follows the entry, not the name. Two ways it moves here:
+            if (state.fromView === v.name) state.fromView = name; // you were in the view being renamed
+            // …or the new name collided with the view you *were* in, and the filter
+            // above dropped it. Leaving the name set pointed it at the renamed entry
+            // instead, so a board still showing the deleted view read as "B (edited)"
+            // and Update offered to write those parameters over an unrelated view.
+            else if (state.fromView === name) state.fromView = null;
+          });
+      },
+    });
+  }
+  // Branch off a view without losing it — the answer to "I want High, but also scoped
+  // to one repo". Named automatically and dropped in beside its original rather than at
+  // the end, because a copy belongs next to what it came from; Rename is one row away
+  // in the same menu.
+  function duplicateSavedView(v) {
+    var taken = {};
+    savedViews().forEach(function (x) { taken[x.name] = 1; });
+    var base = v.name + " copy", name = base, n = 2;
+    while (taken[name]) name = base + " " + n++;
+    var views = savedViews().slice(), entry = {};
+    for (var k in v) entry[k] = v[k];
+    entry.name = name;
+    views.splice(views.indexOf(v) + 1, 0, entry);
+    // Land in the copy — *the whole copy*. Claiming its name while leaving the board
+    // where it was made the title read "X copy (edited)" over a filter that had nothing
+    // to do with it, and Update then offered to overwrite the copy with that filter.
+    // Duplicating a view is a way of going to it, so go: `applySavedView` sets the
+    // parameters and the provenance together, which is also what tells the two
+    // identical entries apart (see `activeSavedView`).
+    writeViews(views, "roadmap: duplicate view “" + v.name + "”",
+      function () { applySavedView(entry); });
+  }
   function removeSavedView(v) {
     if (!window.confirm("Remove the saved view “" + v.name + "”?")) return;
-    writeViews(savedViews().filter(function (x) { return x !== v; }), "roadmap: remove view “" + v.name + "”");
+    writeViews(savedViews().filter(function (x) { return x !== v; }), "roadmap: remove view “" + v.name + "”",
+      function () { if (state.fromView === v.name) state.fromView = null; });
   }
 
   // ── the chip row ────────────────────────────────────────────────────────────
@@ -5048,8 +5253,6 @@
     if (!chipRow) return;
     var chips = chipsData();
     chipRow.innerHTML = "";
-    chipRow.hidden = !chips.length;
-    if (!chips.length) return;
     chips.forEach(function (c) {
       var chip = el("span", "fchip");
       chip.appendChild(el("span", "fchip-label", c.label));
@@ -5061,39 +5264,75 @@
       chip.appendChild(x);
       chipRow.appendChild(chip);
     });
-    // The row's two actions, right-aligned as a pair. Saving lived only behind the
-    // title, which is the right *home* for it — the saved view appears there — but
-    // it is not where you are standing when you finish building a filter. You are
-    // standing here, looking at the predicates you just assembled, and this is the
-    // one row that exists only because they do. So the door goes where the work is;
-    // the title keeps the list. (Linear puts Clear and Save in exactly this band.)
+    // The row's actions, right-aligned. Saving lived only behind the title, which is
+    // the right *home* for it — the saved view appears there — but it is not where you
+    // are standing when you finish building a filter. You are standing here, looking at
+    // the predicates you just assembled, and this is the one row that exists only
+    // because they do. So the door goes where the work is; the title keeps the list.
+    // (Linear puts its Clear and Save in exactly this band.)
+    //
+    // Which door depends on where the board stands relative to the saved views, and
+    // the two producers answer that between them:
+    //
+    //   in a view, untouched  → nothing. Offering "Save view" here invites you to save
+    //                           what is already saved; the sidebar row and the title
+    //                           already say where you are, and each chip keeps its ✕.
+    //   in a view, changed    → Reset · Update "High". Reset goes back to the view's
+    //                           parameters, which is what makes it a different button
+    //                           from Clear all — that one empties the board.
+    //   no view               → Clear all · Save view, as before.
     var acts = el("div", "fchip-acts");
-    if (chips.length > 1) {
-      var clear = el("button", "fchip-clear", "Clear all");
-      clear.type = "button";
-      clear.addEventListener("click", function () {
-        setQueryTerms([]); // one store, so "put everything back" is one line
-        refreshNav();
-      });
-      acts.appendChild(clear);
+    var inView = activeSavedView(), edited = editedSavedView();
+    function act(cls, label, title, run) {
+      var b = el("button", cls, label);
+      b.type = "button";
+      if (title) b.title = title;
+      b.addEventListener("click", run);
+      acts.appendChild(b);
+      return b;
     }
-    // Only when a token can commit it: this writes board.config.json, and an
-    // affordance that cannot do its job is worse than an absent one.
-    if (ghToken()) {
-      var wrap = el("div", "filter-wrap"); // the positioned parent the popover anchors in
-      var save = el("button", "fchip-save", "Save view");
-      save.type = "button";
-      save.title = "Save these filters as a named view";
-      save.addEventListener("click", function (e) {
-        e.stopPropagation(); // this row is not a surface; the tail would read as an outside click
-        // The trigger is the last thing on its row, so the menu hangs from its right
-        // edge or it runs off the page.
-        saveCurrentView(wrap, "menu-right");
+    if (edited) {
+      act("fchip-clear", "Reset", "Back to the saved view’s own filters", function () {
+        applySavedView(edited);
       });
-      wrap.appendChild(save);
-      acts.appendChild(wrap);
+      // Same token gate as Save: this writes board.config.json, and an affordance that
+      // cannot do its job is worse than an absent one.
+      if (ghToken()) act("fchip-save", "Update “" + edited.name + "”",
+        "Save these changes into the view", function () { updateSavedView(edited); });
+    } else if (!inView) {
+      if (chips.length > 1) {
+        act("fchip-clear", "Clear all", null, function () {
+          setQueryTerms([]); // one store, so "put everything back" is one line
+          refreshNav();
+        });
+      }
+      // Gated on there being anything to save, not on there being chips: a view can be
+      // nothing but a grouping (`Testvy` is exactly that), and `saveCurrentView` already
+      // refuses an empty board with a toast. Reading the same question the write path
+      // asks is what keeps the button off the default board.
+      if (ghToken() && Object.keys(viewParamObject()).length) {
+        var wrap = el("div", "filter-wrap"); // the positioned parent the popover anchors in
+        var save = el("button", "fchip-save", "Save view");
+        save.type = "button";
+        save.title = "Save these filters as a named view";
+        save.addEventListener("click", function (e) {
+          e.stopPropagation(); // this row is not a surface; the tail would read as an outside click
+          // The trigger is the last thing on its row, so the menu hangs from its right
+          // edge or it runs off the page.
+          saveCurrentView(wrap, "menu-right");
+        });
+        wrap.appendChild(save);
+        acts.appendChild(wrap);
+      }
     }
     if (acts.childNodes.length) chipRow.appendChild(acts);
+    // The row exists for either half of itself. Hiding it whenever there were no chips
+    // meant a view that only changes grouping, sorting or layout — or one whose query is
+    // all repo/agent terms, which `chipsData` deliberately leaves to the sidebar — could
+    // be edited with no way to Reset or Update it. That is precisely the view whose only
+    // other write path is retyping its name exactly, so it is the last place the actions
+    // should go missing.
+    chipRow.hidden = !chips.length && !acts.childNodes.length;
   }
 
   if (filterBtn) filterBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleFilterMenu(); });

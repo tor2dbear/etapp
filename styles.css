@@ -1349,14 +1349,24 @@ body.preload * { transition: none !important; }
   height: 2px; margin: 3px 2px; border-radius: var(--r-pill);
   background: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
-/* A saved view's remove affordance — only on hover/focus, so the sidebar stays
-   calm and a saved view reads as navigation first. */
-.saved-del {
-  margin-left: auto; background: none; border: 0; padding: 0 2px; cursor: pointer;
-  color: var(--ink-3); font-size: var(--fs-sm); line-height: 1; opacity: 0; transition: opacity .12s;
+/* A saved view's actions — only on hover/focus, so the sidebar stays calm and a saved
+   view reads as navigation first. Always shown on touch, which has no hover to reveal
+   it: the same rule `.col-more` follows, for the same reason. */
+.saved-more-wrap { margin-left: auto; display: inline-flex; }
+.saved-more {
+  display: inline-flex; align-items: center; background: none; border: 0; padding: 0 2px;
+  cursor: pointer; color: var(--ink-3); line-height: 1; opacity: 0; transition: opacity .12s;
 }
-.focusbtn:hover .saved-del, .saved-del:focus { opacity: 1; }
-.saved-del:hover { color: var(--ink); }
+.saved-more .icn { width: 14px; height: 14px; }
+.focusbtn:hover .saved-more, .saved-more:focus { opacity: 1; }
+.saved-more:hover { color: var(--ink); }
+@media (hover: none) { .saved-more { opacity: 1; } }
+/* The row is a <button> and so is this; the menu it opens is anchored in the wrapper,
+   which must not inherit the row's own text alignment. Narrower than the shared
+   minimum, because it has to clear the sidebar's own draggable minimum width (190px)
+   and its three labels are short. */
+.saved-more-wrap .pop { text-align: left; }
+.saved-more-wrap .pop.pick-menu { min-width: 164px; }
 .dp-save { color: var(--accent); }
 
 /* The chip row: one chip per active predicate, under the view header. It is the

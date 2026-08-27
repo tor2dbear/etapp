@@ -108,8 +108,10 @@ compose:
 `?q=agent:backend+repo:pia-terminal&view=ready&group=target`.
 
 **Saved views** are the same parameters, named, in `board.config.json` — the board
-lists them in its sidebar. That file is configuration, not truth, so this adds no
-second source; the pucks remain the only data:
+lists them in its sidebar and can create, update, rename, duplicate and remove them,
+every one of those a commit to that file. That file is configuration, not truth, so
+this adds no second source; the pucks remain the only data. Editing it by hand is a
+first-class path, not a fallback — reordering the list is only done that way:
 
 ```jsonc
 { "views": [
