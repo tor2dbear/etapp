@@ -954,8 +954,17 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
 /* The footer belongs to the board: it counts and dates the harvest behind it. On a
    puck page there is no board under it, so it hid nothing and only reported on a
    view the reader had left. */
+/* And so does the chip row — it sits *outside* `.vhead` in the markup, which is the
+   whole reason it was missing from this list and rode along into the puck page. There
+   it says what the board behind it was narrowed to, which is not what you are reading,
+   and its `Save view` offered to save a view from a page that is not a board.
+   Hidden here rather than in `openDetail`, because `chipRow.hidden` answers a different
+   question — "is there anything to say" — and `renderChips` rewrites it on every render.
+   One flag for content, one for which page you are on; folding them together would let
+   a render while a puck is open put the row back. */
 body.viewing-puck #board,
 body.viewing-puck .foot,
+body.viewing-puck .chiprow,
 body.viewing-puck .vhead { display: none; }
 .detail-pane {
   background: var(--bg);
@@ -1471,6 +1480,12 @@ body.preload * { transition: none !important; }
 }
 .fp-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fp-label { font-family: var(--mono); font-size: var(--fs-xs); letter-spacing: var(--tr-eyebrow); text-transform: uppercase; color: var(--ink-3); margin-top: 2px; }
+/* An eyebrow carries the same inset as the rows it labels, so the two start on one
+   line. `.vs-section` has always matched `.row`'s 9px; the filter panel's bare label
+   sat at 0 against rows inset by 4, which is where its four-pixel step came from.
+   Scoped to `.pop` and away from `.vs-section`: the sheet pulls both onto the content
+   line instead (see the `.sheet` rules), and the views eyebrow keeps its own 9px. */
+.pop .fp-label:not(.vs-section) { padding-inline: 4px; }
 .fp-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .fp-chip {
   font: inherit; font-size: var(--fs-base); padding: 3px 9px; border-radius: var(--r-pill);
@@ -1858,6 +1873,26 @@ body.preload * { transition: none !important; }
   }
   /* Rules span the content, like the rows they separate. */
   .sheet .menu-rule { margin: 6px 0; }
+  /* A section eyebrow is content too, so it belongs on the same line as the row text
+     above and below it. `.vs-section` carries its own 9px inset for the popover, where
+     the rows are inset by the same 9px and the two agree. In a sheet the rows are inset
+     by `--pad` instead (and pulled back out by the matching negative margin), so that
+     9px stopped being a shared measure and became a 9px step no other item takes.
+     Zero here, not a new number: the content line is the `.surface-body` padding box,
+     which is exactly where this element already starts. */
+  .sheet .vs-section { padding-inline: 0; }
+  /* The filter panel's rows are the same story with a smaller number: their base 4px
+     inset is a shared measure in the popover and a 4px step in a sheet, where the
+     content line is `--pad`. They get the row treatment rather than a padding tweak,
+     because they light on hover too — and a highlight that stops short of the edge
+     reads as an element inside the row instead of as the row itself. `width: auto` for
+     the reason the note above gives: with a fixed width the negative margins move the
+     box instead of widening it. */
+  .sheet .fp-row, .sheet .fp-back, .sheet .fp-val {
+    width: auto;
+    margin-inline: calc(var(--sheet-gap) - var(--pad));
+    padding-inline: calc(var(--pad) - var(--sheet-gap));
+  }
   /* Every control in a sheet is thumb-sized, not just the list rows. These two were
      20px and 18px tall inside a menu whose other rows are 37 — the toggle read as
      half a row, and "Reset to default" was a text-height target against the screen

@@ -1593,6 +1593,21 @@
     openSurfaces.slice().forEach(function (s) { s.close(); });
   }
 
+  // Nudge a popover horizontally until it is inside the window, and no further. The
+  // margin keeps it off the very edge, where a rounded corner and a shadow would
+  // otherwise be cut in half.
+  // A popover wider than the window can't be satisfied; pin it to the left edge
+  // rather than the right, so it is the *end* of a row that is lost and not the
+  // beginning — a truncated label is still readable from its start.
+  function fitPop(root) {
+    var m = 8;
+    var r = root.getBoundingClientRect();
+    var dx = 0;
+    if (r.right > window.innerWidth - m) dx = window.innerWidth - m - r.right;
+    if (r.left + dx < m) dx = m - r.left;
+    if (dx) root.style.transform = "translateX(" + Math.round(dx) + "px)";
+  }
+
   //   opts: { title, anchorWrap, cls, help, onClose, build(body, api) }
   //   → { close }
   function openSurface(opts) {
@@ -1751,6 +1766,18 @@
     var handle = { close: close, el: root };
     openSurfaces.push(handle);
     opts.build(body, { close: close, phone: phone });
+    // Slide an anchored popover back into the window if the side it chose puts it
+    // over an edge. The side is authored — `menu-right` says which of the trigger's
+    // edges the surface hangs from, and that is a design decision about which way a
+    // menu should open. Whether it *fits* is not a design decision, and it can't be
+    // answered where the class is written: the same trigger sits at 1246px in a
+    // 1600px window and at 950px in a 1024px one, so any fixed side is right at one
+    // width and wrong at another. Measuring once the content exists answers it at
+    // every width, and costs one layout read per open.
+    // Only the anchored shell. A sheet spans the window by construction, and
+    // `.pop-center` is already placed by transform — shifting either would move a
+    // surface that was never out of bounds.
+    if (!phone && opts.anchorWrap) fitPop(root);
     // Give a sheet's search field breathing room before the list, the way the
     // reference apps do. The gap has to belong to the *pinned* element, not sit
     // between it and the list: a margin there is not painted, so rows would scroll
@@ -3034,9 +3061,60 @@
     // while any term on the grouping's own field takes the emptied ones away — which
     // is `Hide column`, `Show only this` and a hand-typed query, all by one rule.
     // Stated here and not in either renderer: the board and the list share this.
-    var constrained = groupConstrained(g);
-    return keys.filter(function (k) { return !constrained || byKey[k].length; })
+    // …but only the columns the query actually speaks *against*. Asking merely whether
+    // the query mentions the grouping's field made hiding one column evict every other
+    // empty one with it: with the archive on and `Cancelled` standing empty, hiding
+    // `Done` wrote `-status:done`, and Cancelled — which that term says nothing about —
+    // vanished from the board and turned up in the tray as though you had hidden it too.
+    // One click, two columns moved, and the tray reported the one you never touched.
+    // Testing the column instead of the field keeps every case the rule was written for
+    // (`-status:later` empties and drops LATER; `Show only this` drops the rest; an
+    // unrelated `tag:ui` keeps them all as drop targets) and drops the eviction nobody
+    // asked for.
+    return keys.filter(function (k) { return byKey[k].length || !columnExcluded(g, k); })
       .map(function (k) { return { key: k, label: g.labelOf(k), items: byKey[k] }; });
+  }
+  // Does this query value name this column? A value is not always spelled the way the
+  // column is keyed: `repo:` accepts `tor2dbear/roadmap`, `roadmap` and `Etapp`, and
+  // `parent:` accepts the raw `parent:` line, the resolved id and the bare slug — that
+  // is `FIELDS[…].vals()`, and it is what `termMatches` asks when it decides which
+  // cards the term keeps. Anything comparing the raw value against the column key was
+  // therefore asking a narrower question than the filter itself: `-repo:roadmap` hid
+  // the Etapp column, the tray listed it under its canonical key, and the eye —
+  // hunting for "roadmap" among the tray's keys — found nothing and left the term
+  // standing. The affordance rendered, clicked, re-rendered, and changed nothing.
+  //
+  // So ask the data the same question the matcher asks, rather than keeping a second
+  // alias table here to drift out of step with that one. A column with no items at all
+  // (an empty status) is covered by the direct comparison, since a field with no items
+  // to alias has no aliases either.
+  function valueNamesColumn(g, value, key) {
+    if (lower(value) === lower(key)) return true;
+    var f = FIELDS[g.field];
+    if (!f || !f.vals) return false;
+    for (var i = 0; i < DATA.items.length; i++) {
+      var it = DATA.items[i];
+      if (g.keyOf(it) !== key) continue;
+      if (f.vals(it).filter(Boolean).map(lower).indexOf(lower(value)) !== -1) return true;
+    }
+    return false;
+  }
+  // Does the query say this column may not be here? The same vocabulary `columnTerm`
+  // writes, read back: a value term keeps only what it names (or, negated, drops it),
+  // and the `has:`/`is:member` pair speaks about the absence bucket in one polarity and
+  // about every real column in the other. Empty *and* excluded is a hole where a column
+  // used to be; empty and merely unmentioned is still a column, and still a drop target.
+  function columnExcluded(g, key) {
+    var none = key === NO_VALUE;
+    var out = false;
+    parseQuery(state.query).forEach(function (t) {
+      if (!termAboutGroup(t, g)) return;
+      if (t.field === "has" || t.field === "is") { if (none ? !t.neg : t.neg) out = true; return; }
+      if (none) { if (!t.neg) out = true; return; } // any positive value term excludes "none"
+      var names = t.values.some(function (v) { return valueNamesColumn(g, v, key); });
+      if (t.neg ? names : !names) out = true;
+    });
+    return out;
   }
 
   // ── a column, as a filter term ───────────────────────────────────────────────
@@ -3086,6 +3164,12 @@
     return parseQuery(state.query).some(function (t) { return termAboutGroup(t, g); });
   }
 
+  // What the tray ended up showing, so the chip row can decline to say it again. Read
+  // rather than recomputed: the two renderers already run in order — `renderColumns`,
+  // then `renderChips` — and asking `hiddenColumns` a second time would mean rebuilding
+  // the groups it needs. Null whenever no tray was drawn, which is what keeps every
+  // chip in the list layout, where there is nothing standing in for it.
+  var trayColumns = null;
   // The tray, at the end of the board where the columns it holds would have been.
   // Board only: it is a *place* on the board ("these would be over here"), and a flat
   // list has no columns for it to be at the end of — there the chip row still says
@@ -3093,6 +3177,8 @@
   function renderHiddenTray(g, groups) {
     var hidden = hiddenColumns(g, groups);
     if (!hidden.length) return;
+    trayColumns = { g: g, keys: {} };
+    hidden.forEach(function (h) { trayColumns.keys[h.key] = 1; });
     var tray = el("div", "column hidden-cols");
     var head = el("div", "col-head");
     head.appendChild(el("h2", null, "Hidden"));
@@ -3110,43 +3196,104 @@
       // actually want to know before deciding to bring a column back.
       b.appendChild(el("span", "count", String(h.n)));
       b.appendChild(icon("eye"));
-      b.addEventListener("click", function () { unhideColumn(g, h.key); });
+      b.addEventListener("click", function () { unhideColumn(g, h.key, h.archive); });
       list.appendChild(b);
     });
     tray.appendChild(list);
     board.appendChild(tray);
   }
 
-  // Which columns the *filter* took away, and how much is behind each. A hidden column
-  // is otherwise invisible in the one place it matters — the board — and `Not Status:
-  // Later ×` in the chip row says what is gone but never how much, which is the whole
-  // question you ask before deciding to bring it back.
+  // Ask a question of the board as if the archive toggle were on. Three separate
+  // readers consult `state.showDone` — `viewTerms`, `columnsForFocus`, and through it
+  // the status grouping's `keys` — and the tray has to put the same question to all
+  // three at once: which columns would stand here if nothing were hidden? Threading a
+  // parameter through all three would put the archive into the signature of code that
+  // is not about the archive. A scoped override puts it where the question is asked,
+  // and `finally` means a throw inside can't leave the board in the lifted state.
+  function withShowDone(on, fn) {
+    var was = state.showDone;
+    state.showDone = on;
+    try { return fn(); } finally { state.showDone = was; }
+  }
+  // The board as it would be with this grouping's own filters lifted: which columns
+  // would stand, and how many pucks behind each. `archive` lifts the toggle too.
+  function wouldShow(g, archive) {
+    return withShowDone(archive || state.showDone, function () {
+      var free = viewTerms().concat(
+        parseQuery(state.query).filter(function (t) {
+          // A place is where you navigated, not a column you hid — so its term stays in,
+          // and the repos you are not in never show up as "hidden". Whatever the board
+          // groups by: `&group=repo` while scoped to one repo made `t.field === g.field`,
+          // the guard fell through to the group rule, and every *other* repo was offered
+          // in the tray as if you had hidden it — with an eye that would have widened the
+          // scope. The old code got this right by accident, because `controlTerms()` was
+          // concatenated separately and never filtered at all.
+          if (!t.neg && PLACE_FIELDS_ORDER.indexOf(t.field) !== -1) return true;
+          return !termAboutGroup(t, g);
+        })
+      );
+      var would = DATA.items.filter(function (it) { return runQuery(it, free); });
+      var count = {};
+      would.forEach(function (it) { var k = g.keyOf(it); count[k] = (count[k] || 0) + 1; });
+      return { keys: g.keys(would), count: count };
+    });
+  }
+  // Which columns are missing from the board, and how much is behind each. A hidden
+  // column is otherwise invisible in the one place it matters — the board — and this is
+  // now the only place that says so: `Not Status: Later ×` said what was gone but never
+  // how much, which is the whole question you ask before deciding to bring it back, so
+  // the chip row stands down for it (see `hiddenByTray`) and the count stands here.
   //
   // Terms are stripped from `state.query` only, never from the view's own or a place's.
   // `-status:inbox` is what "All pucks" *means*, not something you hid; a repo place is
   // where you navigated. Dropping those too would list Inbox as hidden on every board.
   function hiddenColumns(g, shown) {
-    if (!g.field || !groupConstrained(g)) return [];
-    var free = viewTerms().concat(
-      parseQuery(state.query).filter(function (t) {
-        // A place is where you navigated, not a column you hid — so its term stays in,
-        // and the repos you are not in never show up as "hidden". Whatever the board
-        // groups by: `&group=repo` while scoped to one repo made `t.field === g.field`,
-        // the guard fell through to the group rule, and every *other* repo was offered
-        // in the tray as if you had hidden it — with an eye that would have widened the
-        // scope. The old code got this right by accident, because `controlTerms()` was
-        // concatenated separately and never filtered at all.
-        if (!t.neg && PLACE_FIELDS_ORDER.indexOf(t.field) !== -1) return true;
-        return !termAboutGroup(t, g);
-      })
-    );
-    var would = DATA.items.filter(function (it) { return runQuery(it, free); });
+    if (!g.field) return [];
+    // Two things take a column off the board, and the tray only ever knew about one.
+    // A term in `state.query` hides a column — and so does the archive toggle, which
+    // is not a term at all: "Show done & cancelled" writes `-is:done` into
+    // `viewTerms()`, where the chip row cannot see it either. So the most-used switch
+    // on the board removed two columns and *nothing anywhere said so*. The tray is the
+    // place that says a column is missing; it has to answer for both causes, or the
+    // one people actually press stays invisible.
+    var archiveOff = !state.showDone && ARCHIVABLE[state.focus];
+    if (!groupConstrained(g) && !archiveOff) return [];
     var here = {};
     shown.forEach(function (grp) { here[grp.key] = 1; });
-    var count = {};
-    would.forEach(function (it) { var k = g.keyOf(it); count[k] = (count[k] || 0) + 1; });
-    return g.keys(would).filter(function (k) { return !here[k] && columnTerm(g, k); })
-      .map(function (k) { return { key: k, label: g.labelOf(k), n: count[k] || 0 }; });
+    // Two passes, because the two causes need different answers. `byQuery` is the board
+    // with the query's own terms lifted and the toggle left as it stands: a column
+    // missing from *that* is the toggle's doing, and its eye has to press the toggle
+    // rather than mend a term that was never written. It also decides which count is
+    // honest — a column the query hid is counted with the archive still off, or hiding
+    // one repo while the archive is off would advertise its landed pucks as waiting.
+    var byQuery = wouldShow(g, false);
+    var full = archiveOff ? wouldShow(g, true) : byQuery;
+    var reachable = {};
+    byQuery.keys.forEach(function (k) { reachable[k] = 1; });
+    // A column the *archive* hid needs no name to come back — its eye presses the
+    // toggle, and a toggle takes no argument. Demanding a nameable term anyway lost
+    // the Target grouping entirely: a month is a range over a date, two terms whose
+    // conjunction this grammar cannot negate, so `columnTerm` returns null for every
+    // real month. An archive-only month then had no tray row *and* no chip, which is
+    // precisely the silence this whole change exists to end. A column the *query* hid
+    // still has to be nameable, because mending that term is the only way back to it.
+    return full.keys.filter(function (k) { return !here[k] && (!reachable[k] || columnTerm(g, k)); })
+      .map(function (k) {
+        var archive = !reachable[k];
+        return {
+          key: k, label: g.labelOf(k), archive: archive,
+          n: (archive ? full.count : byQuery.count)[k] || 0,
+        };
+      })
+      // An eye that would produce nothing is worse than no row. With "Show empty
+      // columns" off, restoring a column that turns out to be empty leaves the board
+      // exactly as it was and the tray row simply disappears — the affordance promises
+      // a column and then swallows it. `n` is already "what the eye would put on the
+      // board" for both causes, so one test covers both: the archive's `Cancelled 0`
+      // on a default board, and a `-status:x` on a status nothing is in. With the
+      // setting on, the same click *does* produce a column — an empty one, which is
+      // what that setting asks for — so the row stays.
+      .filter(function (h) { return state.showEmpty || h.n > 0; });
   }
   // Putting a column back means editing the term that actually excluded it — which is
   // not always the term that names it. Adding this column's own predicate instead was
@@ -3160,9 +3307,25 @@
   //   the absence pair          → drop it, when it is the polarity that hides me
   // Everything else is left alone, so hiding two columns and restoring one keeps the
   // other hidden.
-  function unhideColumn(g, key) {
+  //
+  // A column can need both edits at once — grouping by status with `-status:done` set
+  // *and* the archive off hides Done twice over. So the toggle is lifted here rather
+  // than through `setDisplay`: that one ends in a render, which would repaint the board
+  // with the archive lifted and the term still standing, and the column would flash
+  // back into hiding before the second half ran. The term edit below renders once, for
+  // both halves. One eye, one click, one column back — which is the whole point of it.
+  function unhideColumn(g, key, archive) {
     var t = columnTerm(g, key);
-    if (!t) return;
+    if (!t && !archive) return; // nothing to mend and no toggle to lift
+    if (archive) {
+      state.showDone = true;
+      saveDisplay("done", "1"); // the same key `setDisplay("showDone", …, "done")` writes
+      refreshDisplayDot();
+      refreshNav(); // the sidebar's counts read `state.showDone`
+    }
+    // An unnameable column (a target month) is only ever here for the archive, so the
+    // lift above *is* the whole repair; render it, since no term edit will.
+    if (!t) { renderBoard(); return; }
     var none = key === NO_VALUE;
     var out = [];
     parseQuery(state.query).forEach(function (term) {
@@ -3178,10 +3341,22 @@
       }
       // A real value. `-has:<field>` (and `-is:member`) empties every real column.
       if (absence) { if (term.neg) return; out.push(term); return; }
-      var vals = term.values.slice();
-      var at = vals.map(lower).indexOf(lower(t.value));
-      if (term.neg) { if (at >= 0) vals.splice(at, 1); }
-      else if (at < 0) vals.push(t.value);
+      // *Every* spelling that names me, not the first one found. One term can list the
+      // same column twice — `-repo:tor2dbear/roadmap,roadmap` is one exclusion written
+      // two ways — and stopping at the first left the other still excluding it. The eye
+      // then redrew the very column it had promised to bring back, and since the chip
+      // stands down whenever the tray owns the column, that left no working way out at
+      // all. Removing one of two names for one thing was never the intent; it only
+      // looked like it while aliases were invisible here.
+      var kept = term.values.filter(function (v) { return !valueNamesColumn(g, v, key); });
+      var vals;
+      if (term.neg) vals = kept; // drop every name that excludes me
+      else {
+        // A positive term lists the columns that may stand. Naming me once is enough,
+        // so nothing is removed — add me only when no spelling of me is there already.
+        vals = term.values.slice();
+        if (kept.length === term.values.length) vals.push(t.value);
+      }
       if (vals.length) { term.values = vals; out.push(term); }
     });
     setQueryTerms(out);
@@ -3226,7 +3401,14 @@
       open = openSurface({
         title: label,
         anchorWrap: wrap,
-        cls: "pick-menu menu-right",
+        // Not mirrored, unlike the puck's ⋯ and the saved view's. Mirroring assumes the
+        // page's right edge is the one that cuts; here it's the left. The sidebar is
+        // `position: sticky` and paints over the board's own scroll box, so a menu that
+        // hangs left from a trigger in the *first* column disappears under it — the
+        // board starts exactly where the sidebar ends. Hanging right is safe at the
+        // other end because `.board` scrolls horizontally and the last column's menu
+        // stays inside its own column's width.
+        cls: "pick-menu",
         onClose: function () { open = null; btn.setAttribute("aria-expanded", "false"); },
         build: function (host, api) {
           var t = columnTerm(g, key);
@@ -3457,6 +3639,7 @@
     // List — and that choice persists — not a reason to overrule the person who
     // picked Board.
     var layout = state.view;
+    trayColumns = null; // set again by the tray, if this render draws one
     board.classList.toggle("as-list", layout === "list");
     activeQuery = activeTerms();
     var visible = DATA.items.filter(matches).sort(sortComparator());
@@ -5186,6 +5369,24 @@
   // display, so the Filter button needs no count and "showing more" can never read
   // as "you have narrowed something".
   var chipRow = document.getElementById("chipRow");
+  // Is this term nothing but "hide these columns", and are those columns in the tray?
+  // Only the two shapes the column ⋯ writes, and only in the polarity that hides:
+  // `columnTerm` calls that `hideNeg`, and it differs between a real value (the
+  // *negation* hides it) and the absence bucket (`has:<field>`, where the positive
+  // does). A term in the other polarity is a scope you chose, not a column you hid —
+  // `Status: Now, Next, Later` says what you asked for, and the tray listing what fell
+  // outside it is a different sentence, not a second copy of this one. It also has to
+  // keep its chip so `Clear all` has something to hang on.
+  function hiddenByTray(t) {
+    if (!trayColumns) return false;
+    var g = trayColumns.g;
+    if (!termAboutGroup(t, g)) return false;
+    if (t.field === "has" || t.field === "is") return !t.neg && !!trayColumns.keys[NO_VALUE];
+    if (!t.neg) return false;
+    return t.values.every(function (v) {
+      return Object.keys(trayColumns.keys).some(function (k) { return valueNamesColumn(g, v, k); });
+    });
+  }
   function chipsData() {
     var out = [];
     // Places are deliberately absent. A repo or a discipline queue is somewhere you
@@ -5202,6 +5403,15 @@
       // — and is now a stated rule about *presentation*, which is all it ever was. The
       // negation is not a place (there is no row for "not PIA"), so it keeps its chip.
       if (!t.neg && PLACE_FIELDS_ORDER.indexOf(t.field) !== -1) return;
+      // Nor a term the tray is already showing, in the words the tray uses. `Not
+      // Status: Done ×` in this row and `Done 102 👁` at the end of the board are the
+      // same statement and the same single click — except one of them carries the
+      // count, which is the thing you actually want to know before deciding to bring
+      // the column back. So the tray keeps it and the chip stands down: a column
+      // missing from the board is said in one place, and it is the place that is about
+      // columns. Only in the board layout — `trayColumns` is null where there is no
+      // tray, and then the chip is the only one who can say it.
+      if (hiddenByTray(t)) return;
       var f = fieldByKey(t.field);
       var label;
       if (t.field === "text") label = "“" + t.values[0] + "”";
