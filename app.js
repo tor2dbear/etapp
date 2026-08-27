@@ -2078,9 +2078,19 @@
     });
   }
 
-  // Pull a trailing issue number out of "42", "#42", or a full issue URL.
+  // Pull the issue number out of "42", "#42", or a full issue URL.
+  //
+  // The `/issues/N` segment is matched first because a link copied from a comment
+  // thread carries a fragment — `.../issues/12#issuecomment-345` — and reading the
+  // *trailing* digits took the comment id. That wrote `issue: 345` into the puck, and
+  // the harvester then reconciled a stranger's state onto your card with nothing
+  // looking wrong. A `?query` did the same. The bare-number form is anchored, so a
+  // string that is neither is rejected rather than half-read.
   function parseIssue(s) {
-    var m = String(s).trim().match(/(\d+)\s*$/);
+    s = String(s).trim();
+    var m = s.match(/\/issues\/(\d+)/);
+    if (m) return parseInt(m[1], 10);
+    m = s.match(/^#?(\d+)$/);
     return m ? parseInt(m[1], 10) : null;
   }
   // The Issue property cell: a link (+ open/closed state) when set, "Link issue"
@@ -2655,7 +2665,7 @@
     if ((m = rest.match(/^add\s+/i)) || /^new\s+/i.test(rest)) {
       return { icon: "plus", text: "created this puck" };
     }
-    if ((m = rest.match(/(?:^|\s)(?:→|->)\s*(now|next|later|inbox|done)\s*$/i))) {
+    if ((m = rest.match(/(?:^|\s)(?:→|->)\s*(now|next|later|inbox|done|cancelled)\s*$/i))) {
       var st = m[1].toLowerCase();
       var badge = el("span", "status-pill status-" + st, STATUS_LABEL[st] || st);
       return { badge: badge, text: "moved to" };
