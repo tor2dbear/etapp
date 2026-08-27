@@ -2051,19 +2051,16 @@ body.preload * { transition: none !important; }
    as every other badge — no second card type, no second visual language. */
 .rollup {
   cursor: help;
-  /* The proportion is a rule along the bottom, not a wash behind the digits.
-     Behind them it cost contrast the badge did not have to spare: the 10px count in
-     `--ink-2` sits at 4.58:1 on the bare chip in light mode and 4.67:1 in dark —
-     barely over the 4.5:1 that small text needs — and any fill visible enough to
-     read dropped it to 4.09 and 4.15. There was no opacity that was both visible and
-     safe, which is the answer: the measurement has to leave the glyphs alone.
-     Still a `background-image`, so it costs no element and cannot push the text; and
-     free of the text it can carry its own weight instead of whispering. The hard
-     stop keeps it an edge — this is a measurement, not a sheen. */
-  background-image: linear-gradient(to right,
-    var(--ink-3) var(--frac, 0%), transparent var(--frac, 0%));
-  background-size: 100% 2px;
-  background-position: bottom left;
+  /* No proportion mark. The count carries it, and at 1–5 parts it carries it better
+     than any shape can — which is the argument that ruled out a ring, and it rules
+     out a bar just as squarely. The bar was never argued for on its own merits: it
+     was a rescue after a fill behind the digits lost the contrast fight, and a rescue
+     of an idea that did not hold is still not a design.
+     Seen on a device it also had a fault of its own. A straight rule painted along
+     the bottom of a fully rounded pill is clipped at both ends by the radius, so it
+     begins and ends at nothing and reads as an underline of "2/" rather than a
+     measure. The two variants that fix that both need a squarer chip — and paying
+     the badge language for a mark that adds nothing is the wrong trade. */
   background-repeat: no-repeat;
 }
 .rollup .icn { width: 11px; height: 11px; }

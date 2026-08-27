@@ -919,13 +919,11 @@
     //
     // The finding this closes said the rollup was "a number where a shape would do",
     // and the puck deliberately waited for real etapps before choosing the shape. The
-    // real ones have 1, 2, 3 and 5 parts, and at those sizes a ring is the *worse*
-    // instrument: 0/1, 1/2 and 2/3 draw 0%, 50% and 67% while the reader's actual
-    // question — how many are left — is "one" for all three. A ring earns its place
-    // where the count stops meaning anything (37/120 → "about a third"), and nothing
-    // on this board is close. So the count stays exact and the fill is what the
-    // glance gets; it also degrades to any N, which a row of dots would not.
-    b.style.setProperty("--frac", (p.total ? Math.round((p.done / p.total) * 100) : 0) + "%");
+    // real ones have 1, 2, 3 and 5 parts, and at those sizes every shape is the
+    // *worse* instrument: 0/1, 1/2 and 2/3 draw 0%, 50% and 67% while the reader's
+    // actual question — how many are left — is "one" for all three. A shape earns its
+    // place where the count stops meaning anything (37/120 → "about a third"), and
+    // nothing on this board is close. So the answer is the count, and only the count.
     // The puck mark, not the etapp mark: this badge counts *pucks*, and the etapp
     // it belongs to already wears its own mark beside the title. Carrying `etapp`
     // here put the same glyph on one card twice and had the count of two dots
