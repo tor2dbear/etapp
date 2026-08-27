@@ -3,12 +3,21 @@
    (#cf551b/#e2622a), forest-green as the go/ready semantic. Chrome uses --mono. */
 
 /* Self-hosted typefaces (woff2, latin subset, font-display: swap):
-   Switzer — the sans fallback after Apple's San Francisco (system fonts stay first).
-   JetBrains Mono — the mono. One Medium face covers 500–800 so headings don't fake-bold. */
-@font-face { font-family: "Switzer"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/switzer-400.woff2") format("woff2"); }
-@font-face { font-family: "Switzer"; font-style: normal; font-weight: 500 800; font-display: swap; src: url("fonts/switzer-500.woff2") format("woff2"); }
-@font-face { font-family: "Switzer"; font-style: italic; font-weight: 400 800; font-display: swap; src: url("fonts/switzer-400-italic.woff2") format("woff2"); }
-@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 100 800; font-display: swap; src: url("fonts/jetbrains-mono.woff2") format("woff2"); }
+   Geist + Geist Mono (OFL-1.1) — one designed pair for the sans and the mono, and the
+   first choice on every platform including Apple. The board used to let Apple's San
+   Francisco win and fall back to Switzer elsewhere, which meant the same board wore two
+   faces depending on who opened it — and neither of them was related to the mono beside
+   it. Chrome here is heavily mono (counts, keys, eyebrows, dates), so a sans and a mono
+   drawn to the same skeleton is worth more than a native-feeling sans that never matches.
+   Single variable files covering 100–900, so no weight is ever synthesised, and a real
+   italic for the sans — markdown emphasis in a puck body is drawn, not slanted.
+   No italic *mono*: the only way to reach one is inline code that happens to contain a
+   pair of asterisks, since `mdInline` applies emphasis after it has wrapped `code`. That
+   is a renderer quirk rather than something anyone writes on purpose, and an oblique is
+   a fine answer to it — 23 kB is not. */
+@font-face { font-family: "Geist"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("fonts/geist.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-style: italic; font-weight: 100 900; font-display: swap; src: url("fonts/geist-italic.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("fonts/geist-mono.woff2") format("woff2"); }
 
 /* Every colour that carries *words* clears 4.5:1 against the darkest surface it can
    land on — in light that is --sidebar-bg, in dark it is --panel-2. The rule is not
@@ -85,10 +94,11 @@
   --lh-body: 1.5;    /* the base: UI text, rows, labels */
   --lh-prose: 1.6;   /* long markdown and the body editor */
   --topbar-h: 52px; /* fixed app-header height, shared by the topbar and sidebar header */
-  /* Apple's San Francisco stays first; Switzer is the self-hosted fallback that
-     loads everywhere else (the -apple-system keywords resolve to SF only on Apple). */
-  --sans: -apple-system, BlinkMacSystemFont, "Switzer", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* Geist first on every platform — the point of choosing a pair is that the board reads
+     the same wherever it is opened. The system stack stays behind it for the moment
+     before the file lands, and for anyone who blocks web fonts. */
+  --sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --now: #87414b;
   --next: #4b6f59;
   --later: #7d6431;
