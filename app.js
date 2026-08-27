@@ -3980,6 +3980,53 @@
       };
     }).filter(function (g) { return g.keys.length; });
   }
+  // ── sidebar folding ─────────────────────────────────────────────────────────
+  // Chrome, not a view parameter. It says how *you* like the sidebar, not what the
+  // board is showing, so it must never reach the URL — and especially not `VIEW_KEYS`,
+  // where `collapsed` already means something else entirely (which groups are folded
+  // in the list layout). Two different folds, two different stores, and putting this
+  // one in the URL would make a shared link rearrange the recipient's furniture.
+  var SIDE_FOLD = "roadmap-sidefold";
+  function foldedSections() {
+    var raw = null;
+    try { raw = localStorage.getItem(SIDE_FOLD); } catch (e) {}
+    return raw ? raw.split(",").filter(Boolean) : [];
+  }
+  function setFolded(key, on) {
+    var list = foldedSections().filter(function (k) { return k !== key; });
+    if (on) list.push(key);
+    try { localStorage.setItem(SIDE_FOLD, list.join(",")); } catch (e) {}
+  }
+  // The heading *is* the switch. A separate chevron button beside it would add a
+  // control to the one place this change exists to make quieter, and the heading
+  // already names exactly what folds — so there is nothing a second target could say
+  // that the first does not.
+  function foldHead(label, key, body) {
+    var folded = foldedSections().indexOf(key) !== -1;
+    var b = el("button", "side-eyebrow eyebrow-fold");
+    b.type = "button";
+    // Label first, chevron last. Leading it would push the heading off the content
+    // line that the rows below sit on — the alignment this sidebar was just fixed for.
+    b.appendChild(el("span", null, label));
+    b.appendChild(icon("chev-down", "eyebrow-chev"));
+    function paint() {
+      b.setAttribute("aria-expanded", folded ? "false" : "true");
+      b.classList.toggle("folded", folded);
+      // `hidden`, not a class of our own. A `.side-folded { display: none }` lost the
+      // specificity fight with `.side-views .focusseg { display: flex }` and folded
+      // nothing — which is the exact trap `[hidden] { display: none !important }` was
+      // added for, after seventeen rules had to carry their own exception. Reuse the
+      // answer the stylesheet already gives instead of writing an eighteenth.
+      body.hidden = folded;
+    }
+    paint();
+    b.addEventListener("click", function () {
+      folded = !folded;
+      setFolded(key, folded);
+      paint();
+    });
+    return b;
+  }
   function buildFocusControl() {
     var counts = viewCounts();
     // A view reads as active only when nothing more specific already describes the
@@ -3992,7 +4039,6 @@
     var inPlace = placeActive(), inSaved = !!activeSavedView();
     var host = document.getElementById("sideViews") || document.getElementById("filters");
     viewsShown(counts).forEach(function (g) {
-      if (g.label) host.appendChild(el("div", "side-eyebrow", g.label));
       var seg = el("div", "focusseg");
       seg.setAttribute("role", "group");
       seg.setAttribute("aria-label", g.label || "Inbox");
@@ -4009,6 +4055,10 @@
         b.addEventListener("click", function () { goToView(key); });
         seg.appendChild(b);
       });
+      // The head is appended *after* its body exists, because the fold needs to know
+      // what it folds. The unlabelled group (Inbox) has no head and therefore no fold:
+      // it is one row, and a fold that hides one row is a worse trade than the row.
+      if (g.label) host.appendChild(foldHead(g.label, lower(g.label), seg));
       host.appendChild(seg);
     });
   }
@@ -4098,10 +4148,27 @@
     });
   }
   buildViewSwitch();
+  // The three headings written in the markup get the same treatment as the two the
+  // views emit — upgraded in place, so the fold is one mechanism and not two. Done
+  // once at boot: unlike the view groups, these sections are refreshed by filling
+  // their bodies, never by replacing their heads.
+  [["saved", "savedSection", "savedViews"],
+   ["agents", "agentSection", "agentFilters"],
+   ["repos", "repoSection", "repoFilters"]].forEach(function (t) {
+    var sec = document.getElementById(t[1]), body = document.getElementById(t[2]);
+    if (!sec || !body) return;
+    var eb = sec.querySelector(".side-eyebrow");
+    if (eb) sec.replaceChild(foldHead(eb.textContent, t[0], body), eb);
+  });
 
   // ── theme ──
+  // Three states, one control. The sidebar used to carry a fourth piece of furniture
+  // for this — a permanent ◐ that only ever flipped light⇄dark, so the third state
+  // could not be reached from it and it sat in the sidebar's floor forever to offer
+  // something Settings already offers completely. The choice lives in Settings (the
+  // full Light/Dark/Auto segment) and in ⌘K (the same three, by name). A theme is set
+  // once and then forgotten; it does not earn a permanent seat.
   var root = document.documentElement;
-  var themeBtn = document.getElementById("theme");
   var saved = null;
   try { saved = localStorage.getItem("roadmap-theme"); } catch (e) {}
   if (saved) root.setAttribute("data-theme", saved);
@@ -4114,37 +4181,35 @@
     var bg = getComputedStyle(document.body).backgroundColor;
     if (bg) themeColorMeta.setAttribute("content", bg);
   }
-  // True light⇄dark toggle: flip whatever is currently showing. (A three-state
-  // dark→light→auto cycle was confusing because "auto" looks identical to dark on
-  // a dark-set device, so getting back to dark took two presses.)
   function effectiveIsDark() {
     var t = root.getAttribute("data-theme");
     if (t === "dark") return true;
     if (t === "light") return false;
     return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
   }
-  function updateThemeButton() {
-    themeBtn.innerHTML = "";
-    // Show the icon of the mode a tap switches TO (dark now → sun to go light).
-    themeBtn.appendChild(icon(effectiveIsDark() ? "sun" : "moon"));
-  }
-  function toggleTheme() {
-    var next = effectiveIsDark() ? "light" : "dark";
-    root.setAttribute("data-theme", next);
-    try { localStorage.setItem("roadmap-theme", next); } catch (e) {}
+  // One writer for all three states — and the attribute is not the same thing as the
+  // stored choice. The attribute is what the page is *rendering*, and it is always one
+  // of the three: the dark palette lives under
+  // `@media (prefers-color-scheme: dark) { :root[data-theme="auto"] }`, so `auto` has to
+  // be spelled out or a dark device falls through to the light palette with no rule
+  // matching it at all. (`index.html` ships `data-theme="auto"` for exactly this reason;
+  // removing the attribute was undoing the markup's own default.) The stored value is
+  // the *choice*, and there `auto` genuinely is an absence — nothing is written, so a
+  // browser that later gains a stored value from somewhere else does not shadow it.
+  function setTheme(v) {
+    root.setAttribute("data-theme", v);
+    try {
+      if (v === "auto") localStorage.removeItem("roadmap-theme");
+      else localStorage.setItem("roadmap-theme", v);
+    } catch (e) {}
     applyThemeColor();
-    updateThemeButton();
   }
-  themeBtn.addEventListener("click", function () { toggleTheme(); themeBtn.blur(); });
-  // Follow the system scheme while on "auto" (no explicit toggle yet).
+  // Follow the system scheme while on "auto" — the page repaints itself through CSS,
+  // but the browser's status bar is painted from a meta tag and has to be told.
   if (window.matchMedia) {
-    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
-      applyThemeColor();
-      updateThemeButton();
-    });
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyThemeColor);
   }
   applyThemeColor();
-  updateThemeButton();
 
   // ── Display: layout · grouping · ordering · what's included wholesale ────────
   // One menu for *how* the chosen pucks are presented, so a new display option is
@@ -4401,7 +4466,17 @@
     cmds.push({ __cmd: true, label: state.view === "list" ? "Layout: board" : "Layout: list", hint: "Display", icon: state.view === "list" ? "grid" : "list", run: function () { setDisplay("view", state.view === "list" ? "board" : "list"); } });
     cmds.push({ __cmd: true, label: "Settings", hint: "Workspace", icon: "sliders", run: function () { openSettingsPanel(); } });
     cmds.push({ __cmd: true, label: "Keyboard shortcuts", hint: "Help", icon: "list", run: function () { toggleShortcutHelp(); } });
-    cmds.push({ __cmd: true, label: effectiveIsDark() ? "Switch to light" : "Switch to dark", hint: "Theme", icon: effectiveIsDark() ? "sun" : "moon", run: function () { toggleTheme(); } });
+    // Named states rather than a flip. The objection that killed a three-state *button*
+    // — "auto looks identical to dark on a dark-set device", so you cannot tell what a
+    // press did — does not apply to a list that says which state each row is. And a
+    // list is the only place the keyboard can reach `auto` at all.
+    var curTheme = root.getAttribute("data-theme") || "auto";
+    [["light", "Light", "sun"], ["dark", "Dark", "moon"], ["auto", "Auto (follow system)", "sliders"]]
+      .forEach(function (t) {
+        if (t[0] === curTheme) return; // the state you are already in is not a command
+        cmds.push({ __cmd: true, label: "Theme: " + t[1], hint: "Theme", icon: t[2],
+          run: function () { setTheme(t[0]); } });
+      });
     if (signedIn) {
       cmds.push({ __cmd: true, label: "Change token", hint: "Account", icon: "key", run: function () { openTokenPanel(afterAuth); } });
       cmds.push({ __cmd: true, label: "Sign out", hint: "Account", icon: "key", run: function () { setGhToken(""); afterAuth(); } });
@@ -7138,11 +7213,7 @@
     var seg = segmented(
       [["light", "Light"], ["dark", "Dark"], ["auto", "Auto"]],
       cur,
-      function (v) {
-        if (v === "auto") { root.removeAttribute("data-theme"); try { localStorage.removeItem("roadmap-theme"); } catch (e) {} }
-        else { root.setAttribute("data-theme", v); try { localStorage.setItem("roadmap-theme", v); } catch (e) {} }
-        applyThemeColor(); updateThemeButton();
-      });
+      function (v) { setTheme(v); });
     seg.classList.add("set-seg");
     wrap.appendChild(seg);
     return wrap;

@@ -901,7 +901,7 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
 .shortcut-help .sc-close .x-icn { width: 16px; height: 16px; }
 .icn.inline { width: 13px; height: 13px; vertical-align: -2px; margin-right: 4px; }
 /* icon-only ghost buttons: center the glyph */
-#viewToggle, #theme { display: inline-flex; align-items: center; justify-content: center; }
+#viewToggle { display: inline-flex; align-items: center; justify-content: center; }
 /* blocked badge: amber caution tint, slightly smaller in the dense meta row */
 .block-badge { color: var(--later); }
 .block-badge .icn { width: 14px; height: 14px; }
@@ -1016,6 +1016,29 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   text-transform: uppercase; color: var(--ink-3); padding: 0 8px; margin-bottom: 6px;
 }
 .side-section { display: flex; flex-direction: column; }
+/* The eyebrow became the fold control. It keeps `.side-eyebrow`, so it keeps the
+   heading's exact metrics — a heading that shifted when it turned into a switch would
+   read as a different element — and only loses the button chrome. */
+.eyebrow-fold {
+  font: inherit; background: none; border: 0; cursor: pointer;
+  display: flex; align-items: center; text-align: left; width: 100%;
+  font-family: var(--mono); font-size: var(--fs-xs); letter-spacing: var(--tr-eyebrow);
+  text-transform: uppercase; color: var(--ink-3);
+}
+@media (hover: hover) { .eyebrow-fold:hover { color: var(--ink-2); } }
+/* Quiet while open, plain while shut. A chevron that always showed would put five
+   permanent marks in the sidebar to advertise something most people set once; one that
+   *never* showed would leave a folded section looking like an empty one. So: on hover,
+   on focus, and whenever it is actually folded — where it is no longer decoration but
+   the only thing saying rows are hidden. Touch has no hover, so there it always shows. */
+.eyebrow-fold .eyebrow-chev {
+  width: 12px; height: 12px; margin-left: auto; flex: none;
+  opacity: 0; transition: opacity .12s, transform .12s;
+}
+.eyebrow-fold:hover .eyebrow-chev,
+.eyebrow-fold:focus-visible .eyebrow-chev { opacity: 1; }
+.eyebrow-fold.folded .eyebrow-chev { opacity: 1; transform: rotate(-90deg); }
+@media (hover: none) { .eyebrow-fold .eyebrow-chev { opacity: .55; } }
 
 /* focus switcher → vertical nav in the sidebar */
 .side-views .focusseg { display: flex; flex-direction: column; background: none; border: 0; padding: 0; gap: 1px; }
@@ -1038,8 +1061,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @media (hover: hover) { .side-repos .chip:hover { background: var(--panel-2); color: var(--ink); } }
 .side-repos .chip[aria-pressed="true"] { background: var(--panel-2); color: var(--ink); border: 0; }
 .side-repos .chip .n { margin-left: auto; font-size: var(--fs-sm); }
-
-.side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 
 /* topbar — thin, contextual (brand moved to the sidebar). Fixed height so it
    doesn't jump between board (title) and puck (breadcrumb + taller share button),
