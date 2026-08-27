@@ -380,9 +380,18 @@
         var name = lower(tok.slice(0, c));
         var rest = tok.slice(c + 1);
         name = FIELD_ALIAS[name] || name;
-        if (name === "is" && IS_STATES[lower(rest)]) {
-          terms.push({ field: "is", op: "is", values: [lower(rest)], neg: neg });
-          return;
+        // `is:a,b` carries alternatives in one term, the same shape every other field
+        // uses. It has to: `runQuery` ANDs terms, so a value per term made two ticks in
+        // one facet ask for a contradiction — `is:etapp is:standalone` is "is an etapp
+        // and stands outside every etapp", empty by construction. Unknown names are
+        // dropped rather than failing the whole term, and a term left with nothing
+        // falls through to free text, so a typo still narrows instead of vanishing.
+        if (name === "is") {
+          var states = rest.split(",").map(lower).filter(function (v) { return IS_STATES[v]; });
+          if (states.length) {
+            terms.push({ field: "is", op: "is", values: states, neg: neg });
+            return;
+          }
         }
         // `has:<field>` — does the puck carry this field at all. The one question the
         // grammar could not ask, and the only way to say "hide the column of pucks
@@ -415,7 +424,7 @@
     return terms.map(function (t) {
       var p = t.neg ? "-" : "";
       if (t.field === "text") return p + quoted(t.values[0]);
-      if (t.field === "is") return p + "is:" + t.values[0];
+      if (t.field === "is") return p + "is:" + t.values.join(",");
       if (t.field === "has") return p + "has:" + t.values[0];
       if (t.op !== "in" && t.op !== "=") return p + t.field + ":" + t.op + t.values[0];
       return p + t.field + ":" + t.values.map(quoted).join(",");
@@ -438,7 +447,7 @@
       var hay = lower(item.title + " " + item.body + " " + (item.tags || []).join(" ") + " " + item.repoName);
       hit = hay.indexOf(t.values[0]) !== -1;
     } else if (t.field === "is") {
-      hit = !!IS_STATES[t.values[0]](item);
+      hit = t.values.some(function (v) { return !!IS_STATES[v](item); });
     } else if (t.field === "has") {
       // A date field carries no `vals()`, so ask it the way it answers.
       var hf = FIELDS[t.values[0]];
@@ -525,6 +534,14 @@
   }
   function toggleFilterValue(field, value, neg) {
     var terms = parseQuery(state.query), hit = -1;
+    // `is:` belongs to a panel section, and the section owns the term shape: one term
+    // per section, so a tick lands beside the others instead of starting a second term
+    // the panel would not show as ticked. (A *column* constraint is not a tick and does
+    // not come through here — see `hideColumnTerm`.)
+    if (field === "is") {
+      var sec = sectionForState(value);
+      if (sec) return toggleSectionValue(sec, value, neg);
+    }
     if (field === "is" || field === "has") {
       for (var i = 0; i < terms.length; i++) {
         if (sameField(terms[i], field, neg) && terms[i].values[0] === value) { hit = i; break; }
@@ -3164,7 +3181,11 @@
   function termAboutGroup(t, g) {
     if (!g.field) return false;
     if (t.field === "has") return t.values[0] === g.field;
-    if (t.field === "is") return g.field === "parent" && t.values[0] === "member";
+    // Every value, not the first: an `is:` term carries alternatives now, so
+    // `is:etapp,member` is as much about the etapp grouping as a bare `is:member` —
+    // and reading `values[0]` would have answered no for one spelling and yes for the
+    // other, which is a board that disagrees with its own tray.
+    if (t.field === "is") return g.field === "parent" && t.values.indexOf("member") !== -1;
     return t.field === g.field && t.field !== "text";
   }
   function groupConstrained(g) {
@@ -3390,6 +3411,28 @@
                 values: [t.value], neg: !t.hideNeg });
     setQueryTerms(rest);
   }
+  // "Hide column" is a constraint, and a constraint narrows. That is not what a facet
+  // tick does: ticking Membership *widens* the board, because a section's values are
+  // ORed. So routing the hide through the tick added `member` to `is:standalone` and
+  // published `is:standalone,member` — every standalone puck still matched, the column
+  // the menu had just promised to hide stayed exactly where it was, and the etapp
+  // columns appeared beside it. The menu made the board bigger.
+  //
+  // Only the absence bucket hits this: every other column hides by negation, and a
+  // negated term ANDs with the section's without touching it. `No etapp` is the one
+  // that needs a *positive* `is:member` (a puck can carry a `parent:` that resolves to
+  // nothing, so `has:parent` answers about the file while the column buckets on the
+  // resolved link), and positive is exactly where it collides with the facet.
+  //
+  // Setting the section to `member` alone is the honest reading of the command: hiding
+  // the pucks that stand outside every etapp *is* "show only the ones inside one". It
+  // drops the other ticks, and it has to — those ticks are what was keeping the column
+  // on screen. `unhideColumn` is the mirror: it drops the term entirely.
+  function hideColumnTerm(t) {
+    var sec = t.field === "is" && !t.hideNeg ? sectionForState(t.value) : null;
+    if (sec) return setSectionValues(sec, [t.value], false);
+    toggleFilterValue(t.field, t.value, t.hideNeg);
+  }
   // The column head's ⋯ — same shape as the puck's, and the only two things you can
   // say about a column that aren't about the pucks in it.
   function colMenu(g, key, label) {
@@ -3439,7 +3482,7 @@
           // place called "not PIA" — which is what `readUrl`'s `!t.neg` guard says — and
           // an absence bucket is not somewhere you can stand.
           row("eye", "Show only this", function () { showOnlyColumn(g, key); });
-          row("eye-off", "Hide column", function () { toggleFilterValue(t.field, t.value, t.hideNeg); });
+          row("eye-off", "Hide column", function () { hideColumnTerm(t); });
         },
       });
     });
@@ -4978,24 +5021,109 @@
         return Object.keys(seen).sort().map(function (o) { return { value: o, label: "@" + o }; });
       },
     },
+    // Derived states — not fields, so they share the `is:` namespace, and `states`
+    // marks a section as owning part of it.
+    //
+    // Three sections, not one list called State, because they were never one question.
+    // A single list has to answer two ticks with one rule, and neither rule is right
+    // for both cases: within a dimension a tick widens, so `etapp` + `standalone` must
+    // be a union — it asks for two of the three ways a puck can sit in the hierarchy,
+    // and gave *nothing*; across dimensions each tick narrows, so `ready` + `member`
+    // must stay an intersection — "ready, and inside an etapp" is a question worth
+    // asking, and a flat OR would have thrown it away to fix the first case.
+    //
+    // Not because a section's values exclude each other — they do not. A puck can be
+    // `blocked` and `blocking` at once, and an etapp nested in another etapp is
+    // `etapp` and `member` both. Union is the facet convention rather than a fact
+    // about the values: `tags` has always OR'd, and nobody reads two ticked labels as
+    // "carries both". Ticking Blocked and Blocking others therefore asks for pucks
+    // tangled in dependencies *either* way, and the pair that is both is simply in it
+    // — the narrower "both directions at once" is the one reading this costs, and it
+    // was never reachable from the panel anyway.
+    //
+    // Split, the panel's ordinary rule — or within a section, and between them — is
+    // exactly right, with no special case for `is:` at all. The grouping also stops
+    // being invisible: two ticks behave differently depending on which rows they are,
+    // and now the reader can see why before clicking.
     {
-      // Derived states — not fields, so they share the `is:` namespace.
-      key: "is", label: "State",
+      key: "dep", label: "Readiness", states: ["ready", "blocked", "blocking"],
       values: function () {
         return [
           { value: "ready", label: "Ready" },
           { value: "blocked", label: "Blocked" },
           { value: "blocking", label: "Blocking others" },
-          { value: "flagged", label: "Needs attention" },
-          { value: "stale", label: "Stale" },
-          { value: "adapted", label: "Adapted source" },
+        ];
+      },
+    },
+    {
+      // Named for the question, not for the code's word for it (`hierarchy`): this
+      // sits next to the Etapp field, and the pair reads as *which* etapp against
+      // *whether* one.
+      key: "membership", label: "Membership", states: ["etapp", "member", "standalone"],
+      values: function () {
+        return [
           { value: "etapp", label: "Is an etapp" },
           { value: "member", label: "In an etapp" },
           { value: "standalone", label: "In no etapp" },
         ];
       },
     },
+    {
+      // `adapted` is a property of the source rather than a drift signal, so this is
+      // not "Signals" — the three are alike in being marks on the record, which is
+      // what the name has to carry.
+      key: "flags", label: "Flags", states: ["flagged", "stale", "adapted"],
+      values: function () {
+        return [
+          { value: "flagged", label: "Needs attention" },
+          { value: "stale", label: "Stale" },
+          { value: "adapted", label: "Adapted source" },
+        ];
+      },
+    },
   ];
+  // A section writes `is:` terms, so its own key is not the field its values live
+  // under. Everything that reads the query has to ask for the field; everything that
+  // reads *this section's* part of it has to ask for the section.
+  function qfieldOf(f) { return f.states ? "is" : f.key; }
+  function sectionForState(v) {
+    for (var i = 0; i < FILTER_FIELDS.length; i++) {
+      if (FILTER_FIELDS[i].states && FILTER_FIELDS[i].states.indexOf(v) !== -1) return FILTER_FIELDS[i];
+    }
+    return null;
+  }
+  function ownsState(f, v) { return !f.states || f.states.indexOf(v) !== -1; }
+  // The values of this section that are set. Three sections share one query field, so
+  // a raw lookup would hand each of them the other two's ticks.
+  function sectionValues(f, neg) {
+    return filterValues(qfieldOf(f), neg).filter(function (v) { return ownsState(f, v); });
+  }
+  // Does this term belong to this section? A term is written per section, but a
+  // hand-typed or older query can mix a section's values across several terms, so this
+  // asks about the values rather than assuming the shape.
+  function termInSection(t, f, neg) {
+    return sameField(t, qfieldOf(f), neg) &&
+      (!f.states || t.values.some(function (v) { return ownsState(f, v); }));
+  }
+  // Set this section to exactly `next`, as one term. Written by rebuild rather than by
+  // edit-in-place: a query that already spread the section over several terms (an old
+  // link, a typed query) is consolidated on the first tick instead of growing a fourth.
+  function setSectionValues(f, next, neg) {
+    var out = [];
+    parseQuery(state.query).forEach(function (t) {
+      if (!termInSection(t, f, neg)) { out.push(t); return; }
+      var kept = t.values.filter(function (v) { return !ownsState(f, v); });
+      if (kept.length) { t.values = kept; out.push(t); }
+    });
+    if (next.length) out.push({ field: qfieldOf(f), op: f.states ? "is" : "in", values: next, neg: !!neg });
+    setQueryTerms(out);
+  }
+  function toggleSectionValue(f, value, neg) {
+    if (!f.states) return toggleFilterValue(f.key, value, neg);
+    var cur = sectionValues(f, neg);
+    var at = cur.indexOf(value);
+    setSectionValues(f, at === -1 ? cur.concat([value]) : cur.filter(function (v) { return v !== value; }), neg);
+  }
   // Can this value match anything at all in this view? One that can't is a trap: it
   // commits, the board empties, and nothing says why. In Inbox that was every status
   // but `inbox`, plus `is:ready` and `is:done`. The Etapp field already followed this
@@ -5007,18 +5135,16 @@
   // different question — how many pucks the click would leave — and models the
   // toggle, so it stays non-zero for a value that matches nothing.) An active value
   // always survives, or there would be no way to un-tick it.
-  function valueReachable(field, value) {
+  function valueReachable(f, value) {
     var probe = viewTerms();
-    probe.push(field === "is"
-      ? { field: "is", op: "is", values: [value], neg: false }
-      : { field: field, op: "in", values: [value], neg: false });
+    probe.push({ field: qfieldOf(f), op: f.states ? "is" : "in", values: [value], neg: false });
     for (var i = 0; i < DATA.items.length; i++) if (runQuery(DATA.items[i], probe)) return true;
     return false;
   }
   function reachableValues(f) {
-    var active = filterValues(f.key, false).concat(filterValues(f.key, true));
+    var active = sectionValues(f, false).concat(sectionValues(f, true));
     return f.values().filter(function (v) {
-      return active.indexOf(v.value) !== -1 || valueReachable(f.key, v.value);
+      return active.indexOf(v.value) !== -1 || valueReachable(f, v.value);
     });
   }
   function fieldByKey(k) {
@@ -5027,23 +5153,33 @@
   }
   // How many pucks each candidate value would leave — counted against the *other*
   // active terms, so the numbers describe the click you're about to make.
-  function countFor(field, value) {
-    var base = activeTerms().filter(function (t) { return !sameField(t, field, false); });
+  function countFor(f, value) {
+    // The probe has to be what the click *does*, and the click only ever touches this
+    // section's values — `setSectionValues` leaves the rest of a term standing. So the
+    // base strips those values out rather than dropping whole terms, which matters
+    // twice over.
+    //
+    // Three sections share the `is:` field, so dropping every `is:` term would count a
+    // Membership click against a board that had quietly forgotten the Readiness ticks
+    // still on screen. And dropping the whole of a *mixed* term — `is:stale,member`,
+    // which the panel does not write but a link or a saved view can carry — counted
+    // against no filter at all: the row beside In an etapp advertised 7 where clicking
+    // it gave 0, because unticking leaves `is:stale` standing and nothing is stale.
+    var base = [];
+    activeTerms().forEach(function (t) {
+      if (!termInSection(t, f, false)) { base.push(t); return; }
+      var kept = t.values.filter(function (v) { return !ownsState(f, v); });
+      if (kept.length) base.push({ field: t.field, op: t.op, values: kept, neg: t.neg });
+    });
     // Model the toggle, not the value: with `status:now` on, clicking Next gives
     // `status:now,next` (an OR — a *bigger* set), and clicking Now removes the
     // filter entirely. Counting the candidate alone would predict neither.
-    var current = filterValues(field, false);
+    var current = sectionValues(f, false);
     var next = current.indexOf(value) === -1
       ? current.concat([value])
       : current.filter(function (v) { return v !== value; });
     var probe = base.slice();
-    if (next.length) {
-      if (field === "is") {
-        next.forEach(function (v) { probe.push({ field: "is", op: "is", values: [v], neg: false }); });
-      } else {
-        probe.push({ field: field, op: "in", values: next, neg: false });
-      }
-    }
+    if (next.length) probe.push({ field: qfieldOf(f), op: f.states ? "is" : "in", values: next, neg: false });
     var n = 0;
     DATA.items.forEach(function (it) { if (runQuery(it, probe)) n++; });
     return n;
@@ -5076,7 +5212,7 @@
       var row = el("button", "fp-row");
       row.type = "button";
       row.appendChild(el("span", null, f.label));
-      var on = filterValues(f.key, false).length;
+      var on = sectionValues(f, false).length;
       if (on) row.appendChild(el("span", "fp-n", String(on)));
       row.appendChild(icon("chev-right", "fp-chev"));
       row.addEventListener("click", function () { renderValueList(pop, f); });
@@ -5109,7 +5245,7 @@
 
     function paint() {
       box.innerHTML = "";
-      var active = filterValues(f.key, false);
+      var active = sectionValues(f, false);
       var q = searchBox ? searchBox.value.trim().toLowerCase() : "";
       var matches = all.filter(function (v) { return !q || v.value.indexOf(q) !== -1; });
       var collapsed = !q && !expanded && matches.length > CAP;
@@ -5118,10 +5254,10 @@
         var row = el("label", "fp-val" + (isOn ? " on" : ""));
         var cb = document.createElement("input");
         cb.type = "checkbox"; cb.checked = isOn;
-        cb.addEventListener("change", function () { toggleFilterValue(f.key, v.value, false); paint(); });
+        cb.addEventListener("change", function () { toggleSectionValue(f, v.value, false); paint(); });
         row.appendChild(cb);
         row.appendChild(el("span", "fp-vlabel", v.label));
-        row.appendChild(el("span", "fp-n", String(countFor(f.key, v.value))));
+        row.appendChild(el("span", "fp-n", String(countFor(f, v.value))));
         box.appendChild(row);
       });
       if (!matches.length) box.appendChild(el("div", "fp-empty", "Nothing to filter by"));
@@ -5464,7 +5600,16 @@
     if (!trayColumns) return false;
     var g = trayColumns.g;
     if (!termAboutGroup(t, g)) return false;
-    if (t.field === "has" || t.field === "is") return !t.neg && !!trayColumns.keys[NO_VALUE];
+    // The absence bucket, and only when the term is *nothing but* that constraint. The
+    // rule the chip row stands down for is the exact duplicate — a term that says no
+    // more than "hide these columns" — and a multi-value `is:` can now say more:
+    // `is:stale,member` also filters by staleness, and suppressing its chip left that
+    // half invisible on the board and unreachable from the row that exists to remove
+    // it, while the tray looked like it accounted for the whole predicate. `has:` is
+    // single-valued by construction, so the length test simply always passes there.
+    if (t.field === "has" || t.field === "is") {
+      return !t.neg && t.values.length === 1 && !!trayColumns.keys[NO_VALUE];
+    }
     if (!t.neg) return false;
     return t.values.every(function (v) {
       return Object.keys(trayColumns.keys).some(function (k) { return valueNamesColumn(g, v, k); });
@@ -5498,7 +5643,7 @@
       var f = fieldByKey(t.field);
       var label;
       if (t.field === "text") label = "“" + t.values[0] + "”";
-      else if (t.field === "is") label = (t.neg ? "Not " : "") + t.values[0];
+      else if (t.field === "is") label = (t.neg ? "Not " : "") + t.values.join(", ");
       // Read as the column it hides, not as the predicate it is: `has:priority` is
       // how "hide the No priority column" is spelled, so that is what it should say.
       else if (t.field === "has") {
