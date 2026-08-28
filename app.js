@@ -2036,8 +2036,46 @@
               mi.addEventListener("click", function () { api.close(); opts.onPick(it); });
               list.appendChild(mi);
             });
-            if (!hits.length) list.appendChild(el("div", "fp-empty", q ? "No puck matches" : "Nothing to pick"));
-            else if (hits.length > CAP) list.appendChild(el("div", "fp-empty", "\u2026and " + (hits.length - CAP) + " more \u2014 keep typing"));
+            // Search-and-create, the same shape the labels box uses — but a puck is a
+            // file in a repo, and that is what both guards below are about.
+            //
+            // The duplicate is measured **where the file would land**, and by two
+            // rules, because there are two ways to be in the way. The *slug* is what
+            // `createPuck` refuses on — an id is `<repo>/<slug>` — so offering a row
+            // whose commit is rejected on arrival would be a lie. The *title* is what
+            // the reader would be confused by: a second "Auth" beside the "Auth"
+            // listed right above it. Neither implies the other. The fixture has both
+            // ends of that: a puck titled "An etapp" whose slug is `a-etapp`, which a
+            // slug test alone would happily duplicate by title.
+            //
+            // Both are scoped to the destination repo. A puck called "Auth" in another
+            // repo neither collides nor confuses — it is a different project's Auth,
+            // and the cross-repo pool this picker offers is full of them.
+            //
+            // And the row is offered only where the write could land: `canAddMember`
+            // deliberately opens the picker when a *foreign* child can be added to an
+            // etapp in a read-only repo, but creating always writes to this one — so
+            // without the second guard the row would promise a commit that is rejected
+            // on arrival.
+            var writable = opts.create && canCreateIn(opts.create.repo || opts.repo);
+            var typed = search.value.trim();
+            var dest = opts.create && opts.create.repo || opts.repo;
+            var taken = typed && DATA.items.some(function (it) {
+              return it.repo === dest && (it.slug === slugify(typed) || lower(it.title) === lower(typed));
+            });
+            if (writable && q && !taken) {
+              var mk = el("button", "row pick-mi pick-create");
+              mk.type = "button";
+              mk.appendChild(icon("plus", "pick-createmark"));
+              mk.appendChild(el("span", "pick-title", "New " + opts.create.noun + " \u201c" + typed + "\u201d"));
+              mk.appendChild(el("span", "pick-repo", "in " + repoNameOf(dest)));
+              mk.addEventListener("click", function () { api.close(); opts.create.run(typed); });
+              list.appendChild(mk);
+            }
+            if (!hits.length && !(writable && q && !taken)) {
+              list.appendChild(el("div", "fp-empty", q ? "No puck matches" : "Nothing to pick"));
+            }
+            if (hits.length > CAP) list.appendChild(el("div", "fp-empty", "\u2026and " + (hits.length - CAP) + " more \u2014 keep typing"));
           }
           search.addEventListener("input", paint);
           paint();
@@ -5866,10 +5904,26 @@
   // a fine-grained token's permissions.push can read true while Contents: write is
   // missing. Learned from real failures; cleared on sign-in.
   var readOnlyRepos = new Set();
-  function canWrite(item) {
+  // Permission is a property of the *repo*, and some questions are about a repo with
+  // no item to ask through — "could a puck be created here" is one.
+  function canWriteRepo(repo) {
     // == null also catches `undefined` — card() calls this during the first render,
     // before writableRepos/readOnlyRepos are assigned (they mean "not checked yet").
-    return (writableRepos == null || writableRepos.has(item.repo)) && !(readOnlyRepos && readOnlyRepos.has(item.repo));
+    return (writableRepos == null || writableRepos.has(repo)) && !(readOnlyRepos && readOnlyRepos.has(repo));
+  }
+  function canWrite(item) { return canWriteRepo(item.repo); }
+  // Writing is not the same question as *creating*. A `checklist`/`prose` source can be
+  // perfectly writable and still be the wrong place for a new file: the harvester runs
+  // that repo's own adapter, which reads one file and one section and has never heard of
+  // `roadmap/<slug>.md`. The puck would commit, sit on the board optimistically, and be
+  // gone at the next sync — a write that looks like it worked and vanishes an hour
+  // later, which is the same failure the closed-set rule exists to prevent.
+  // Existing children from such a repo are still pickable; only *making* one is not.
+  function canCreateIn(repo) {
+    if (!ghToken() || !canWriteRepo(repo)) return false;
+    var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0];
+    if (src) return src.adapter === "pucks";
+    return DATA.items.some(function (it) { return it.repo === repo && it.native; });
   }
   function noteWriteError(item, err) {
     if (err && (err.status === 403 || err.status === 404)) readOnlyRepos.add(item.repo);
@@ -6520,6 +6574,17 @@
     }
     recountEtapp(old);
     recountEtapp(parentId);
+    // `parent-missing` says the etapp named in the file does not exist. Once the link
+    // resolves it plainly does, so the flag goes — creating the etapp a puck already
+    // named is the repair the flag asks for, and the note would otherwise keep naming
+    // a puck that is now on the board.
+    //
+    // Only cleared, never raised. An unresolved `parent:` has two possible flags and
+    // two different fixes — a typo (`parent-missing`) or a loop (`parent-cycle`) — and
+    // choosing between them is the harvester's job, not a guess made here.
+    if (parentId) {
+      item.signals = (item.signals || []).filter(function (g) { return g.type !== "parent-missing"; });
+    }
   }
 
   // ── dependencies (`depends`) ────────────────────────────────────────────────
@@ -6544,6 +6609,22 @@
       live.forEach(function (d) { d.blocks.push(it.id); });
     });
     DATA.items.forEach(function (it) { it.blocks.sort(); });
+    // `depends-missing` is derived from `missingDepends`, so it has to move with it.
+    // The note is built by joining that list — leave the two out of step and the puck
+    // says "Depends on , which doesn't exist", with the name it is complaining about
+    // missing from the complaint. Reachable two ways: remove a broken reference (which
+    // predates this work), or create the puck the reference was naming.
+    //
+    // Only this one type is touched. The harvester stays the authority on every signal
+    // — this is the same promise `blockedBy` already makes, that an optimistic edit
+    // must not leave the derived state disagreeing with itself between renders.
+    DATA.items.forEach(function (it) {
+      var had = (it.signals || []).some(function (g) { return g.type === "depends-missing"; });
+      var needs = it.missingDepends.length > 0;
+      if (had === needs) return;
+      var rest = (it.signals || []).filter(function (g) { return g.type !== "depends-missing"; });
+      it.signals = needs ? rest.concat([{ type: "depends-missing" }]) : rest;
+    });
   }
   // Would depending on `target` close a loop? Walk the *authored* graph, since a
   // landed blocker still counts as an edge.
@@ -6647,6 +6728,29 @@
           changeDepends(item, (item.depends || []).concat([ref]),
             "roadmap: " + item.slug + " blocked by " + ref);
         },
+        // Same two-write shape as the etapp, and the puck argued for having it: the
+        // blocker you cannot find is more often work nobody has written down yet
+        // than an etapp is.
+        create: {
+          noun: "blocker",
+          run: function (title) {
+            var made = createPuck(item.repo, title, "later", [], null, "", { open: false });
+            if (made) made.then(function (p) {
+              if (!p) return;
+              // The puck may be exactly what an existing `depends:` was already naming.
+              // Creating the thing you declared yourself blocked by is the repair
+              // `depends-missing` asks for — the reference was right, the file was
+              // missing — so appending it again would commit `depends: [foo, foo]` and
+              // draw the same relationship twice. `createPuck` has already recomputed
+              // the edges, so the dangling reference resolves on its own.
+              var already = (item.depends || []).some(function (r) { return resolveRef(item, r) === p; });
+              if (already) { afterEdit(item); return; }
+              var ref = refFor(item, p);
+              changeDepends(item, (item.depends || []).concat([ref]),
+                "roadmap: " + item.slug + " blocked by " + ref);
+            });
+          },
+        },
       }));
     }
     return wrap;
@@ -6670,6 +6774,12 @@
     if (wouldLoop(item, parentId)) { toast("✗ That would make an etapp loop", true); return; }
     var raw = target ? refFor(item, target) : null;
     var prevRef = item.parentRef, prevRaw = item.parent, prevU = item.updated;
+    // Saved, not recomputed. `relink` clears `parent-missing` when the link resolves and
+    // deliberately never raises it — an unresolved `parent:` is either a typo or a loop,
+    // and choosing between those is the harvester's job. A rollback has no such problem:
+    // it knows exactly which flag stood there, so it puts that one back. (`filter` builds
+    // a new array, so holding the old reference is holding the old value.)
+    var prevSignals = item.signals;
     relink(item, parentId, raw);
     item.updated = today();
     // Both ends changed, and the etapp is as likely to be the page you're on: adding
@@ -6681,6 +6791,7 @@
       .then(function () { toast(raw ? "✓ In etapp " + target.title + " — live in ~1 min" : "✓ Out of its etapp — live in ~1 min"); })
       .catch(function (err) {
         relink(item, prevRef, prevRaw);
+        item.signals = prevSignals;
         item.updated = prevU;
         noteWriteError(item, err);
         afterEdit(item, prevRef, parentId);
@@ -6727,6 +6838,11 @@
   }
   function canAddMember(item) {
     if (!ghToken()) return false;
+    // Creating the first member is precisely what an empty etapp needs, and the old
+    // condition made that unreachable: no existing candidate, no picker, no way to
+    // make one. The picker is worth drawing whenever *either* end is possible — but
+    // "can create here" is `canCreateIn`, not merely "can write here".
+    if (canCreateIn(item.repo)) return true;
     for (var i = 0; i < DATA.items.length; i++) {
       if (memberCandidate(item, DATA.items[i])) return true;
     }
@@ -6739,6 +6855,14 @@
       repo: item.repo,
       exclude: function (other) { return !memberCandidate(item, other); },
       onPick: function (chosen) { if (chosen) changeParent(chosen, item.id); },
+      // The one place where creating is a single commit: membership is authored on
+      // the child, and here the child is the thing being made. `later` rather than
+      // `inbox` because putting a puck in an etapp *is* filing it — an inbox stub
+      // would be filed and then hidden by the board it was filed on.
+      create: {
+        noun: "puck",
+        run: function (title) { createPuck(item.repo, title, "later", [], null, "", { parent: item.id, open: false }); },
+      },
     });
   }
 
@@ -6785,6 +6909,19 @@
           }];
         },
         onPick: function (target) { changeParent(item, target && target.id); },
+        // Two writes, and they cannot be one: the etapp is the *parent*, so the
+        // relation is authored on the puck we are standing in, not on the file being
+        // created. The second only runs if the first committed — otherwise a puck
+        // would point at an etapp that had just been rolled back. If the link fails
+        // the etapp still exists and is on the board, which is recoverable in one
+        // click, and `changeParent` says so itself.
+        create: {
+          noun: "etapp",
+          run: function (title) {
+            var made = createPuck(item.repo, title, "later", [], null, "", { open: false });
+            if (made) made.then(function (p) { if (p) changeParent(item, p.id); });
+          },
+        },
       }));
     }
     return wrap;
@@ -6992,11 +7129,15 @@
     if (context) body = context + "\n\n" + body; // a lead paragraph above the skeleton
     return body;
   }
-  function puckTemplate(title, status, tags, agent, context) {
+  function puckTemplate(title, status, tags, agent, context, parentRef) {
     var t = /[:#]/.test(title) ? JSON.stringify(title) : title;
     var lines = ["---", "title: " + t, "status: " + status];
     if (tags.length) lines.push("tags: [" + tags.join(", ") + "]");
     if (agent) lines.push("agent: " + agent);
+    // Membership is authored on the child, so a puck created *from* its etapp can
+    // carry the relation in the file it is born with — one write instead of two,
+    // and no window where the puck exists outside the etapp it was made for.
+    if (parentRef) lines.push("parent: " + parentRef);
     lines.push("updated: " + today(), "created: " + today(), "---", "");
     var body = puckBody(context);
     return lines.join("\n") + (body ? "\n" + body : "");
@@ -7031,11 +7172,21 @@
   }
 
   // Optimistic create: add to the board now, commit in the background, revert on failure.
-  function createPuck(repo, title, status, tags, agent, context) {
+  // `opts.parent` writes the relation into the template (one commit, see above).
+  // `opts.open` false keeps you where you are — creating a puck from a picker is
+  // something you did *while* in the middle of something else, and yanking the page
+  // to the new file is the interruption the picker existed to avoid.
+  //
+  // Returns a promise that resolves with the item, or with `null` if the write failed —
+  // and `null` synchronously if the slug is already taken. It never rejects, so a caller
+  // that fires and forgets cannot leak an unhandled rejection, and one that needs a
+  // second write only has to ask whether the first happened.
+  function createPuck(repo, title, status, tags, agent, context, opts) {
+    opts = opts || {};
     var slug = slugify(title);
     var short = repo.split("/").pop();
     var id = short + "/" + slug;
-    if (DATA.items.some(function (x) { return x.id === id; })) { toast('✗ A puck "' + slug + '" already exists here', true); return; }
+    if (DATA.items.some(function (x) { return x.id === id; })) { toast('✗ A puck "' + slug + '" already exists here', true); return null; }
     var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0] || {};
     var meta = sourceMeta(repo);
     var path = meta.dir + "/" + slug + ".md";
@@ -7048,16 +7199,54 @@
       sourcePath: path, sourceUrl: "https://github.com/" + repo + "/blob/" + meta.branch + "/" + path,
       adapter: "pucks", native: true, blockedBy: [], signals: [],
     };
+    var parentItm = opts.parent ? itemById(opts.parent) : null;
+    var parentRef = parentItm ? refFor(item, parentItm) : null;
+    // Pushed before linked: `relink` recounts the etapp's rollup through `itemById`,
+    // so a child that is not in the list yet would be left out of the number that is
+    // supposed to have just grown.
     DATA.items.push(item); DATA.total += 1;
-    renderBoard(); buildAgentChips(); openModal(item);
+    if (parentItm) relink(item, parentItm.id, parentRef);
+    // A new puck can satisfy a `depends:` that named something not on the board yet —
+    // anywhere, not only on the puck we came from. The derived edges are recomputed
+    // from the authored refs, so adding an item is enough to change them, and nothing
+    // else was going to notice until the next harvest.
+    recomputeDeps();
+    buildAgentChips();
+    var opened = opts.open !== false;
+    // Both ends changed, and with `open: false` the etapp is the page still on screen —
+    // the same lesson `changeParent` learned: redrawing only the board left its Contains
+    // list and its rollup describing the state from before the click, on the one page
+    // the caller asked to stay on. `afterEdit` is the path that refreshes an open puck,
+    // so the new child goes through it rather than around it.
+    afterEdit(parentItm || item);
+    if (opened) openModal(item);
     toast("Creating…");
-    commitCreate(repo, path, meta.branch, puckTemplate(title, status, tags, agent, context), "roadmap: add " + slug)
-      .then(function () { toast("✓ Created — live in ~1 min"); })
+    return commitCreate(repo, path, meta.branch,
+      puckTemplate(title, status, tags, agent, context, parentRef), "roadmap: add " + slug)
+      .then(function () { toast("✓ Created — live in ~1 min"); return item; })
       .catch(function (err) {
         noteWriteError({ repo: repo }, err);
+        if (parentItm) relink(item, null, null); // take the optimistic edge back out
         var i = DATA.items.indexOf(item); if (i >= 0) DATA.items.splice(i, 1);
-        DATA.total -= 1; renderBoard(); buildAgentChips(); closeModal();
+        DATA.total -= 1; recomputeDeps(); buildAgentChips();
+        // The rollback is as visible as the addition was — and `currentDetailItem` is
+        // the point, not just `parentItm`. Creating from the Etapp or Blocked by picker
+        // has no parent to refresh, so this passed `null` and left the puck you are
+        // standing in untouched. `noteWriteError` has *just* learned the repo is
+        // read-only, and the rail was still offering the controls that had proved it.
+        afterEdit(parentItm || null, currentDetailItem || null);
+        // Only the modal we opened. Closing unconditionally would have shut the puck
+        // the picker was called from — the one page the caller asked to stay on.
+        if (opened) closeModal();
         toast("✗ " + err.message, true);
+        // Resolves with `null` rather than rejecting. A caller that needs the second
+        // write asks "did it happen"; nobody needs the error object, because the toast
+        // and the rollback already dealt with it. Rethrowing made the two callers that
+        // deliberately ignore the promise — the sidebar's New puck and `＋ Add puck` —
+        // leak an unhandled rejection into the console on every failed write. `null` is
+        // already this function's word for "did not happen": it is what the duplicate
+        // guard returns, synchronously, above.
+        return null;
       });
   }
 

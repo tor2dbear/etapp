@@ -1999,6 +1999,14 @@ body.preload * { transition: none !important; }
 .pick-list { display: flex; flex-direction: column; gap: 1px; max-height: 46vh; overflow-y: auto; }
 .pick-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-repo { margin-left: auto; padding-left: 8px; color: var(--ink-3); font-size: var(--fs-sm); flex: none; }
+/* Search-and-create, in the shape ⌘K already uses for the same offer: an accent
+   mark, an accent title, and a rule that separates a row which *makes* something
+   from the rows that merely pick. The repo rides in `.pick-repo` — same slot the
+   list uses to name a foreign repo, because it answers the same question: where
+   would this land. */
+.pick-create { border-top: 1px solid var(--line); }
+.pick-create .pick-title { color: var(--accent); }
+.pick-createmark { width: 1.15em; height: 1.15em; color: var(--accent); flex: none; }
 .row .repo-dot { flex: none; }
 .pick-find .fp-empty { padding: 8px 9px; color: var(--ink-3); font-size: var(--fs-base); }
 
