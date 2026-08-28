@@ -63,8 +63,8 @@
      stays on `--pad`; only the lit background reaches past it. */
   --sheet-gap: 8px;
   --fs-xs: 10px;  /* badges, eyebrows, counters */
-  --fs-sm: 11px;  /* the meta line under a card */
-  --fs-base: 12px; /* dense chrome: small buttons, chips, counts, field labels */
+  --fs-sm: 11px;  /* the meta line under a card, and every count beside a label */
+  --fs-base: 12px; /* dense chrome: small buttons, chips, field labels */
   --fs-md: 13px;  /* the working size: rows, controls, secondary body */
   --fs-lg: 14px;   /* body and headings inside a card or panel */
   --fs-xl: 15px;   /* the page's base size, and a sheet's — a thumb reads this */
@@ -211,6 +211,18 @@ button, input, select, textarea, optgroup {
    above an empty list. One rule, and nothing can forget it. */
 [hidden] { display: none !important; }
 html, body { margin: 0; }
+/* Never let the browser resize text on its own.
+   A mobile engine inflates *some* blocks when it decides a page is laid out wider than
+   the screen — and it picks them per block, so the result is not "everything is bigger"
+   but one element out of scale with the rest. Measured on a phone: a puck whose body
+   held a wide code block pushed the page to 540px in a 390px screen, and its three
+   section headings came back 38px tall against 22px on the puck beside it, while every
+   row label on the same page was identical to the pixel.
+   The width bug is fixed where it belongs (`.detail-pane`), and this is not a substitute
+   for that: a page that outgrows the screen is still wrong, and the sideways scroll still
+   says so. This only takes away the disfigurement, so the next such bug reads as one
+   symptom instead of two. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   background: var(--bg);
   color: var(--ink);
@@ -372,7 +384,7 @@ body {
 .chip[aria-pressed="true"] { color: var(--ink); border-color: currentColor; }
 .chip.repo[aria-pressed="true"] { background: var(--panel-2); }
 .chip.tag[aria-pressed="true"] { background: var(--accent); color: var(--on-solid); border-color: var(--accent); }
-.chip .n { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.chip .n { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: var(--fs-md); cursor: pointer; }
 
 .board {
@@ -423,7 +435,7 @@ body {
 .hidden-col .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); flex: none; background: var(--ink-3); }
 .hidden-col .hidden-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The count sits with the label; the eye takes the right edge, where the action is. */
-.hidden-col .count { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.hidden-col .count { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .hidden-col .icn { margin-left: auto; width: 15px; height: 15px; color: var(--ink-3); }
 @media (hover: hover) { .hidden-col:hover .icn { color: var(--accent); } }
 /* The status swatches already have their colours; a hidden column keeps its identity. */
@@ -473,7 +485,7 @@ body {
 }
 .col-head .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); }
 .col-head h2 { margin: 0; font-size: var(--fs-md); text-transform: uppercase; letter-spacing: var(--tr-eyebrow); }
-.col-head .count { color: var(--ink-3); font-size: var(--fs-base); font-variant-numeric: tabular-nums; }
+.col-head .count { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .col-status-now .swatch { background: var(--now); }
 .col-status-next .swatch { background: var(--next); }
 .col-status-later .swatch { background: var(--later); }
@@ -503,7 +515,7 @@ body {
 }
 .list-head .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); }
 .list-head h2 { margin: 0; font-size: var(--fs-md); text-transform: uppercase; letter-spacing: var(--tr-eyebrow); }
-.list-head .count { color: var(--ink-3); font-size: var(--fs-base); font-variant-numeric: tabular-nums; }
+.list-head .count { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 /* The whole heading is the fold control, so it carries the row's own spacing and
    reaches a little past the content line — a header you can click should look like
    one target, not like a label with a hit area drawn around the words. */
@@ -969,6 +981,16 @@ body.viewing-puck .vhead { display: none; }
 .detail-pane {
   background: var(--bg);
   padding: 16px var(--pad) 56px; display: flex; flex-direction: column;
+  /* A grid item's `min-width` defaults to `auto`, which means "never narrower than my
+     content's minimum" — and a `<pre>` has no minimum worth speaking of: it is one long
+     line. So a puck whose body holds a terminal transcript pushed this pane wider than
+     the phone, the page gained a horizontal scroll, and the browser's text autosizing
+     read the too-wide layout as a reason to inflate every font on the page. One puck
+     rendered large and draggable while the one beside it was fine.
+     `overflow-x: auto` on the `pre` was already there and was never the missing piece:
+     a scroll container still contributes its content's minimum width upward until an
+     ancestor is allowed to shrink. This is that permission. */
+  min-width: 0;
 }
 .detail-close { display: none; }
 .detail-content { max-width: 760px; width: 100%; margin: 0 auto; }
@@ -1060,7 +1082,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 @media (hover: hover) { .side-repos .chip:hover { background: var(--panel-2); color: var(--ink); } }
 .side-repos .chip[aria-pressed="true"] { background: var(--panel-2); color: var(--ink); border: 0; }
-.side-repos .chip .n { margin-left: auto; font-size: var(--fs-sm); }
+.side-repos .chip .n { margin-left: auto; } /* size comes from `.chip .n` — one rule */
 
 /* topbar — thin, contextual (brand moved to the sidebar). Fixed height so it
    doesn't jump between board (title) and puck (breadcrumb + taller share button),
@@ -1193,6 +1215,17 @@ body.preload * { transition: none !important; }
 .view-title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); margin: 0; letter-spacing: var(--tr-tight); }
 /* keep a long composed "view · scope" title from pushing the view-options off */
 .vhead .view-title { max-width: 55ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* One count mark, one size, no exception: `--fs-sm`, which the scale now names for it.
+   "How many cards are behind this label" is the same sentence beside the view title,
+   on a column head, on a list head, on a sidebar view row, on a repo or agent row and
+   on a tray row — six marks, and they used to be four sizes. No rule explained them:
+   the sidebar view row and the column head are *both* `--fs-md` and their counts still
+   disagreed, and the largest heading on the board carried the smallest count.
+   Why 11 and not 12, which the scale used to name: the repo rows are the longest list
+   of counts on the board and were already 11, so unifying upward moved the majority to
+   match the minority. Reported by eye, from a phone, once the other five had moved.
+   `.filter-count` stays out of this and should: it counts *filters*, not cards, and it
+   is a solid pill rather than a mark beside a label. */
 .view-count { font-family: var(--mono); font-size: var(--fs-sm); color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .vopts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .newbtn { gap: 5px; background: var(--panel-2); }
@@ -1321,7 +1354,12 @@ body.preload * { transition: none !important; }
    works in the mono sidebar and in the switcher's larger sheet rows. */
 .focus-icn { width: 1.15em; height: 1.15em; color: var(--ink-3); }
 .focusbtn.on .focus-icn, .row.on .focus-icn { color: inherit; }
-.focus-n { font-family: var(--mono); font-size: var(--fs-sm); color: var(--ink-3); flex: none; }
+/* Fixed like the rest, and `em` would have been wrong here even though this row has
+   two sizes (`--fs-md` in the popover, `--fs-xl` in the sheet). The neighbouring icon
+   looks like a precedent for scaling and is not one: `.focus-icn` asks for `1.15em`,
+   but `.pick-menu .row > .icn` outranks it and pins the icon to 15px in the menu, so
+   `em` there would have grown the number past a mark that stayed put. */
+.focus-n { font-family: var(--mono); font-size: var(--fs-sm); color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none; }
 .side-views .focusbtn.on .focus-n { color: var(--ink-2); }
 
 /* filter popover in the view-header */

@@ -133,6 +133,31 @@ A puck usually starts in `inbox`, is promoted to `now/next/later` once it is an
 actual decision, and lands in `done`. Update `updated` every time you touch the
 status or the content.
 
+### What earns a puck
+
+> **A puck is a promise about the future.** If nobody could ever pick it up —
+> because it is already done — it is not a puck.
+
+The roadmap is where work is *saved for later and prioritised*. That is the whole
+job, and it is the test to apply before creating a file:
+
+| Situation | What to do |
+|---|---|
+| Found and fixed in the same session | **No puck.** The commit message and a code comment carry the reasoning, and they carry it to the people who will actually meet it. |
+| Found now, to be fixed later | **A puck**, `inbox` or `later`. This is the "log it for later" case, and the only reason a bug becomes one. |
+| A body of work with parts that need ordering | **A puck** — an etapp. The parts need status and sequence, which is what the board is for. |
+
+A `done` puck is normal and belongs on the record — but it should have been a
+promise *first*. Closing something that was already planned is the lifecycle
+working; writing a file that is born `done` is a changelog entry in the wrong
+place. It reaches the reader who is looking for what to do next, which is exactly
+the wrong reader, and it crowds the board it is filed on.
+
+The temptation is real and worth naming: a hard-won explanation *feels* valuable
+enough to file. Ask where it will be read. A code comment reaches whoever touches
+the line; a commit message reaches `git log` and blame; a puck reaches someone
+planning. Only the last of those is a roadmap.
+
 ### Priority (`priority`)
 
 Optional and orthogonal to `status`: `status` says *when* (now/next/later),

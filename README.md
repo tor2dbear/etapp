@@ -44,7 +44,8 @@ That's it. The included workflow harvests your repos hourly (and on every push) 
 publishes to GitHub Pages — no other account, no secrets, nothing to run. A
 **custom domain** (optional, free) goes under Settings → Pages.
 
-**Prefer Cloudflare Workers?** Deploy with `npx wrangler deploy` (`wrangler.jsonc`)
+**Prefer Cloudflare Workers?** Deploy with `npm run deploy` (`wrangler.jsonc`) —
+the npm script runs the bundle guard first, a bare `wrangler deploy` does not
 and disable the Pages workflow — the board is the same static bundle either way.
 
 ## The convention & the agents

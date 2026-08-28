@@ -122,8 +122,23 @@ first-class path, not a fallback — reordering the list is only done that way:
 
 ## Writing
 
-Do it **in the source repo**, via the CLI (it bumps `updated` for you) — never in
-the generated files here:
+**Before creating a puck, check that it is one.**
+
+> **A puck is a promise about the future.** If nobody could ever pick it up —
+> because it is already done — it is not a puck.
+
+Fixed a bug in the session you are in? No puck: the commit message and a code
+comment carry the reasoning to the readers who will actually meet it. Found
+something you are *not* fixing now? That is a puck (`inbox` or `later`), and it is
+the reason the roadmap exists. Full rule and the three cases: `CONVENTION.md`.
+
+This is aimed at agents specifically, because the pull is strongest here: a puck
+written straight to `done` documents work nobody has to plan, on the surface people
+read to decide what to do next. Twelve of them accumulated on this board before the
+rule was written down.
+
+Do the writing **in the source repo**, via the CLI (it bumps `updated` for you) —
+never in the generated files here:
 
 ```bash
 roadmap new "Title" --tags area     # new puck (inbox)

@@ -3,6 +3,16 @@
   "use strict";
 
   var DATA = window.__ROADMAP__;
+  // Up here rather than beside `ghToken`, where it used to sit and where it read more
+  // naturally. `var` hoists the *declaration* and not the assignment, and the boot
+  // render (`renderBoard()`, a top-level call) runs some thirty lines above the old
+  // spot — so at first paint `ghToken()` was asking localStorage for the key
+  // `undefined`, answering "" for a browser that had a token. Every token-gated
+  // affordance was therefore missing until something re-rendered: open a shared link
+  // with a filter in it and the chip row had no Save view until you touched the board;
+  // click a sidebar row and it appeared. A constant read during boot has to be
+  // assigned before boot, which on one long IIFE means the top.
+  var TOKEN_KEY = "roadmap-gh-token";
   var board = document.getElementById("board");
 
   if (!DATA) {
@@ -578,11 +588,56 @@
   // The view as data: the same keys the URL uses and a saved view stores, so a
   // link, a config entry and the live board are three encodings of one thing.
   // Only non-defaults are included, so a plain board keeps a clean URL.
+  // Which keys mean anything, in one place. Both producers go through it — the live
+  // board (`viewParamObject`) and a stored entry (`paramsOf`) — because they have to
+  // answer identically or a saved view stops matching the board it describes. They did
+  // not, once: gating the live side alone made an untouched "Inbox by repo" load as
+  // *(edited)* and offer to Update itself, since the stored `group` survived and the
+  // live one had just been dropped. Hand-editing board.config.json is a first-class
+  // path (AGENTS.md), so a redundant-but-valid entry has to load consistently too.
+  //
+  // Four keys are conditional, and each condition is the same question asked of a
+  // different fallback:
+  //
+  //   group      `groupUsable` drops `status` where the view has already fixed it, so
+  //              in the inbox — one status column — `status` and `repo` draw the same
+  //              board. Compared through the fallback, not against the raw default.
+  //   done       the archive toggle does nothing outside an ARCHIVABLE view, and the
+  //              Display menu does not offer the row there.
+  //   empty      `renderList` drops empty groups unconditionally ("a flat list has no
+  //              drop targets"), and Display hides that control outside the board.
+  //   collapsed  a fold means nothing outside the list layout.
+  //
+  // Three of the four were found the same way and for the same reason: `goToView` and
+  // the Display menu deliberately keep your choices across a navigation, so a setting
+  // follows you into a view that cannot act on it. Written anyway it did two kinds of
+  // damage — an untouched view offered to save a duplicate of itself, and two boards
+  // drawn identically compared unequal.
+  //
+  // Nothing is lost by dropping them. `state` still carries every setting, so stepping
+  // back into a view that can use one writes it again; the Display toggles additionally
+  // persist in localStorage. The one honest cost: reload while standing in a view that
+  // ignores the setting, having arrived from a link that set it and never touched the
+  // control. A preference that does nothing where you are looking is the right thing to
+  // drop there.
+  function effectiveParams(o) {
+    var focus = o.view || "all";
+    var layout = o.layout || DISPLAY_DEFAULTS.view;
+    var cols = columnsForFocus(focus, o.done === "1");
+    var eff = function (k) { return k !== "status" || cols.length > 1 ? k : "repo"; };
+    if (o.group && eff(o.group) === eff(DISPLAY_DEFAULTS.group)) delete o.group;
+    if (o.done && !ARCHIVABLE[focus]) delete o.done;
+    if (o.empty && layout !== "board") delete o.empty;
+    if (o.collapsed && layout !== "list") delete o.collapsed;
+    return o;
+  }
   function viewParamObject() {
     var o = {};
     if (state.focus !== "all") o.view = state.focus;
     var q = serializeTerms(filterTerms());
     if (q) o.q = q;
+    // What is *emitted* is the choice, not the fallback: a saved view has to be
+    // reproducible, and the fallback is derived from wherever it lands.
     if (state.group !== DISPLAY_DEFAULTS.group) o.group = state.group;
     if (state.view !== DISPLAY_DEFAULTS.view) o.layout = state.view;
     if (state.sort !== DISPLAY_DEFAULTS.sort) o.sort = state.sort;
@@ -590,12 +645,26 @@
     if (!state.showEmpty) o.empty = "0";
     // Sorted, not in click order: the same set of folded groups has to serialize to
     // the same string every time, or the URL churns and two identical views compare
-    // unequal.
-    if (state.view === "list" && state.collapsed.size) {
+    // unequal. Whether a fold means anything at all is `effectiveParams`' call.
+    if (state.collapsed.size) {
       var folded = [];
       state.collapsed.forEach(function (k) { folded.push(k); });
       o.collapsed = folded.sort().join(",");
     }
+    return effectiveParams(o);
+  }
+  // What the board carries *beyond* the view it is standing in. A built-in view is not
+  // yours to save: "Ready" is already a row in the sidebar, and a saved copy of it is
+  // the same list under two names — the drift `viewsShown` exists to avoid ("All pucks
+  // 31 / Standalone 31"). Changes made *on top of* one are yours, so this subtracts the
+  // scope rather than refusing whenever one is set, and a saved view still stores its
+  // `view` key: "Ready, grouped by repo" is a view, "Ready" is a duplicate.
+  // Only `view` is subtracted. Every other key in `viewParamObject` is already a
+  // non-default — a thing you did — which is why the default board answers empty here
+  // exactly as it did before.
+  function ownParams() {
+    var o = viewParamObject();
+    delete o.view;
     return o;
   }
   // The view's keys, in one place. Three readers used to keep their own copy of this
@@ -3753,20 +3822,24 @@
 
   // Which status groups the current view shows. Inbox is its own space, so it's
   // absent from every board view except the Inbox view itself.
-  function columnsForFocus() {
-    if (state.focus === "inbox") return ["inbox"];
-    if (state.focus === "ready") return ["now", "next"];
-    if (state.focus === "attention") return DATA.statuses; // flagged can be any status
+  // Parameterised, defaulting to the live board: `effectiveParams` has to ask the same
+  // question about a *stored* view, whose focus is not the one you are standing in.
+  function columnsForFocus(focus, showDone) {
+    if (focus == null) focus = state.focus;
+    if (showDone == null) showDone = state.showDone;
+    if (focus === "inbox") return ["inbox"];
+    if (focus === "ready") return ["now", "next"];
+    if (focus === "attention") return DATA.statuses; // flagged can be any status
     // An etapp is any puck that holds others, so it can sit anywhere — including
     // inbox, which the committed board hides. Without this the sidebar counted one
     // and the board showed none, which is exactly the drift viewCounts exists to
     // prevent. Done still follows the toggle.
-    if (state.focus === "etapps") {
-      return DATA.statuses.filter(function (s) { return !TERMINAL[s] || state.showDone; });
+    if (focus === "etapps") {
+      return DATA.statuses.filter(function (s) { return !TERMINAL[s] || showDone; });
     }
     // "all" = the committed board: now/next/later (+done/cancelled when shown), never inbox.
     return DATA.statuses.filter(function (s) {
-      return s !== "inbox" && (!TERMINAL[s] || state.showDone);
+      return s !== "inbox" && (!TERMINAL[s] || showDone);
     });
   }
 
@@ -5324,7 +5397,9 @@
       if (v[k] != null && v[k] !== "") o[k] = String(v[k]);
     });
     if (o.q) o.q = canonicalQuery(o.q); // compare like against like — see canonicalQuery
-    return o;
+    // Through the same normaliser as the live board, or the two disagree — see
+    // `effectiveParams`. This is the half that was missing.
+    return effectiveParams(o);
   }
   function sameParams(a, b) {
     for (var i = 0; i < VIEW_KEYS.length; i++) {
@@ -5515,7 +5590,17 @@
   }
   function saveCurrentView(wrap, cls) {
     var params = viewParamObject();
-    if (!Object.keys(params).length) { toast("✗ Nothing to save — this is the default board", true); return; }
+    // The title switcher and ⌘K offer this door unconditionally and lean on the refusal
+    // here, so this is the one place the rule can live for all three. It used to ask
+    // only whether the board was the *default*, which let an untouched built-in view
+    // through: "Ready" would commit to board.config.json as a saved view identical to
+    // the row above it.
+    if (!Object.keys(ownParams()).length) {
+      toast(params.view
+        ? "✗ Nothing to save — “" + ((VIEW_DEFS[params.view] || {}).label || params.view) + "” is already a view"
+        : "✗ Nothing to save — this is the default board", true);
+      return;
+    }
     inputSurface(wrap || null, {
       cls: cls,
       title: "Save view",
@@ -5783,9 +5868,12 @@
       }
       // Gated on there being anything to save, not on there being chips: a view can be
       // nothing but a grouping (`Testvy` is exactly that), and `saveCurrentView` already
-      // refuses an empty board with a toast. Reading the same question the write path
-      // asks is what keeps the button off the default board.
-      if (ghToken() && Object.keys(viewParamObject()).length) {
+      // refuses with a toast. Reading the same question the write path asks is what
+      // keeps the button off the default board — and, since that question became
+      // `ownParams`, off an untouched built-in view too. Standing in Ready having
+      // changed nothing, this row now has neither chips nor actions and hides itself,
+      // which is the same silence a saved view gets in the branch above.
+      if (ghToken() && Object.keys(ownParams()).length) {
         var wrap = el("div", "filter-wrap"); // the positioned parent the popover anchors in
         var save = el("button", "fchip-save", "Save view");
         save.type = "button";
@@ -5886,7 +5974,7 @@
   // localStorage) the board commits roadmap/<slug>.md straight to api.github.com
   // — the same edit the CLI makes, from the web. Edit controls appear only when a
   // token is set, so the public board is identical for everyone else.
-  var TOKEN_KEY = "roadmap-gh-token";
+  // TOKEN_KEY itself is declared at the top of the file, not here — see the note there.
   function ghToken() { try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; } }
   function setGhToken(v) { try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
   function b64encode(s) { return btoa(unescape(encodeURIComponent(s))); }

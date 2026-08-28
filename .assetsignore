@@ -19,3 +19,27 @@ templates
 agents
 .github
 node_modules
+
+# Everything .gitignore ignores, so does the bundle. The two lists answer different
+# questions — "is this part of the project" and "is this part of the site" — but the
+# first answer implies the second: a file git does not track is never something to
+# publish. They drifted once already: `*.tmp.*` was gitignored in the same commit that
+# removed probe.tmp.mjs, which left a local `wrangler deploy` (npm run deploy) free to
+# upload the next one while the guard, reading the git index, saw nothing.
+# .sources/ is the worst of them — the harvester clones the source repos into it.
+.sources
+# wrangler's own scratch, created in the repo root *during* the deploy — which is why
+# check-bundle.mjs cannot see it: the guard runs first. Found by reading a green CI log
+# instead of trusting it. Every deploy was publishing
+# /.wrangler/tmp/deploy-<rand>/no-op-worker.js.map — verified 200 on the PR preview,
+# leaking the runner's absolute path in `sourceRoot`. Harmless content, exactly the
+# class this file exists to prevent.
+.wrangler
+# Same class, same reason: a deploy log `tee`d into the root exists before wrangler
+# walks the tree and after the guard has. It is written to RUNNER_TEMP now, so this
+# line is only here to stop a re-introduction from being silent.
+wrangler-out.txt
+.DS_Store
+scratchpad-*.png
+*.log
+*.tmp.*

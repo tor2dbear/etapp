@@ -12,6 +12,7 @@
     "harvest:local": "ROADMAP_LOCAL_ROOT=../ node scripts/harvest.mjs",
     "roadmap": "node scripts/roadmap.mjs",
     "dev": "wrangler dev",
+    "predeploy": "node scripts/check-bundle.mjs",
     "deploy": "wrangler deploy"
   },
   "engines": {

@@ -18,6 +18,9 @@ and a free-form body for goal, research and open questions. Status flows
 - **Shipped:** set `status: done` and write a `## Delivered` section. Keep the
   file as history.
 - **New undecided ideas:** put them in `inbox`.
+- **A puck is a promise about the future.** If nobody could ever pick it up — because
+  it is already done — it is not a puck. Fixed in the session you are in? The commit
+  message carries it. Found and *not* fixing now? That is a puck.
 
 The truth is these plain files — readable in an editor, greppable by an agent, and
 harvested by the multi-repo roadmap board.
