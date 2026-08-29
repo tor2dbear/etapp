@@ -47,12 +47,39 @@ export const lines = (text) =>
 // slash-free pattern matches at any depth is what makes `roadmap` exclude
 // `roadmap/x.md`.
 export function matcher(pattern) {
-  const p = pattern.replace(/^\*\*\//, "").replace(/\/$/, "");
-  const rx = p.includes("*")
-    ? new RegExp("^" + p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*") + "$")
-    : null;
-  const hit = (seg) => (rx ? rx.test(seg) : seg === p);
-  return (rel) => rel.split("/").some(hit);
+  // gitignore's two shapes, and the difference is load-bearing. A pattern *without* a
+  // slash matches at any depth — that is what makes `roadmap` exclude `roadmap/x.md`.
+  // One anchored to the root is matched from the first segment down.
+  //
+  // Comparing an anchored pattern segment by segment, as this did at first, means it
+  // can never match anything: `demo/data/build.mjs` is not equal to `demo`, `data` or
+  // `build.mjs`. It went unnoticed here because no pattern in this repo has a slash —
+  // the sibling site repo, whose `.assetsignore` does, is where the guard caught it.
+  //
+  // What anchors a pattern is a slash *anywhere*, including a leading one: `/scripts`
+  // is root-anchored while `scripts` matches at any depth. The first fix read only for
+  // an internal slash and left the leading one on the pattern, so it was compared
+  // against a `rel` that never carries one and matched nothing at all — the guard would
+  // then call a deliberately excluded file loose and fail the deploy.
+  const rooted = pattern.startsWith("/");
+  const p = pattern.replace(/^\//, "").replace(/^\*\*\//, "").replace(/\/$/, "");
+  const anchored = rooted || p.includes("/");
+  const esc = (x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  // Per segment, so a `*` never crosses a directory boundary.
+  const parts = p.split("/").map((seg) => (seg.includes("*")
+    ? { rx: new RegExp("^" + seg.split("*").map(esc).join("[^/]*") + "$") }
+    : { lit: seg }));
+  const hit = (i, part) => (parts[i].rx ? parts[i].rx.test(part) : parts[i].lit === part);
+  if (!anchored) return (rel) => rel.split("/").some((part) => hit(0, part));
+  // Anchored patterns match the path *or* a prefix of it at a directory boundary: a
+  // pattern naming a directory has to answer for the files inside it too, since
+  // `git ls-files` hands the audit whole paths and never the directory entry alone.
+  return (rel) => {
+    const segs = rel.split("/");
+    if (segs.length < parts.length) return false;
+    for (let i = 0; i < parts.length; i++) if (!hit(i, segs[i])) return false;
+    return true;
+  };
 }
 
 // Walks what wrangler would upload: everything under the root that is not excluded.

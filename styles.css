@@ -486,6 +486,20 @@ body {
 .col-head .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); }
 .col-head h2 { margin: 0; font-size: var(--fs-md); text-transform: uppercase; letter-spacing: var(--tr-eyebrow); }
 .col-head .count { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+/* "N archived" — what the archive is holding back from *this* column, in the head of
+   the column that is short of it. Shaped like the tray's row rather than like a chip:
+   a quiet count and the same eye, because it is the same repair in a different place.
+   Word included, not a bare number: the head already carries one count, and two
+   numbers side by side read as two counts of the same kind. */
+.col-archived {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: 0; padding: 0 2px; cursor: pointer;
+  color: var(--ink-3); font: inherit; font-size: var(--fs-sm);
+  font-family: var(--mono); white-space: nowrap;
+}
+.col-archived .count { font-size: inherit; }
+.col-archived .icn { width: 13px; height: 13px; }
+@media (hover: hover) { .col-archived:hover { color: var(--accent); } }
 .col-status-now .swatch { background: var(--now); }
 .col-status-next .swatch { background: var(--next); }
 .col-status-later .swatch { background: var(--later); }
@@ -519,9 +533,16 @@ body {
 /* The whole heading is the fold control, so it carries the row's own spacing and
    reaches a little past the content line — a header you can click should look like
    one target, not like a label with a hit area drawn around the words. */
-.lh-toggle {
+/* The shape both list headings wear. The stub — what a fully archived group leaves
+   behind — used to *reuse* `.lh-toggle` and then override it from further up the file,
+   which is a fight it loses: `cursor: default` and its padding both sat above the rule
+   they were correcting, so neither ever applied. The stub kept the pointer, took the
+   full hover background, and sat 24px to the left of every real heading, while a
+   comment above it claimed the opposite. Splitting the shape from the behaviour is what
+   makes the claim checkable: a span cannot pick up an interaction it is not given. */
+.lh-toggle, .lh-stub {
   display: inline-flex; align-items: center; gap: 8px;
-  font: inherit; color: inherit; background: none; border: 0; cursor: pointer;
+  font: inherit; color: inherit; background: none; border: 0;
   margin: -4px -8px; padding: 4px 8px; border-radius: var(--r-sm);
   /* `font: inherit` does not cover these two, and the UA sheet *declares* them on
      `button` — a declaration on the element beats an inherited value, so the heading
@@ -529,7 +550,18 @@ body {
      trap `.linklike` fell into with the browser's own 13.33px button type. */
   text-transform: inherit; letter-spacing: inherit;
 }
+/* Only the control behaves like one. */
+.lh-toggle { cursor: pointer; }
 .lh-toggle:hover { background: var(--panel-2); }
+/* The stub has no caret, so it pays the caret's width in padding instead and its label
+   lands where every other label in the list does. There is nothing under it to expand
+   until the archive toggle lifts, so it offers no cursor and no hover.
+   16px is what the caret actually renders at — `.icn` sets it and wins on order over
+   `.lh-caret`'s 13px — not what any single declaration here says. A number copied from
+   the rule rather than from the page is how the first version came to be 3px out, so
+   `tests/board.test.mjs` measures the two labels against each other instead of trusting
+   this sum. */
+.lh-stub { cursor: default; padding-left: calc(8px + 16px + 8px); }
 /* The caret is the one part that is chrome rather than content: it stays quiet until
    the header is under the pointer, the way a disclosure does everywhere else. */
 .lh-caret { width: 13px; height: 13px; color: var(--ink-3); }
