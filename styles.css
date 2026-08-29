@@ -113,14 +113,15 @@
      light and lightens in dark without a second declaration. */
   --later-ink: color-mix(in srgb, var(--later) 85%, var(--ink));
   /* Three reds with three jobs, named so they stop being literals: a destructive
-     *word* (Delete), the urgent priority *mark*, and the one solid surface that
-     carries white text. The link red and the menu-item red were the same job in two
-     shades, forty lines apart. */
+     *word* (Delete), the urgent priority *mark* (now a stroke, not a fill), and the one
+     solid surface that carries white text. The link red and the menu-item red were the
+     same job in two shades, forty lines apart. */
   --danger: #ae453e;
   --urgent: #c42b2b;
   --danger-solid: #b91c1c;
   /* The ink that sits ON a filled brand or semantic surface — a chosen status pill,
-     the primary button, a pressed label chip, the urgent mark. It is the mirror of the
+     the primary button, a pressed label chip. (The urgent mark was on this list until it
+     stopped being a character reversed out of a solid square.) It is the mirror of the
      rule above: those tokens are tuned to be *read against* the page, and in dark that
      makes them light, so white on them fails everywhere — `--later` at 2.37:1, `--next`
      at 2.78, and that was true before the palette moved. The page's own ground reads on
@@ -556,15 +557,19 @@ body {
 /* The stub has no caret, so it pays the caret's width in padding instead and its label
    lands where every other label in the list does. There is nothing under it to expand
    until the archive toggle lifts, so it offers no cursor and no hover.
-   16px is what the caret actually renders at — `.icn` sets it and wins on order over
-   `.lh-caret`'s 13px — not what any single declaration here says. A number copied from
-   the rule rather than from the page is how the first version came to be 3px out, so
-   `tests/board.test.mjs` measures the two labels against each other instead of trusting
-   this sum. */
-.lh-stub { cursor: default; padding-left: calc(8px + 16px + 8px); }
+   The 13px below is the caret's *rendered* width, which is the only number that can be
+   right here — a sum copied from a rule that turns out to be overridden is how the first
+   version of this came to be 3px out. `tests/board.test.mjs` measures the two labels
+   against each other rather than trusting the arithmetic. */
+.lh-stub { cursor: default; padding-left: calc(8px + 13px + 8px); }
 /* The caret is the one part that is chrome rather than content: it stays quiet until
-   the header is under the pointer, the way a disclosure does everywhere else. */
-.lh-caret { width: 13px; height: 13px; color: var(--ink-3); }
+   the header is under the pointer, the way a disclosure does everywhere else.
+   Descendant selector, not `.lh-caret` alone: `.icn` sets every icon to 16px and sits
+   later in this file, so a bare class ties on specificity and loses on order — these
+   13px were dead for as long as the rule existed, and the caret drew at 16px while the
+   stylesheet said otherwise. The caret only ever appears inside a toggle, so nothing is
+   narrowed by qualifying it. */
+.lh-toggle .lh-caret { width: 13px; height: 13px; color: var(--ink-3); }
 .lh-toggle:hover .lh-caret { color: var(--ink-2); }
 /* A folded group keeps its heading and loses its bottom margin — the gap belonged to
    the rows that are no longer there. */
@@ -1346,10 +1351,15 @@ body.preload * { transition: none !important; }
 .pri.pri-low .pri-bar.on { background: var(--ink-2); }
 .pri.pri-medium .pri-bar.on { background: var(--later); }
 .pri.pri-high .pri-bar.on { background: var(--now); }
-.pri.pri-urgent {
-  width: 13px; height: 13px; border-radius: var(--r-xs); background: var(--urgent); color: var(--on-solid);
-  font-size: var(--fs-xs); font-weight: var(--fw-semibold); align-items: center; justify-content: center;
-}
+/* Urgent is the one level that is not bars, and it used to be a "!" reversed out of a
+   solid red square. The mark is a path now, and an *outline* path — inside a 13px filled
+   chip that is a circle inside a rounded square, two containers at a size that has room
+   for one, with the stroke of the exclamation nearly lost against the red. Measured side
+   by side, the glyph alone is the legible one.
+   What that costs: urgent no longer shouts with a solid surface, it shouts with a shape
+   the other three levels do not have. The colour is unchanged. */
+.pri.pri-urgent { color: var(--urgent); align-items: center; }
+.pri.pri-urgent .icn.pri-glyph { width: 13px; height: 13px; }
 /* detail rail: static badge + label */
 .pri-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
 /* detail rail: editable priority chips share .edit-btn; active gets a filled color */
@@ -2178,10 +2188,25 @@ body.preload * { transition: none !important; }
 .prop .blocker-link.done { color: var(--ink-3); }
 
 /* ── PO-layer: agent routing (card badge + sidebar queues) ──────────────────── */
-.agent-arrow { color: var(--accent); font-weight: var(--fw-semibold); }
+/* The routing mark. `.icn.agent-glyph` and not `.agent-glyph` alone — and to be exact
+   about what that buys: a bare class would work *today*, because this rule already sits
+   later in the file than `.icn` and wins the tie on order. It is written qualified
+   because that is an accident of position, not a rule, and `.lh-caret` is what the
+   accident costs when it goes the other way: it declared 13px, sat above `.icn`, and
+   drew at 16 for its whole life. Sabotage confirms the honest version of this — removing
+   the qualifier changes nothing measurable right now; it is insurance against a future
+   move of either block, not a fix for a present bug.
+   Two sizes because the mark sits in two type sizes: --fs-xs in a card badge, --fs-md in
+   a sidebar row. One size for both left the badge wearing a glyph taller than its own
+   text.
+   12px and not 11: measured in real pixels, at 11 the two eyes start to merge into the
+   dome and the antenna loses its length, which is the same failure `etapp` avoids by
+   being dots instead of an outline. A face that has stopped having eyes is just a blob,
+   and then the glyph says less than the arrow it replaced. */
+.icn.agent-glyph { width: 12px; height: 12px; color: var(--accent); }
+.side-repos .chip.agent .icn.agent-glyph { width: 13px; height: 13px; }
 .agent-inline { display: inline-flex; align-items: center; }
 .side-repos .chip.agent { color: var(--ink-2); gap: 5px; }
-.side-repos .chip.agent .agent-arrow { flex: none; }
 .side-repos .chip.agent[aria-pressed="true"] { background: var(--panel-2); color: var(--ink); }
 
 /* ── mobile topbar goes contextual when a puck is open (Linear-style) ───────── */
