@@ -126,6 +126,10 @@
 
         <footer class="foot">
           <span id="footmeta"></span>
+          <!-- The repair sits beside the date it repairs: footmeta ends with the harvest
+               time, and this asks CI for a fresher one. Wrapped with its own separator so
+               hiding it (no token, no configured workflow) does not leave a stray "·". -->
+          <span id="syncWrap" hidden><button type="button" class="foot-sync" id="syncNow">sync now</button> ·</span>
           <a href="ROADMAP.md">flat digest</a> ·
           <a href="data/roadmap.json">roadmap.json</a> ·
           <a id="sourceLink" href="#">source</a>

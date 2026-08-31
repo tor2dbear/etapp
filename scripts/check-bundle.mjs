@@ -107,6 +107,14 @@ const read = async (f) => { try { return await readFile(f, "utf8"); } catch { re
 //             gitignored file is invisible to `git ls-files` and still sits in the
 //             working tree, so a local deploy publishes it
 export async function auditBundle(root) {
+  // Every path below this line is built by concatenation — `walk` included — so the root
+  // has to end in a separator. Normalised here rather than at each site, because a caller
+  // passing a plain directory path used to get back the guard's single most alarming
+  // message, "no .assetsignore — every file in the repo would be published", about a repo
+  // whose .assetsignore was sitting right there. A guard that cries wolf about the wrong
+  // thing is worse than one that stays quiet. Found by the first test ever written
+  // against this function, which passed the path the obvious way.
+  if (!root.endsWith("/")) root += "/";
   const ignoreText = await read(root + ".assetsignore");
   if (ignoreText == null) return { fatal: "no .assetsignore — every file in the repo would be published" };
   const patterns = lines(ignoreText);

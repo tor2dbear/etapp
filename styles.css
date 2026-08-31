@@ -819,6 +819,33 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
   flex-wrap: wrap;
 }
 .foot a { color: var(--ink-2); }
+/* The footer dates the harvest, so the control that refreshes it belongs in the same
+   sentence — not in a menu two clicks away from the number it answers for. It is a
+   button and not a link (it starts a workflow run; it does not go anywhere), but it
+   wears the footer's type: this row is prose, and one control shaped like a control
+   would read as chrome that wandered in. */
+.foot-sync {
+  font: inherit;
+  color: var(--ink-2);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.foot-sync:hover:not(:disabled) { color: var(--ink); }
+/* Disabled is the running state, and it lasts a minute or two. Dropping the underline
+   as well as the colour is what stops it reading as a link you may press again. */
+.foot-sync:disabled { cursor: default; color: var(--ink-3); text-decoration: none; }
+/* The wrapper holds the button *and* the separator after it, so hiding one hides both
+   — the alternative leaves a stray "·" on a logged-out board. It needs the footer's own
+   gap repeated inside it: `.foot`'s gap reaches between flex items and not into one, so
+   a plain space here set this separator tighter than the three beside it.
+   Safe against `hidden` only because `[hidden]` above is `!important` — a bare
+   `display: flex` would otherwise beat the browser's `[hidden] { display: none }` and
+   put the button back on a board with no token. */
+#syncWrap { display: flex; gap: 10px; }
 .banner {
   margin: 24px;
   padding: 16px 18px;

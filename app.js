@@ -915,6 +915,22 @@
     "chev-down": ["m3.75 5.625 3.75 3.75 3.75 -3.75"],
     check: ["M12.5 3.75 5.625 10.625l-3.125 -3.125"],
     "chev-up": ["m11.25 9.375 -3.75 -3.75 -3.75 3.75"],
+    // refresh-cw — ask CI for a fresher harvest. Scaled from Feather's 24 grid by the
+    // same 0.625 as its neighbour `reset` (rotate-ccw), which is the nearest glyph in
+    // the set: that one undoes an arrangement, this one goes and gets something. They
+    // were checked side by side at 15px and read as two shapes, not one — two chasing
+    // arcs against a single open circle — so the pair needs no further separation.
+    //
+    // download-cloud was the alternative, and it is the better picture of the
+    // *direction* (this pulls seven repos inward; nothing is pushed). It lost on two
+    // counts: at 15px the cloud's shoulder thins to a smudge, and the footer row it
+    // belongs to already holds two literal downloads — `flat digest` and
+    // `roadmap.json` — beside which a download arrow names the wrong thing. Worth
+    // revisiting only if the action is ever renamed to something openly inward.
+    sync: ["m14.375 2.5 0 3.75 -3.75 0",
+           "m0.625 12.5 0 -3.75 3.75 0",
+           "M2.19375 5.625a5.625 5.625 0 0 1 9.28125 -2.1L14.375 6.25",
+           "M0.625 8.75l2.9 2.725A5.625 5.625 0 0 0 12.80625 9.375"],
     // rotate-ccw — undo an arrangement, not undo a write
     reset: ["m0.625 2.5 0 3.75 3.75 0",
             "M2.19375 9.375a5.625 5.625 0 1 0 1.33125 -5.85L0.625 6.25"],
@@ -4789,6 +4805,10 @@
       cmds.push({ __cmd: true, label: "Group by " + GROUPS[k].label.toLowerCase(), hint: "Display", icon: "sliders", run: function () { setDisplay("group", k); } });
     });
     cmds.push({ __cmd: true, label: state.view === "list" ? "Layout: board" : "Layout: list", hint: "Display", icon: state.view === "list" ? "grid" : "list", run: function () { setDisplay("view", state.view === "list" ? "board" : "list"); } });
+    // The footer button is where the staleness is *stated*, so that is where the repair
+    // belongs; this is the keyboard's way to the same call, so ⌘K never has less reach
+    // than the chrome. Same gate, asked the same way.
+    if (canSync()) cmds.push({ __cmd: true, label: "Sync now", hint: "Workspace", icon: "sync", run: function () { runSync(); } });
     cmds.push({ __cmd: true, label: "Settings", hint: "Workspace", icon: "sliders", run: function () { openSettingsPanel(); } });
     cmds.push({ __cmd: true, label: "Keyboard shortcuts", hint: "Help", icon: "list", run: function () { toggleShortcutHelp(); } });
     // Named states rather than a flip. The objection that killed a three-state *button*
@@ -5751,6 +5771,141 @@
       })
       .then(function (r) { assertOk(r, errItem); });
   }
+
+  // ── Sync now: ask CI for a fresher harvest, from the board ──────────────────
+  // The board is a static artifact. What it shows was harvested by `sync.yml` at
+  // `generatedAt` and is frozen until that workflow runs again — hourly, or on a push
+  // to this repo. So a puck edited in *this* repo lands within a minute, and a puck
+  // edited in any other source repo waits up to an hour. The person doing the waiting
+  // is, by definition, standing at the board looking at the date in the footer.
+  //
+  // Hence one button, next to that date, driving one GitHub primitive:
+  // `workflow_dispatch`, which `sync.yml` already accepts. No relay, no webhook, no
+  // always-on service, no second source of truth — the same "close thin, via GitHub"
+  // rule the write path follows, and the Worker stays a pure assets Worker.
+  //
+  // What it costs: the token needs `Actions: write` on the aggregator repo, which the
+  // editing token does not carry (`Contents: write` on the source repos is a different
+  // permission). That is the likely failure, so it gets a sentence naming the fix
+  // rather than a status code — see `syncError`.
+  var SYNC_POLL_MS = 4000;
+  // The run clones seven repos, harvests and deploys — a minute or two, plus whatever
+  // queue GitHub puts it in. Five minutes is long enough that expiring means something
+  // went wrong, and short enough that the button comes back while you still care.
+  var SYNC_TIMEOUT_MS = 5 * 60 * 1000;
+  var syncing = false;
+  var syncWrap = null, syncBtn = null;
+
+  // Config, not truth — an instance that harvests some other way sets `syncWorkflow`
+  // to false and the button is simply absent, rather than offering a dispatch that
+  // resolves to no workflow.
+  function syncWorkflow() {
+    return CFG.syncWorkflow === undefined ? "sync.yml" : CFG.syncWorkflow;
+  }
+  function syncRef() { return CFG.syncBranch || "main"; }
+  // The workflow lives in the aggregator repo, never in a puck's source repo: an edit
+  // commits to whichever repo owns the puck, but the harvest runs in exactly one place.
+  function canSync() { return !!ghToken() && !!syncWorkflow() && !!aggregatorRepo(); }
+  function syncApi(tail) {
+    return "https://api.github.com/repos/" + aggregatorRepo() + "/actions/workflows/" +
+      encodeURIComponent(syncWorkflow()) + tail;
+  }
+  function syncError(r) {
+    // 403 is the permission the token most likely lacks; 404 is what GitHub answers
+    // for a workflow the token cannot see, which has the same fix. Naming the
+    // permission is the difference between one checkbox and a hunt through the docs.
+    if (r.status === 403 || r.status === 404) {
+      return new Error("no permission to sync — your token needs Actions: write on " + aggregatorRepo());
+    }
+    return new Error("sync failed (" + r.status + ")");
+  }
+  function syncGet(url) {
+    return fetch(url, { headers: { Authorization: "Bearer " + ghToken(), Accept: "application/vnd.github+json" } })
+      .then(function (r) { if (!r.ok) throw syncError(r); return r.json(); });
+  }
+  // The newest dispatched run, or null. Runs come back newest-first.
+  function latestRun() {
+    return syncGet(syncApi("/runs?event=workflow_dispatch&per_page=1"))
+      .then(function (d) { return ((d && d.workflow_runs) || [])[0] || null; });
+  }
+  // Wait for *our* run, then for it to finish. Two waits and not one: the run does not
+  // exist yet when the dispatch returns its 204, and treating "no newer run" as "done"
+  // would reload the page onto exactly the data it already had.
+  //
+  // It is told from the run before it by id, never by timestamp. `created_at` has
+  // second granularity and comes from GitHub's clock rather than this browser's, so a
+  // time comparison mis-picks whenever the two disagree — and the two failures that
+  // buys are a poll that waits on an already-finished run, and one that reloads before
+  // its own run has started. Ids only ever increase, and need no clock at all.
+  function awaitRun(since, deadline) {
+    return latestRun().then(function (run) {
+      var mine = run && run.id > since ? run : null;
+      if (mine && mine.status === "completed") return mine;
+      if (Date.now() > deadline) return null;
+      return new Promise(function (ok) { setTimeout(ok, SYNC_POLL_MS); })
+        .then(function () { return awaitRun(since, deadline); });
+    });
+  }
+  // The board reads `window.__ROADMAP__` once, at boot, and every derived thing —
+  // the columns, the counts, the signal flags — is built from that one read. Rendering
+  // a freshly fetched payload in place would mean a second boot path to keep in step
+  // with the first, so the page reloads instead. `data/roadmap.js` is served with an
+  // ETag and no far-future max-age, so the reload revalidates and gets the new file.
+  //
+  // This one step is *not* behind the demo's fetch seam, because it is not a fetch.
+  // The demo answers GitHub inside the page and keeps its edits in memory, so a reload
+  // there would throw away the work the visitor just did and re-seed from the fixture
+  // — a "sync" that undoes your changes is not the feature being demonstrated.
+  function finishSync() {
+    if (DEMO) { toast("✓ Sync finished — the live board reloads here"); return; }
+    location.reload();
+  }
+  function runSync() {
+    if (syncing || !canSync()) return;
+    syncing = true;
+    refreshSyncButton();
+    var deadline = Date.now() + SYNC_TIMEOUT_MS;
+    latestRun()
+      .then(function (prev) {
+        var since = prev ? prev.id : 0;
+        return fetch(syncApi("/dispatches"), {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + ghToken(),
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ref: syncRef() }),
+        }).then(function (r) {
+          if (!r.ok) throw syncError(r);
+          return awaitRun(since, deadline);
+        });
+      })
+      .then(function (run) {
+        if (!run) { toast("Sync is taking longer than usual — it will finish on its own; reload then.", true); return; }
+        if (run.conclusion === "success") return finishSync();
+        // `sync.yml` runs under `concurrency: cancel-in-progress`, so a push landing
+        // mid-run cancels ours — and the run that replaced it harvests the same
+        // sources, so nothing was lost and there is nothing to repair. Calling that
+        // "failed" would send someone to read a log about a run cancelled on purpose.
+        if (run.conclusion === "cancelled") {
+          toast("A newer sync replaced this one — reload in a minute.", true);
+          return;
+        }
+        toast("✗ Sync " + (run.conclusion || "failed"), true);
+      })
+      .catch(function (err) { toast("✗ " + err.message, true); })
+      .then(function () { syncing = false; refreshSyncButton(); });
+  }
+  function refreshSyncButton() {
+    if (!syncWrap || !syncBtn) return;
+    syncWrap.hidden = !canSync();
+    syncBtn.disabled = syncing;
+    // The label is the whole progress indicator. A spinner in a text footer would be
+    // the only moving thing on the page, and the wait is minutes, not milliseconds.
+    syncBtn.textContent = syncing ? "syncing…" : "sync now";
+  }
+
   function saveCurrentView(wrap, cls) {
     var params = viewParamObject();
     // The title switcher and ⌘K offer this door unconditionally and lean on the refusal
@@ -6169,6 +6324,12 @@
   function installDemoGitHub() {
     var files = {}; // "owner/repo:path" → text
     var sha = 0;
+    // Sync's run counter. It starts at 1 so the first read (the one `runSync` takes
+    // *before* dispatching) has a run to answer with, and the dispatch bumps it — which
+    // is exactly the "a newer id appeared" the poll is waiting for. A fixed id would
+    // have let the poll resolve on the previous run and made the demo skip the wait it
+    // exists to show.
+    var dispatched = 1;
     var real = window.fetch.bind(window);
     var json = function (body, status) {
       return Promise.resolve(new Response(JSON.stringify(body), {
@@ -6240,6 +6401,20 @@
       // The permissions probe: every repo is writable here, so no card is marked
       // read-only and the rail stays editable.
       if (rest === "" || rest === "/") return json({ permissions: { push: true } });
+
+      // Sync now: the dispatch, and the run it creates. Answered here for the same
+      // reason the writes are — the real path runs, including the two-stage poll that
+      // waits for a run id newer than the one it read first.
+      var mw = /^\/actions\/workflows\/[^/]+\/(dispatches|runs)$/.exec(rest);
+      if (mw && mw[1] === "dispatches" && method === "POST") {
+        dispatched++;
+        // 204 carries no body, so this cannot go through `json()` — constructing a
+        // Response with a body at 204 throws.
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (mw && mw[1] === "runs" && method === "GET") {
+        return json({ workflow_runs: [{ id: dispatched, status: "completed", conclusion: "success" }] });
+      }
 
       // Activity: the file's history. Invented from what the puck already carries —
       // its `created` and `updated` dates — the same way `seed()` invents the file
@@ -7686,6 +7861,10 @@
   var newBtns = [], userEl;
   function refreshEditControls() {
     newBtns.forEach(function (b) { b.hidden = !ghToken(); });
+    // Sync dispatches a workflow run, so it is a write like the others and gated the
+    // same way — one place decides what a token renders, or signing out leaves a
+    // control behind that only fails when pressed.
+    refreshSyncButton();
   }
   function afterAuth() {
     writableRepos = null; readOnlyRepos = new Set();
@@ -7705,6 +7884,10 @@
       b.hidden = !ghToken();
       b.addEventListener("click", openNewPuckPanel);
     });
+    syncWrap = document.getElementById("syncWrap");
+    syncBtn = document.getElementById("syncNow");
+    if (syncBtn) syncBtn.addEventListener("click", runSync);
+    refreshSyncButton();
   }
 
   // Desktop-only resizable sidebar: a drag handle on the sidebar/main seam sets
@@ -7946,7 +8129,7 @@
     var p = el("div", "token-panel");
     p.appendChild(el("h3", "token-title", "Edit access"));
     p.appendChild(el("p", "token-note",
-      "Paste a GitHub fine-grained token with Contents: write on your roadmap repo(s). It’s stored only in this browser and used to commit edits straight to GitHub. Add Issues: write too for one-click “New issue” (optional — without it, that falls back to opening GitHub)."));
+      "Paste a GitHub fine-grained token with Contents: write on your roadmap repo(s). It’s stored only in this browser and used to commit edits straight to GitHub. Add Issues: write too for one-click “New issue”, and Actions: write on the board’s own repo for “sync now” (both optional — without them those controls fall back to GitHub, or don’t appear)."));
     var help = el("a", "token-help", "Create a fine-grained token ↗");
     help.href = "https://github.com/settings/personal-access-tokens/new";
     help.target = "_blank"; help.rel = "noopener";
