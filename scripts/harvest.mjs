@@ -14,7 +14,13 @@ import { fileURLToPath } from "node:url";
 import { openRepo } from "./lib/repo.mjs";
 import { harvestSource, STATUSES, slugify } from "./lib/adapters.mjs";
 
-const ROOT = path.resolve(fileURLToPath(import.meta.url), "../..");
+// Where the instance's own config and output live. Normally the repo this script
+// sits in; ROADMAP_ROOT points it at a different tree, which is how the demo board
+// is built — the fixture gets its own sources.json and board.config.json and is
+// harvested by *this* code rather than by a second implementation of it.
+const ROOT = process.env.ROADMAP_ROOT
+  ? path.resolve(process.env.ROADMAP_ROOT)
+  : path.resolve(fileURLToPath(import.meta.url), "../..");
 const BUILT_AT = process.env.ROADMAP_BUILT_AT || new Date().toISOString();
 const TOKEN = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
 
@@ -314,11 +320,21 @@ async function main() {
   }
 
   // Reconcile pucks that link an issue against its real GitHub state.
+  // ROADMAP_ISSUE_STATES names a JSON file of {"owner/repo#123": "open"|"closed"} and
+  // answers from it instead of the network. A seam for fixtures, not an authoring path:
+  // issueState stays derived — it is only the *source* that is stubbed, the same shape
+  // as ROADMAP_LOCAL_ROOT standing in for the GitHub API. Fictional repos have no
+  // issues to ask about, and without this the demo silently loses both drift signals.
+  const issueStub = process.env.ROADMAP_ISSUE_STATES
+    ? JSON.parse(await readFile(path.resolve(process.env.ROADMAP_ISSUE_STATES), "utf8"))
+    : null;
   const linked = items.filter((it) => it.issue != null);
   if (linked.length) {
     await Promise.all(
       linked.map(async (it) => {
-        it.issueState = await fetchIssueState(it.repo, it.issue);
+        it.issueState = issueStub
+          ? issueStub[`${it.repo}#${it.issue}`] ?? null
+          : await fetchIssueState(it.repo, it.issue);
       }),
     );
     const known = linked.filter((it) => it.issueState).length;
