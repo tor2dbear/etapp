@@ -5794,7 +5794,17 @@
   // went wrong, and short enough that the button comes back while you still care.
   var SYNC_TIMEOUT_MS = 5 * 60 * 1000;
   var syncing = false;
-  var syncWrap = null, syncBtn = null;
+  var syncWrap = null, syncBtn = null, syncBar = null;
+  // The receipt has to outlive the page that earned it: `finishSync` reloads, which
+  // destroys every toast and the state that knows the run succeeded. So the fact is
+  // handed across the reload in sessionStorage — per tab and per origin, which is
+  // exactly this receipt's scope, and dropped by the browser on its own.
+  //
+  // What is stored is the generatedAt the board had *before* the sync, so the message
+  // after boot can be checked rather than asserted: a different timestamp is proof the
+  // data moved, and an identical one is its own honest sentence instead of a "✓ Synced"
+  // over unchanged data.
+  var SYNCED_KEY = "roadmap-synced-from";
 
   // Config, not truth — an instance that harvests some other way sets `syncWorkflow`
   // to false and the button is simply absent, rather than offering a dispatch that
@@ -5858,7 +5868,29 @@
   // — a "sync" that undoes your changes is not the feature being demonstrated.
   function finishSync() {
     if (DEMO) { toast("✓ Sync finished — the live board reloads here"); return; }
+    try { sessionStorage.setItem(SYNCED_KEY, DATA.generatedAt || ""); } catch (e) {}
     location.reload();
+  }
+  // Read at boot: the other half of the reload. Without it the run ends by restoring
+  // the page to exactly the state it started in — the button back at `sync now`, no
+  // message, the one changed fact below the fold — which is indistinguishable from
+  // having pressed nothing, and is why the button got pressed twice.
+  function reportSyncOnBoot() {
+    var before;
+    try {
+      before = sessionStorage.getItem(SYNCED_KEY);
+      sessionStorage.removeItem(SYNCED_KEY); // a receipt is shown once, not on every reload
+    } catch (e) { return; }
+    if (before == null) return;
+    var now = DATA.generatedAt || "";
+    var at = now.slice(11, 16); // HH:MM of the harvest this page is showing
+    // Unchanged is not a failure and not a success worth dressing up: the harvest is
+    // idempotent, so a run over sources nobody touched legitimately produces the same
+    // payload — and a cached `data/roadmap.js` would look the same from here. One
+    // sentence covers both without claiming which.
+    toast(now && now !== before
+      ? "✓ Synced — data from " + at + " UTC"
+      : "✓ Sync finished — no change since " + at + " UTC");
   }
   function runSync() {
     if (syncing || !canSync()) return;
@@ -5898,11 +5930,16 @@
       .then(function () { syncing = false; refreshSyncButton(); });
   }
   function refreshSyncButton() {
+    // Ahead of the guard: the bar is the signal for the case where the footer is not
+    // on screen, so it must not be gated on the footer's own elements existing.
+    if (syncBar) syncBar.hidden = !syncing;
     if (!syncWrap || !syncBtn) return;
     syncWrap.hidden = !canSync();
     syncBtn.disabled = syncing;
-    // The label is the whole progress indicator. A spinner in a text footer would be
-    // the only moving thing on the page, and the wait is minutes, not milliseconds.
+    // The label says what the button is doing; `.syncbar` says the run is alive. It
+    // used to be the whole progress indicator, which was only true where the footer is
+    // visible — and the wait is a minute or two spent scrolled down the board or inside
+    // a puck, neither of which shows it.
     syncBtn.textContent = syncing ? "syncing…" : "sync now";
   }
 
@@ -7886,8 +7923,10 @@
     });
     syncWrap = document.getElementById("syncWrap");
     syncBtn = document.getElementById("syncNow");
+    syncBar = document.getElementById("syncBar");
     if (syncBtn) syncBtn.addEventListener("click", runSync);
     refreshSyncButton();
+    reportSyncOnBoot();
   }
 
   // Desktop-only resizable sidebar: a drag handle on the sidebar/main seam sets
@@ -8129,7 +8168,7 @@
     var p = el("div", "token-panel");
     p.appendChild(el("h3", "token-title", "Edit access"));
     p.appendChild(el("p", "token-note",
-      "Paste a GitHub fine-grained token with Contents: write on your roadmap repo(s). It’s stored only in this browser and used to commit edits straight to GitHub. Add Issues: write too for one-click “New issue”, and Actions: write on the board’s own repo for “sync now” (both optional — without them those controls fall back to GitHub, or don’t appear)."));
+      "Paste a GitHub fine-grained token with Contents: write on your roadmap repo(s). It’s stored only in this browser and used to commit edits straight to GitHub. Add Issues: write too for one-click “New issue” (optional — without it, that falls back to opening GitHub), and Actions: write on the board’s own repo for “sync now” (without it the button is there but the sync is refused)."));
     var help = el("a", "token-help", "Create a fine-grained token ↗");
     help.href = "https://github.com/settings/personal-access-tokens/new";
     help.target = "_blank"; help.rel = "noopener";

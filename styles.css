@@ -893,11 +893,51 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
 /* toast */
 .toast {
   position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 20px);
-  background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: var(--r-pill);
+  /* `width: max-content` is load-bearing, not a tidy-up. A fixed box with `left` and no
+     `right` gets its shrink-to-fit width from `left` to the containing block's right
+     edge — half the viewport — so `max-width` was unreachable and every long message
+     wrapped inside a 50vw column that `translateX(-50%)` then centred, hiding the cause.
+     On a 390px phone the sync and token errors were 195px wide and five lines tall.
+     Laying out on the content instead lets max-width be the thing that decides. */
+  width: max-content;
+  max-width: min(34rem, calc(100vw - 32px));
+  background: var(--ink); color: var(--bg); padding: 10px 16px;
+  /* Not --r-pill. A pill is a shape for one line; at four it draws a lozenge whose
+     curve eats into the first and last rows. These are sentences and sometimes wrap,
+     so they are small panels — which is what --r-lg is for. */
+  border-radius: var(--r-lg);
   font-size: var(--fs-md); box-shadow: var(--shadow); opacity: 0; pointer-events: none;
-  transition: opacity .18s ease, transform .18s ease; z-index: 10000; max-width: 90vw;
+  transition: opacity .18s ease, transform .18s ease; z-index: 10000;
+  /* Two even lines rather than a long one and an orphan. Ignored where unsupported. */
+  text-wrap: balance;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* The sync run's progress. Indeterminate on purpose: the run clones seven repos,
+   harvests and deploys, and GitHub reports no fraction along the way — a bar that
+   claimed a percentage would be inventing one.
+   `position: fixed` and a z-index above the panels, because a 2px non-interactive
+   line is exactly the kind of thing that should still be legible over a sheet; the
+   footer's `syncing…` cannot, since a sheet covers it and a puck page removes it. */
+.syncbar {
+  position: fixed; top: 0; left: 0; right: 0; height: 2px;
+  background: var(--line); overflow: hidden;
+  z-index: 10002; pointer-events: none;
+}
+.syncbar::after {
+  content: ""; display: block; height: 100%; width: 40%;
+  background: var(--accent);
+  animation: syncslide 1.15s ease-in-out infinite;
+}
+@keyframes syncslide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(350%); }
+}
+/* A minute and a half of looping motion is a lot to put in front of someone who asked
+   for less of it. The bar still says the run is live — by being there at all. */
+@media (prefers-reduced-motion: reduce) {
+  .syncbar::after { animation: none; width: 100%; opacity: .55; }
+}
 /* The one surface that stays white: --danger-solid is dark in both themes. */
 .toast.err { background: var(--danger-solid); color: #fff; }
 
