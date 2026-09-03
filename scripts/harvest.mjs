@@ -236,33 +236,28 @@ function resolveHierarchy(items) {
     p.children.push(child.id);
   }
   for (const it of items) it.children.sort(); // stable output — the board sorts them for display
-  // `progress` counts the whole **subtree**, not the pucks that happen to name me
-  // directly. "How far has this come?" is a question about the tree: a root whose one
-  // child holds three of its own reported 0/1 and said nothing at all about the three.
-  // Depth is unlimited in the format — a grandchild is one `parent:` line away — so a
-  // rollup that stops at the first level is a number that quietly means something else
-  // the moment anyone uses the depth the convention allows.
+  // `progress` counts **direct** children, and the composition is the reason. A
+  // sub-parent carries its own count and answers for its own subtree, so the numbers
+  // stay readable at every depth: a reader who sees `3/5` can descend into the member
+  // that says `1/3` and the arithmetic is visible.
   //
-  // Every descendant counts, not only the leaves. A puck with children is still a puck,
-  // with its own status and its own body; leaving it out of the count would make it a
-  // container, and a container is the second record type this model does not have.
+  // Counting the whole subtree was tried and reverted, because it broke three things at
+  // once. The `Contains` list on a puck page shows direct members, so a badge counting
+  // the subtree sat above a list it disagreed with — five rows under `3/8`. And the
+  // drift signals got *less* precise, which was the opposite of the intent: measured on
+  // `root done → mid done → grandchild next`, direct counting flags `mid` alone, which
+  // is the puck whose own claim is false. The subtree count flags `root` as well, for a
+  // lie it did not tell — it said its one part was done, and that part says so itself.
   //
-  // Safe to recurse: cycles were cut above, so `children` describes a forest.
-  const subtree = (it, out) => {
-    for (const id of it.children) {
-      const k = byId.get(id);
-      if (!k) continue;
-      out.push(k);
-      subtree(k, out);
-    }
-    return out;
-  };
+  // The case that motivated the attempt — a root reporting `0/1` while three pucks sit
+  // under its one child — is not a silence. It is the drift landing on the member that
+  // owns it, one level down, where the fix belongs.
   for (const it of items) {
     if (!it.children.length) continue;
-    const kin = subtree(it, []);
+    const kids = it.children.map((id) => byId.get(id)).filter(Boolean);
     it.progress = {
-      done: kin.filter((k) => TERMINAL.has(k.status)).length,
-      total: kin.length,
+      done: kids.filter((k) => TERMINAL.has(k.status)).length,
+      total: kids.length,
     };
   }
   return cycles;
