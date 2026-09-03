@@ -235,37 +235,131 @@
   }
 
   // ── tiny, safe markdown (escape first, then a whitelist of inline + block bits) ──
+  // Escape-first is the safety property, and it is why this stayed hand-rolled
+  // rather than becoming a dependency: nothing a puck body says can turn into HTML
+  // that is not written below. These bodies come from *other people's* repos and
+  // land in `innerHTML` on our origin — and every real markdown library passes raw
+  // HTML through by default, so adopting one means adopting a sanitizer too. Two
+  // dependencies to buy a handful of block types is the wrong trade.
+  //
+  // The cost is paid here, once: block detection below runs on lines that have
+  // already been escaped, so a blockquote starts with `&gt;`, not `>`.
   function esc(s) {
-    return s
+    return String(s)
+      .replace(/\u0000/g, "") // the inline pass parks finished HTML on NUL — keep it ours
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+      .replace(/>/g, "&gt;")
+      // The quote is not decoration. A URL reaches `href="…"` and the result goes
+      // through `innerHTML`, so a `"` inside one closes the attribute and the rest of
+      // the URL becomes markup — `https://x"onpointerenter="…` is a real event handler
+      // on our origin, where the GitHub token lives. renderMd also draws issue bodies
+      // and comments, so the author of that URL need not be the board's owner.
+      // Escape-first is the whole safety property; it was one character short of it.
+      .replace(/"/g, "&quot;");
   }
+  function mdLink(href, text) {
+    return '<a href="' + href + '" target="_blank" rel="noopener">' + text + "</a>";
+  }
+  // Emphasis, split out because it has to run in two places: over a link's *label*
+  // before that link is parked, and over the line once every link is out of the way.
+  function mdEmphasis(s) {
+    return String(s)
+      // `[^*]+` could not span the inner `*`, so `**fet med *kursiv* inuti**` left its
+      // `**` on screen. A single `*` is allowed inside; a double still closes.
+      .replace(/\*\*((?:[^*]|\*(?!\*))+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+  }
+  // Everything link-shaped is lifted out of the string first and put back last, so no
+  // rule can reach inside another. The order is what the bugs were made of:
+  //
+  //   - Emphasis used to run *before* the autolinker, so `…/a*b*c` had its path eaten
+  //     (`<em>b</em>`) and only the head of the URL was linked.
+  //   - A whole explicit link used to be parked before emphasis ran, so a formatted
+  //     label — `[**viktigt**](…)` — kept its asterisks. The label is emphasised on the
+  //     way into the hold instead; the href never is.
   function mdInline(s) {
-    return s
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
-      .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    var held = [];
+    function hold(html) { return "\u0000" + (held.push(html) - 1) + "\u0000"; }
+    var out = String(s)
+      .replace(/`([^`]+)`/g, function (_, c) { return hold("<code>" + c + "</code>"); })
+      // `(^|[^!])` and not a lookbehind: `![alt](url)` is image syntax, which the board
+      // does not interpret — without the guard the link rule ate the brackets and left
+      // a stray `!` in front of a link to the image file. Re-emitting the preceding
+      // character is the same shape the emphasis rule already uses, and it works on the
+      // iOS versions a lookbehind does not.
+      .replace(/(^|[^!])\[([^\]]+)\]\((https?:[^)]+)\)/g, function (_, pre, t, u) { return pre + hold(mdLink(u, mdEmphasis(t))); })
+      // A bare URL is a link everywhere else a reader meets one. Trailing sentence
+      // punctuation is left outside the link; parens are not part of a URL here.
+      .replace(/(^|[\s(>])(https?:\/\/[^\s<>()]*[^\s<>().,;:!?])/g, function (_, pre, u) { return pre + hold(mdLink(u, u)); });
+    out = mdEmphasis(out);
+    // A held link's label can itself hold a code span, so one pass is not enough.
+    // Indices only ever point backwards, so this terminates.
+    while (out.indexOf("\u0000") >= 0) {
+      out = out.replace(/\u0000(\d+)\u0000/g, function (_, i) { return held[+i]; });
+    }
+    return out;
   }
+
+  // A table is recognised only as a *pair*: a `|…|` row followed by a `|---|` rule
+  // with the same number of cells. Everything else that starts with `|` falls to
+  // BLOCKISH below and is rendered plainly, one line per line.
+  var TABLE_ROW = /^\s*\|(.+)\|\s*$/;
+  var TABLE_RULE = /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/;
+  // Blocks we do not render must still *break* the paragraph. Folding them in with a
+  // space is what turned a table into one long sentence — every row and the `|---|`
+  // separator glued into a single `<p>`. (`&gt;`: see the note on esc() above.)
+  // `&lt;` and `![` are here because CONVENTION promises it: raw HTML and images are
+  // not interpreted, and "not interpreted" has to mean *shown on its own line* rather
+  // than folded into the neighbouring sentence. Without them the guarantee held for
+  // tables and stopped exactly where the documentation kept going.
+  var BLOCKISH = /^\s*(?:\||&gt;|&lt;|!\[|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$)/;
+  function mdCells(line) {
+    return TABLE_ROW.exec(line)[1].split("|").map(function (c) { return c.trim(); });
+  }
+  function mdAlign(spec) {
+    if (/^:-+:$/.test(spec)) return ' style="text-align:center"';
+    if (/^-+:$/.test(spec)) return ' style="text-align:right"';
+    return "";
+  }
+  function mdIndent(ws) { return ws.replace(/\t/g, "    ").length; }
   function renderMd(src) {
     var out = [];
     var lines = esc(src).split("\n");
-    var inList = false;
-    var listType = null; // "ul" (bullets) | "ol" (numbered)
+    // Open lists, innermost last: { type, indent, liOpen }. A stack rather than a
+    // flag, because indentation is what tells a sub-point from a wrapped line, and
+    // one flag can only ever answer "in a list, yes or no".
+    var stack = [];
     var para = []; // buffer of wrapped lines that form one paragraph
     var liBuf = null; // buffer of wrapped lines that form one list item
+    var quote = []; // buffer of consecutive `>` lines
     var inCode = false;
     var code = []; // buffer of lines inside a ``` fence
     function flushPara() {
       if (para.length) { out.push("<p>" + mdInline(para.join(" ")) + "</p>"); para = []; }
     }
-    function flushLi() {
-      if (liBuf) { out.push("<li>" + mdInline(liBuf.join(" ")) + "</li>"); liBuf = null; }
+    function flushQuote() {
+      if (quote.length) { out.push("<blockquote>" + mdInline(quote.join(" ")) + "</blockquote>"); quote = []; }
     }
-    function closeList() {
-      if (inList) { flushLi(); out.push("</" + listType + ">"); inList = false; listType = null; }
+    // An item's `<li>` opens as soon as its text is known but closes late: a nested
+    // list has to be emitted *inside* it, so the tag stays open until a sibling item
+    // or the end of the level.
+    function emitLi() {
+      if (!liBuf) return;
+      out.push("<li>" + mdInline(liBuf.join(" ")));
+      if (stack.length) stack[stack.length - 1].liOpen = true;
+      liBuf = null;
     }
+    function closeLi() {
+      emitLi();
+      var top = stack[stack.length - 1];
+      if (top && top.liOpen) { out.push("</li>"); top.liOpen = false; }
+    }
+    function closeList() { closeLi(); out.push("</" + stack.pop().type + ">"); }
+    function closeLists(toIndent) {
+      while (stack.length && stack[stack.length - 1].indent > toIndent) closeList();
+    }
+    function endBlocks() { flushPara(); flushQuote(); while (stack.length) closeList(); }
     function flushCode() {
       if (code.length) { out.push("<pre><code>" + code.join("\n") + "</code></pre>"); code = []; }
     }
@@ -273,43 +367,83 @@
       var line = lines[i];
       if (/^\s*```/.test(line)) {
         if (inCode) { flushCode(); inCode = false; }
-        else { flushPara(); closeList(); inCode = true; }
+        else { endBlocks(); inCode = true; }
         continue;
       }
       if (inCode) { code.push(line); continue; }
-      var h = /^(#{2,4})\s+(.*)$/.exec(line);
-      var ul = /^\s*[-*]\s+(.*)$/.exec(line);
-      var ol = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
-      var li = ul || ol;
-      var wantType = ul ? "ul" : (ol ? "ol" : null);
-      var liContent = ul ? ul[1] : (ol ? ol[2] : null);
-      if (h) {
+
+      // Tables, before anything else can claim the line: only the row+rule pair is
+      // one, and the cell counts have to agree — GitHub does not render a table
+      // whose header and separator disagree either.
+      if (TABLE_ROW.test(line) && TABLE_RULE.test(lines[i + 1] || "") &&
+          mdCells(line).length === mdCells(lines[i + 1]).length) {
+        endBlocks();
+        var head = mdCells(line);
+        var align = mdCells(lines[i + 1]).map(mdAlign);
+        var t = ['<div class="md-table"><table><thead><tr>'];
+        head.forEach(function (c, n) { t.push("<th" + align[n] + ">" + mdInline(c) + "</th>"); });
+        t.push("</tr></thead><tbody>");
+        for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) {
+          var row = mdCells(lines[i]);
+          t.push("<tr>");
+          for (var c = 0; c < head.length; c++) t.push("<td" + align[c] + ">" + mdInline(row[c] || "") + "</td>");
+          t.push("</tr>");
+        }
+        i--; // the loop's own i++ takes the line that ended the table
+        out.push(t.join("") + "</tbody></table></div>");
+        continue;
+      }
+
+      var bq = /^\s*&gt;\s?(.*)$/.exec(line);
+      if (bq) {
         flushPara();
-        closeList();
+        while (stack.length) closeList();
+        quote.push(bq[1].trim());
+        continue;
+      }
+      flushQuote(); // any other line ends the quote
+
+      var h = /^(#{2,4})\s+(.*)$/.exec(line);
+      var ul = /^([ \t]*)[-*]\s+(.*)$/.exec(line);
+      var ol = /^([ \t]*)(\d+)[.)]\s+(.*)$/.exec(line);
+      var li = ul || ol;
+      if (h) {
+        endBlocks();
         var lvl = Math.min(h[1].length, 4);
         out.push("<h" + lvl + ">" + mdInline(h[2]) + "</h" + lvl + ">");
       } else if (li) {
         flushPara();
-        if (inList && listType !== wantType) closeList(); // switching bullets ↔ numbered
-        flushLi(); // close the previous item before starting this one
-        if (!inList) {
+        var wantType = ul ? "ul" : "ol";
+        var indent = mdIndent(li[1]);
+        closeLists(indent); // anything deeper than this line ends here
+        var top = stack[stack.length - 1];
+        if (top && top.indent === indent && top.type !== wantType) { closeList(); } // bullets ↔ numbered
+        top = stack[stack.length - 1];
+        if (!top || indent > top.indent) {
+          emitLi(); // we are nesting inside the item that is still open
           // Preserve an author's starting number (a section that resumes at "3.").
           var openTag = "<" + wantType + ">";
-          if (wantType === "ol" && parseInt(ol[1], 10) !== 1) openTag = '<ol start="' + parseInt(ol[1], 10) + '">';
-          out.push(openTag); inList = true; listType = wantType;
+          if (wantType === "ol" && parseInt(ol[2], 10) !== 1) openTag = '<ol start="' + parseInt(ol[2], 10) + '">';
+          out.push(openTag);
+          stack.push({ type: wantType, indent: indent, liOpen: false });
+        } else {
+          closeLi(); // a sibling at this level: close the previous item
         }
-        liBuf = [liContent]; // buffer so soft-wrapped lines fold into this item
+        liBuf = [ul ? ul[2] : ol[3]]; // buffer so soft-wrapped lines fold into this item
       } else if (line.trim() === "") {
-        flushPara();
-        closeList();
-      } else if (inList) {
+        endBlocks();
+      } else if (BLOCKISH.test(line)) {
+        // A block we do not render. It gets its own line rather than being folded
+        // into the running paragraph — plain instead of garbled.
+        endBlocks();
+        out.push("<p>" + mdInline(line.trim()) + "</p>");
+      } else if (liBuf) {
         liBuf.push(line.trim()); // lazy continuation of the current list item
       } else {
         para.push(line.trim()); // fold wrapped lines into the current paragraph
       }
     }
-    flushPara();
-    closeList();
+    endBlocks();
     if (inCode) flushCode();
     return out.join("\n");
   }
@@ -7687,6 +7821,20 @@
   }
 
   // Swap the rendered body for a textarea; Save commits, Cancel restores.
+  //
+  // A `contenteditable="plaintext-only"` stood here for one commit, on the theory that
+  // iOS Safari's 16px floor is about *form controls* — which is what the floor's own
+  // comment in styles.css implies when it says the answer is to not have a native
+  // field. Measured on the device, that theory is wrong. Focusing a 14px editable div
+  // zoomed the page by 1.147; 16/14 is 1.143. The floor is about the focused *editable
+  // element*, not about which tag it is, so a contenteditable buys exactly nothing
+  // here — while costing a feature probe, an `innerText` round trip, and a
+  // `white-space` dependency that Chromium hid and Safari did not (the body opened as
+  // one run-together blob there, and Save would have committed it that way).
+  //
+  // The <select>s that did escape the floor escaped it by having no editable text at
+  // all, not by not being form controls. That is the part of the rule that generalised
+  // and the part that did not.
   function startBodyEdit(item, bodyEl, editBtn) {
     editBtn.style.display = "none";
     var ta = document.createElement("textarea");
@@ -7701,9 +7849,47 @@
     // Auto-grow so the whole body is visible without an inner scrollbar (nicer on mobile).
     function autoGrow() { ta.style.height = "auto"; ta.style.height = Math.max(200, ta.scrollHeight + 2) + "px"; }
     ta.addEventListener("input", autoGrow);
+
+    // Where the editor lands is not the browser's call on a phone. Focusing a field
+    // scrolls it into view against the *layout* viewport, which does not know a
+    // keyboard is about to cover the lower half — and `autoGrow` then makes the box
+    // thousands of pixels tall *after* that scroll, so the browser's idea of "in view"
+    // was measured on a box that no longer exists. Measured at 390×844 on a long puck:
+    // the editor's top landed 498px down, with the keyboard leaving about 410.
+    //
+    // Pin its top under the topbar instead, which is the rule the sheet already
+    // follows: the field at the top, the first lines in the band above the keyboard.
+    function reveal() {
+      if (!ta.isConnected) return;
+      var bar = document.querySelector(".topbar");
+      var barH = bar && getComputedStyle(bar).position === "sticky" ? bar.getBoundingClientRect().height : 0;
+      window.scrollTo(0, Math.max(0, ta.getBoundingClientRect().top + window.scrollY - barH - 8));
+    }
+    // iOS can scroll again *after* focus, once the keyboard is up, which would undo the
+    // line above. A shrinking visual viewport is the only event that says the keyboard
+    // arrived — a growing one is it leaving, and re-aiming then would yank the page out
+    // from under a reader who dismissed it on purpose.
+    var vv = window.visualViewport;
+    var vvHeight = vv ? vv.height : 0;
+    function onKeyboard() {
+      // Leaving the puck by the breadcrumb, Back or the sidebar never runs `restore()`,
+      // so this can still be registered against an editor that is no longer in the
+      // document. `reveal()` already refuses to act on one; this is what stops the
+      // listener itself from outliving every abandoned edit.
+      if (!ta.isConnected) { vv.removeEventListener("resize", onKeyboard); return; }
+      if (vv.height >= vvHeight) { vvHeight = vv.height; return; }
+      vv.removeEventListener("resize", onKeyboard);
+      reveal();
+    }
+    if (vv) vv.addEventListener("resize", onKeyboard);
+
     ta.focus();
-    setTimeout(autoGrow, 0);
-    function restore(md) { bodyEl.innerHTML = renderMd(md || "(no details)"); editBtn.style.display = ""; }
+    setTimeout(function () { autoGrow(); reveal(); }, 0);
+    function restore(md) {
+      if (vv) vv.removeEventListener("resize", onKeyboard);
+      bodyEl.innerHTML = renderMd(md || "(no details)");
+      editBtn.style.display = "";
+    }
     cancel.addEventListener("click", function () { restore(item.body); });
     save.addEventListener("click", function () {
       var newBody = ta.value, prev = item.body;
