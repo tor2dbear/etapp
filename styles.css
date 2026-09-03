@@ -550,6 +550,12 @@ body {
 .list-head .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); }
 .list-head h2 { margin: 0; font-size: var(--fs-md); text-transform: uppercase; letter-spacing: var(--tr-eyebrow); }
 .lh-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* A heading with two controls is a flex row of its own. The `!important`-free way to
+   keep the split invisible: the toggle drops its right bleed so the gap between caret
+   and name is the head's own 8px, not 8 plus the toggle's padding. */
+.list-head h2 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lh-toggle--split { margin-right: 0; padding-right: 0; }
+.list-head .head-open { font: inherit; text-transform: inherit; letter-spacing: inherit; }
 .list-head .count { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 /* The whole heading is the fold control, so it carries the row's own spacing and
    reaches a little past the content line — a header you can click should look like
