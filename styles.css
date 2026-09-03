@@ -1,5 +1,5 @@
 /* Roadmap aggregator — theme-aware, no dependencies. */
-/* Etapp identity — warm "map-paper" light, warm "ink" dark; trail-orange accent
+/* Parent identity — warm "map-paper" light, warm "ink" dark; trail-orange accent
    (#cf551b/#e2622a), forest-green as the go/ready semantic. Chrome uses --mono. */
 
 /* Self-hosted typefaces (woff2, latin subset, font-display: swap):
@@ -1102,7 +1102,7 @@ body.scroll-locked { position: fixed; left: 0; right: 0; width: 100%; overflow: 
 .body-editor:focus { outline: none; border-color: var(--accent); }
 .body-edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 
-/* Etapp identity — mono for chrome/data (counts, column labels, dates) */
+/* Parent identity — mono for chrome/data (counts, column labels, dates) */
 .col-head h2, .col-head .count, .list-head h2, .list-head .count,
 .card-date, .chip .n, #footmeta { font-family: var(--mono); }
 
@@ -2217,9 +2217,9 @@ body.preload * { transition: none !important; }
 @media (max-width: 640px) {
 }
 
-/* ── an etapp's members ────────────────────────────────────────────────────────
+/* ── a parent's members ────────────────────────────────────────────────────────
    A comma-separated line works for two pucks and collapses at eight. These are
-   rows, so the etapp page is where the etapp is run. */
+   rows, so the parent page is where the parent is run. */
 .sect-with-badge { display: flex; align-items: center; gap: 8px; }
 /* The rows pay their own padding back, so a member title lands on the page's content
    line (22px) with every heading and paragraph in the section, and the trailing pill
@@ -2256,8 +2256,8 @@ body.preload * { transition: none !important; }
 }
 @media (hover: hover) { .dep-x:hover { color: var(--ink); } }
 
-/* ── etapp: the level above a puck (rollup badge + membership chip) ─────────── */
-/* An etapp is a puck with children, so its marks live on the same card meta row
+/* ── parent: the level above a puck (rollup badge + membership chip) ─────────── */
+/* A parent is a puck with children, so its marks live on the same card meta row
    as every other badge — no second card type, no second visual language. */
 .rollup {
   cursor: help;
@@ -2280,27 +2280,27 @@ body.preload * { transition: none !important; }
    a fill. This rule used to darken that ring for the complete state, which made the
    only thing the eye caught "this one is outlined and that one isn't" — a fact the
    reader has to be told the meaning of. `--done` is the board's quieting colour
-   (2.9:1 against the fill where --ink-2 is 4.7); a finished etapp recedes here the
+   (2.9:1 against the fill where --ink-2 is 4.7); a finished parent recedes here the
    same way a done card does everywhere else, and the numbers carry the rest. */
 /* Complete: the fill is the whole chip, so it says "done" on its own and the text
    recedes with it — the same quieting `--done` every finished thing wears here. */
 .rollup.full { color: var(--done); }
 .rollup-n { font-variant-numeric: tabular-nums; }
-.etapp-chip {
+.parent-chip {
   display: inline-flex; align-items: center; gap: 3px; min-width: 0; flex: 0 1 auto;
   font: inherit; font-size: var(--fs-sm); background: none; border: 0; padding: 0;
   color: var(--ink-3); cursor: help;
 }
-.etapp-link { cursor: pointer; }
-@media (hover: hover) { .etapp-link:hover { color: var(--accent); } }
+.parent-link { cursor: pointer; }
+@media (hover: hover) { .parent-link:hover { color: var(--accent); } }
 /* On a card the repo name sits immediately before this, and in a repo that is itself
    called Etapp the two read as one phrase ("Etapp ⑂ GUI-hantverk"). The meta row
    separates its parts by gap alone, so the chip brings its own divider — the same one
    `.issue-newbtn` uses. Not in the list row, where the chip follows the title and the
    repo has a cell of its own. */
-.card-meta .etapp-chip::before { content: "·"; color: var(--ink-3); margin-right: 3px; }
-.etapp-chip .icn { width: 11px; height: 11px; flex: none; }
-.etapp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-meta .parent-chip::before { content: "·"; color: var(--ink-3); margin-right: 3px; }
+.parent-chip .icn { width: 11px; height: 11px; flex: none; }
+.parent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-head .rollup, .list-head .rollup { margin-left: 4px; }
 /* These carried no colour outside the old modal's scope, so in the rail they fell
    back to the browser's blue underline — the only such link on the page. */
@@ -2322,7 +2322,7 @@ body.preload * { transition: none !important; }
    a sidebar row. One size for both left the badge wearing a glyph taller than its own
    text.
    12px and not 11: measured in real pixels, at 11 the two eyes start to merge into the
-   dome and the antenna loses its length, which is the same failure `etapp` avoids by
+   dome and the antenna loses its length, which is the same failure `parent` avoids by
    being dots instead of an outline. A face that has stopped having eyes is just a blob,
    and then the glyph says less than the arrow it replaced. */
 .icn.agent-glyph { width: 12px; height: 12px; color: var(--accent); }

@@ -29,17 +29,17 @@ parentRef, children[], progress, signals[], sourceUrl, … }`.
 - `signals[]` — drift flags (`stale` / `issue-closed` / `issue-open` /
   `target-passed` / `parent-missing` / `parent-cycle` / `depends-missing` /
   `dependency-cycle` / `rollup-open` / `rollup-done`): the declared status
-  disagrees with reality. The last two compare an etapp's own status against its
-  parts — done with something still open, or every part settled and the etapp not.
+  disagrees with reality. The last two compare a parent's own status against its
+  parts — done with something still open, or every part settled and the parent not.
 - `blockedBy[]` — everything from `depends` that isn't settled yet, as ids;
   a reference that resolves to nothing stays **as written**, because an unknown
   blocker is not a finished one. **Empty = unblocked**, and a settled puck's is
   always empty. `blocks[]` is the exact mirror (x blocks y ⇔ y is blocked by x),
   derived too; `missingDepends[]` lists the references that resolved to nothing.
-- `parent` — the etapp as *written* (`slug`, or `owner/repo#slug`); `parentRef` is
+- `parent` — the parent as *written* (`slug`, or `owner/repo#slug`); `parentRef` is
   it resolved to an id, or `null` when it doesn't resolve. `children[]` and
   `progress` (`{done,total}`) are derived from the children's `parent:` lines —
-  a puck with children **is** the etapp.
+  a puck with children **is** the parent.
 
 **"What should I work on?"** — unblocked active pucks:
 
@@ -66,7 +66,7 @@ owner:tor2dbear        the owner field
 priority:high          urgent | high | medium | low
 issue:42               the linked issue number
 target:<=2026-11-30    the horizon (updated/created take the same operators)
-parent:auth            the etapp — slug, id or owner/repo#slug (alias: etapp)
+parent:auth            the parent — slug, id or owner/repo#slug (aliases: etapp, epic)
 "grep context"         free text over title, body, tags and repo name
 has:priority           the field is set at all; -has:priority is "no priority"
 ```
@@ -84,22 +84,22 @@ field of its own would invent a second truth:
 
 | Term | True when |
 |---|---|
-| `is:ready` | `status` is `now`/`next`, `blockedBy` is empty, **and** it has no children — an etapp is not work you pick up |
+| `is:ready` | `status` is `now`/`next`, `blockedBy` is empty, **and** it has no children — a parent is not work you pick up |
 | `is:blocked` | `blockedBy` is non-empty |
 | `is:blocking` | `blocks` is non-empty — something unfinished waits on this puck |
 | `is:flagged` | the puck has any drift signal |
 | `is:stale` | its signals include `stale` |
 | `is:adapted` | the source isn't native pucks |
 | `is:done` | `done` **or** `cancelled` (the archive) |
-| `is:etapp` | the puck has children — it *is* an etapp |
-| `is:member` | it has a resolved `parentRef` — it sits in an etapp (this, not `has:parent`, is what the etapp columns bucket on: a `parent:` that resolves to nothing is not membership) |
-| `is:standalone` | neither a parent nor children: in no etapp (`is:orphan` is the old name, still accepted) |
+| `is:parent` | the puck has children — it *is* a parent (`is:etapp` is the old name, still accepted) |
+| `is:member` | it has a resolved `parentRef` — it sits in a parent (this, not `has:parent`, is what the parent columns bucket on: a `parent:` that resolves to nothing is not membership) |
+| `is:standalone` | neither a parent nor children: in no tree (`is:orphan` is the old name, still accepted) |
 
 The board's own views are just queries — `Ready` is `is:ready`, `Needs attention`
 is `is:flagged` — so anything a view shows, a query can name.
 
 URL parameters: `?q=` is the filter, `?view=` names a built-in view (`all`/`ready`/
-`inbox`/`etapps`/`standalone`/`attention`), `?group=` the column field, `?layout=`
+`inbox`/`parents`/`standalone`/`attention` — `etapps` still resolves), `?group=` the column field, `?layout=`
 board or list, `?sort=` the ordering, `?done=1` shows the archive, `?empty=0` hides
 empty columns, `?collapsed=` folds groups shut in the list layout (a comma-separated
 list of group keys, URL-encoded, sorted; the keys belong to whatever `?group=` is
@@ -150,7 +150,7 @@ roadmap priority <slug> <level>     # urgent|high|medium|low (--clear to remove)
 roadmap target <slug> 2026-11       # horizon: a date, or a month = its last day
 roadmap move <slug> --before <slug> # manual rank within the status column
 roadmap renumber [--status now]     # tidy order back to 10, 20, 30 …
-roadmap parent <slug> <etapp-slug>  # put it in an etapp (--clear to take it out)
+roadmap parent <slug> <parent-slug>  # put it in a parent (--clear to take it out)
 roadmap depends <slug> +a -b        # edit blockers (--clear to remove all)
 roadmap agent <slug> <discipline>   # route to a discipline agent (--clear to remove)
 roadmap list [--status now]         # overview
@@ -177,12 +177,12 @@ it is blocked. A loop flags `dependency-cycle` on every puck in it: no single li
 can be cut to fix it, so a human decides which edge is wrong. A puck that depends on
 itself is that same error with one node, kept and flagged the same way.
 
-## Etapps (the level above)
+## Parents (the level above)
 
-`parent: <slug>` (or `owner/repo#slug`) puts a puck in an etapp. Only the child
-stores anything — the etapp is just the puck being pointed at, and its
+`parent: <slug>` (or `owner/repo#slug`) puts a puck in a parent. Only the child
+stores anything — the parent is just the puck being pointed at, and its
 `children[]`/`progress` are derived at harvest. So there is no epic record to create,
-nothing to keep in sync, and a whole etapp of work is `?q=parent:<slug>`.
+nothing to keep in sync, and a whole parent of work is `?q=parent:<slug>`.
 
 A `parent:` that names nothing, or that closes a loop, is flagged
 (`parent-missing` / `parent-cycle`) and ignored — never silently repaired.

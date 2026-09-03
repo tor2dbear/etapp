@@ -193,7 +193,7 @@
   // Members in the order you'd work them: by status column, then by manual rank,
   // then by title. The harvester sorts `children[]` by id "for stable output" and
   // says the board sorts them for display — this is the board keeping that promise.
-  // Without it an etapp you're running listed its parts alphabetically by slug,
+  // Without it a parent you're running listed its parts alphabetically by slug,
   // with the one `next` puck sitting in the middle of the `now` ones.
   function childItems(item) {
     return (item.children || []).map(itemById).filter(Boolean).sort(function (a, b) {
@@ -222,14 +222,14 @@
         return "Depends on " + (item.missingDepends || []).join(", ") + ", which doesn’t exist — typo, or the puck was renamed?";
       }
       if (s.type === "dependency-cycle") return "In a dependency loop — these pucks wait for each other, so none of them is ready.";
-      if (s.type === "parent-missing") return 'Etapp "' + item.parent + '" doesn’t exist — typo, or the puck was renamed?';
-      if (s.type === "parent-cycle") return 'Etapp "' + item.parent + '" closes a loop — the link is ignored.';
+      if (s.type === "parent-missing") return 'Parent "' + item.parent + '" doesn’t exist — typo, or the puck was renamed?';
+      if (s.type === "parent-cycle") return 'Parent "' + item.parent + '" closes a loop — the link is ignored.';
       if (s.type === "rollup-open") {
         var open = item.progress.total - item.progress.done;
         return "Marked " + (STATUS_LABEL[item.status] || item.status).toLowerCase() + " but " + open +
           " of " + item.progress.total + " parts " + (open === 1 ? "is" : "are") + " still open.";
       }
-      if (s.type === "rollup-done") return "Every part is done — mark the etapp done?";
+      if (s.type === "rollup-done") return "Every part is done — mark the parent done?";
       return s.type;
     });
   }
@@ -468,7 +468,7 @@
     tag: { vals: function (i) { return i.tags || []; } },
     repo: { vals: function (i) { return [i.repo, shortRepo(i.repo), i.repoName]; } },
     issue: { vals: function (i) { return i.issue == null ? [] : [String(i.issue)]; } },
-    // The etapp a puck sits in. Matches whatever names it: the raw `parent:` value
+    // The parent a puck sits in. Matches whatever names it: the raw `parent:` value
     // as written, the resolved id, or the parent's bare slug — so `parent:auth`
     // works from a card, a URL or an agent that only knows the slug.
     parent: {
@@ -489,7 +489,7 @@
   // data (by the harvester or here), so giving each its own field would invent a
   // second truth. Negate with `-is:blocked`.
   var IS_STATES = {
-    // Ready is "pick one up, or hand it to an agent" — and an etapp is neither. It
+    // Ready is "pick one up, or hand it to an agent" — and a parent is neither. It
     // has no work of its own; what you take is one of its parts. Dog-fooding made
     // that concrete: `gui-hantverk` was unblocked (it declares no `depends:`) and
     // therefore Ready, while four of its five members were waiting on each other.
@@ -505,18 +505,22 @@
     adapted: function (i) { return !i.native; },
     done: function (i) { return !!TERMINAL[i.status]; }, // done *or* cancelled — the archive
     // The hierarchy, as states rather than fields: a puck with children *is* the
-    // etapp, and one with neither parent nor children stands outside every etapp.
+    // parent, and one with neither parent nor children stands outside every tree.
     blocking: function (i) { return !!(i.blocks || []).length; },
-    etapp: function (i) { return !!(i.children || []).length; },
+    parent: function (i) { return !!(i.children || []).length; },
     member: function (i) { return !!i.parentRef; },
-    // `standalone` is what the sidebar row is called, `orphan` is what it was called
-    // first; same predicate, so the query language says what the button says.
-    orphan: isStandalone,
     standalone: isStandalone,
   };
+  // Spellings that mean an existing state. Canonicalised at parse rather than
+  // registered as a second predicate — which is how `orphan` used to be carried, and
+  // it left the facet panel unable to tick the row a live `is:orphan` term had
+  // selected, because the panel looks its values up by name. `parent` joins it here
+  // rather than in `IS_STATES`, so every link and saved view written before the
+  // rename keeps working *and* keeps showing.
+  var IS_ALIAS = { etapp: "parent", epic: "parent", orphan: "standalone" };
   // The three states cover every puck between them, and the only ones counted twice
-  // are the sub-etapps — which genuinely are both. That's the check that the split
-  // is the right one: `is:etapp` + `is:member` + `is:standalone` leaves nothing out.
+  // are the sub-parents — which genuinely are both. That's the check that the split
+  // is the right one: `is:parent` + `is:member` + `is:standalone` leaves nothing out.
   function isStandalone(i) { return !i.parentRef && !(i.children || []).length; }
 
   // Split on whitespace, but keep "quoted phrases" whole so free text can contain spaces.
@@ -547,12 +551,14 @@
         name = FIELD_ALIAS[name] || name;
         // `is:a,b` carries alternatives in one term, the same shape every other field
         // uses. It has to: `runQuery` ANDs terms, so a value per term made two ticks in
-        // one facet ask for a contradiction — `is:etapp is:standalone` is "is an etapp
-        // and stands outside every etapp", empty by construction. Unknown names are
+        // one facet ask for a contradiction — `is:parent is:standalone` is "is a parent
+        // and stands outside every tree", empty by construction. Unknown names are
         // dropped rather than failing the whole term, and a term left with nothing
         // falls through to free text, so a typo still narrows instead of vanishing.
         if (name === "is") {
-          var states = rest.split(",").map(lower).filter(function (v) { return IS_STATES[v]; });
+          var states = rest.split(",").map(lower)
+            .map(function (v) { return IS_ALIAS[v] || v; })
+            .filter(function (v) { return IS_STATES[v]; });
           if (states.length) {
             terms.push({ field: "is", op: "is", values: states, neg: neg });
             return;
@@ -563,7 +569,7 @@
         // that have no priority": that column's key is the absence of a value, so
         // there is no `-priority:x` that names it. Listing every real value instead
         // (`priority:urgent,high,medium,low`) works only for a closed set and goes
-        // quietly wrong for agents and etapps, where a new value would arrive already
+        // quietly wrong for agents and parents, where a new value would arrive already
         // hidden. Symmetrical with `is:` — one field per term, negatable.
         if (name === "has" && FIELDS[FIELD_ALIAS[lower(rest)] || lower(rest)]) {
           terms.push({ field: "has", op: "is", values: [FIELD_ALIAS[lower(rest)] || lower(rest)], neg: neg });
@@ -635,21 +641,21 @@
   // The sidebar views are queries, not special cases in the filter — the same
   // strings a saved view or an agent would write. ("all" = the committed board;
   // inbox has its own space, and the archive is added below unless it's shown.)
-  // `is:etapp` is derived (a puck with children *is* the etapp), so the view is a
+  // `is:parent` is derived (a puck with children *is* the parent), so the view is a
   // query and not a new record type — the same trick every other view uses.
-  // Etapps carries no `-status:inbox`: an etapp can sit anywhere, inbox included,
+  // Parents carries no `-status:inbox`: a parent can sit anywhere, inbox included,
   // and hiding it there would make the sidebar's count disagree with the board.
   // Standalone does carry it — an inbox puck is standalone by definition, and
   // without the exclusion the row would just re-count the inbox.
   var VIEWS = {
     all: "-status:inbox", ready: "is:ready", inbox: "status:inbox",
-    etapps: "is:etapp", standalone: "-status:inbox is:standalone", attention: "is:flagged",
+    parents: "is:parent", standalone: "-status:inbox is:standalone", attention: "is:flagged",
   };
   // Which views can reach the archive at all, and therefore have to obey the toggle.
   // `ready` and `inbox` can't (their statuses are never terminal), and `attention`
   // *wants* to — a flagged done puck is exactly what that view is for. The rest are
   // the ones that would otherwise show landed work unasked.
-  var ARCHIVABLE = { all: 1, etapps: 1, standalone: 1 };
+  var ARCHIVABLE = { all: 1, parents: 1, standalone: 1 };
   var NOT_DONE = { field: "is", op: "is", values: ["done"], neg: true };
 
   // The two fields the sidebar navigates by. They are ordinary query fields; what makes
@@ -775,7 +781,16 @@
   // ignores the setting, having arrived from a link that set it and never touched the
   // control. A preference that does nothing where you are looking is the right thing to
   // drop there.
+  // `etapps` is what the row was called, and it is in links already sent *and* in
+  // saved views already committed. The rewrite therefore belongs where every reader
+  // passes: `effectiveParams` is the one normaliser both a saved view's parameters and
+  // the live board's go through. Doing it only at the URL read — which is where it was
+  // first written — left a stored `etapps` comparing itself against the live `parents`,
+  // so the view read as edited the moment it opened, and dropped its archive flag on
+  // the way, because `ARCHIVABLE` has no `etapps` any more.
+  function canonicalView(v) { return v === "etapps" ? "parents" : v; }
   function effectiveParams(o) {
+    if (o.view) o.view = canonicalView(o.view);
     var focus = o.view || "all";
     var layout = o.layout || DISPLAY_DEFAULTS.view;
     var cols = columnsForFocus(focus, o.done === "1");
@@ -892,6 +907,7 @@
     if (GROUPS[got.group]) state.group = got.group;
     if (got.layout === "list" || got.layout === "board") state.view = got.layout;
     if (SORTS.indexOf(got.sort) !== -1) state.sort = got.sort;
+    if (got.view) got.view = canonicalView(got.view);
     if (VIEWS[got.view]) state.focus = got.view;
     if (!got.q) return;
     // Nothing to hand back to anyone: `?q=` is the store. The sidebar rows read it for
@@ -1021,13 +1037,13 @@
     edit: ["M6.875 2.5H2.5a1.25 1.25 0 0 0 -1.25 1.25v8.75a1.25 1.25 0 0 0 1.25 1.25h8.75a1.25 1.25 0 0 0 1.25 -1.25v-4.375", "M11.5625 1.5625a1.325625 1.325625 0 0 1 1.875 1.875L7.5 9.375l-2.5 0.625 0.625 -2.5 5.9375 -5.9375z"],
     // git-commit — a puck is a commit-like unit in git (our "project" glyph)
     commit: ["M5 7.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0 -5 0", "M0.65625 7.5 4.375 7.5", "m10.631250000000001 7.5 3.71875 0"],
-    // An etapp is several pucks on one track — the commit mark, twice. It has to
+    // A parent is several pucks on one track — the commit mark, twice. It has to
     // differ from `commit` at 12px, which is why it is two dots and not a container
     // outline: at that size an outline is a smudge and a count of dots still reads.
-    etapp: ["M3.125 7.5a1.5625 1.5625 0 1 0 3.125 0 1.5625 1.5625 0 1 0 -3.125 0",
+    parent: ["M3.125 7.5a1.5625 1.5625 0 1 0 3.125 0 1.5625 1.5625 0 1 0 -3.125 0",
             "M8.75 7.5a1.5625 1.5625 0 1 0 3.125 0 1.5625 1.5625 0 1 0 -3.125 0",
             "M0.9375 7.5 3.125 7.5", "M6.25 7.5 8.75 7.5", "M11.875 7.5 14.0625 7.5"],
-    // git-merge — the Etapp brand mark: two stages meeting on one line
+    // git-merge — the Parent brand mark: two stages meeting on one line
     merge: ["M9.5833 11.5a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M1.9167 3.8333a1.9167 1.9167 0 1 0 3.8333 0 1.9167 1.9167 0 1 0 -3.8333 0", "M3.8333 13.4167V5.75a5.75 5.75 0 0 0 5.75 5.75"],
     // trash-2 (Feather), scaled to the 16 viewBox
     trash: ["M2 4h12", "M12.667 4v9.333a1.333 1.333 0 0 1 -1.333 1.333H4.667a1.333 1.333 0 0 1 -1.333 -1.333V4", "M5.333 4V2.667a1.333 1.333 0 0 1 1.333 -1.333h2.667a1.333 1.333 0 0 1 1.333 1.333V4", "M6.667 7.333v4", "M9.333 7.333v4"],
@@ -1192,8 +1208,8 @@
     return b;
   }
 
-  // Rollup badge for a puck that *is* an etapp: how many of its children have
-  // landed. Derived at harvest from the children's own statuses, so an etapp can't
+  // Rollup badge for a puck that *is* a parent: how many of its children have
+  // landed. Derived at harvest from the children's own statuses, so a parent can't
   // claim progress its pucks don't have.
   function progressBadge(item) {
     var p = item.progress;
@@ -1201,40 +1217,40 @@
     // The proportion, as a fill behind the count — not instead of it.
     //
     // The finding this closes said the rollup was "a number where a shape would do",
-    // and the puck deliberately waited for real etapps before choosing the shape. The
+    // and the puck deliberately waited for real parents before choosing the shape. The
     // real ones have 1, 2, 3 and 5 parts, and at those sizes every shape is the
     // *worse* instrument: 0/1, 1/2 and 2/3 draw 0%, 50% and 67% while the reader's
     // actual question — how many are left — is "one" for all three. A shape earns its
     // place where the count stops meaning anything (37/120 → "about a third"), and
     // nothing on this board is close. So the answer is the count, and only the count.
-    // The puck mark, not the etapp mark: this badge counts *pucks*, and the etapp
-    // it belongs to already wears its own mark beside the title. Carrying `etapp`
+    // The puck mark, not the parent mark: this badge counts *pucks*, and the parent
+    // it belongs to already wears its own mark beside the title. Carrying `parent`
     // here put the same glyph on one card twice and had the count of two dots
     // standing in front of the number 5.
     b.appendChild(icon("commit"));
     b.appendChild(el("span", "rollup-n", p.done + "/" + p.total));
-    b.title = "Etapp: " + p.done + " of " + p.total + " pucks done";
+    b.title = "Parent: " + p.done + " of " + p.total + " pucks done";
     b.setAttribute("aria-label", b.title);
     return b;
   }
-  // Membership chip on a child card: which etapp this puck belongs to.
-  // Membership, on a card. Clickable when the etapp is on the board: the crumb
+  // Membership chip on a child card: which parent this puck belongs to.
+  // Membership, on a card. Clickable when the parent is on the board: the crumb
   // already goes up and the members list goes down, but this — the one place the
   // relation is stated on the board itself — did nothing but repeat a name. On a
-  // flat board a card and its etapp can be columns apart, so the tie has to be a
+  // flat board a card and its parent can be columns apart, so the tie has to be a
   // link or it is only a label.
-  function etappChip(item) {
+  function parentChip(item) {
     var p = parentItem(item);
     var name = p ? p.title : item.parentRef;
-    var c = el(p ? "button" : "span", "etapp-chip" + (p ? " etapp-link" : ""));
+    var c = el(p ? "button" : "span", "parent-chip" + (p ? " parent-link" : ""));
     if (p) c.type = "button";
     c.appendChild(icon("merge"));
-    c.appendChild(el("span", "etapp-name", name));
-    c.title = "Etapp: " + name;
+    c.appendChild(el("span", "parent-name", name));
+    c.title = "Parent: " + name;
     c.setAttribute("aria-label", c.title);
     if (p) {
       c.addEventListener("click", function (e) {
-        e.stopPropagation(); // the card underneath opens *this* puck; the chip opens its etapp
+        e.stopPropagation(); // the card underneath opens *this* puck; the chip opens its parent
         openModal(p);
       });
     }
@@ -1245,15 +1261,15 @@
   // like Linear's project icon, which is coloured by the project's identity (not
   // status). It's the single colour marker, so the meta shows just the repo name.
   // The identity mark, tinted with the repo. A puck that holds other pucks gets a
-  // different one: an etapp was indistinguishable from a member on the board, and
-  // "which of these is an etapp?" is the first question the board should answer
+  // different one: a parent was indistinguishable from a member on the board, and
+  // "which of these is a parent?" is the first question the board should answer
   // without being read.
   function puckGlyph(item) {
-    var etapp = (item.children || []).length > 0;
-    var g = el("span", "puck-glyph" + (etapp ? " is-etapp" : ""));
+    var isParent = (item.children || []).length > 0;
+    var g = el("span", "puck-glyph" + (isParent ? " is-parent" : ""));
     g.style.color = item.repoColor;
-    g.title = etapp ? "Etapp \u00b7 " + item.repoName : item.repoName;
-    g.appendChild(icon(etapp ? "etapp" : "commit"));
+    g.title = isParent ? "Parent \u00b7 " + item.repoName : item.repoName;
+    g.appendChild(icon(isParent ? "parent" : "commit"));
     return g;
   }
 
@@ -1295,9 +1311,9 @@
     if (item.priority) meta.appendChild(priorityBadge(item.priority));
     if (item.agent) meta.appendChild(agentBadge(item.agent));
     if (item.progress) meta.appendChild(progressBadge(item));
-    // Membership is worth showing everywhere except in the etapp columns, where the
+    // Membership is worth showing everywhere except in the parent columns, where the
     // column header already says it.
-    if (item.parentRef && state.group !== "parent") meta.appendChild(etappChip(item));
+    if (item.parentRef && state.group !== "parent") meta.appendChild(parentChip(item));
     if ((item.blockedBy || []).length) meta.appendChild(blockBadge(item));
     if (item.owner) meta.appendChild(ownerEl(item.owner));
     var dc = dateCell(item);
@@ -2205,7 +2221,7 @@
   }
 
   // A searchable list of pucks \u2014 the control for every field whose value is
-  // *another puck* (etapp, blockers). Those can't be typed from memory the way a
+  // *another puck* (parent, blockers). Those can't be typed from memory the way a
   // date or an issue number can, and `window.prompt` hands the whole dialog to the
   // browser: on iOS that draws a system sheet in its own shape and colours, which
   // reads as a different app.
@@ -2238,7 +2254,7 @@
         build: function (host, api) {
           // The chosen value lives *inside* the field, as a token with its own ✕ —
           // one control shows the state and takes the query. Single-value fields
-          // (etapp) carry one token, multi-value ones (blockers) carry several.
+          // (parent) carry one token, multi-value ones (blockers) carry several.
           var box = el("div", "tokenbox");
           var search = el("input", "fp-search token-input");
           search.type = "text";
@@ -2311,7 +2327,7 @@
             // whose commit is rejected on arrival would be a lie. The *title* is what
             // the reader would be confused by: a second "Auth" beside the "Auth"
             // listed right above it. Neither implies the other. The fixture has both
-            // ends of that: a puck titled "An etapp" whose slug is `a-etapp`, which a
+            // ends of that: a puck titled "A parent" whose slug is `a-parent`, which a
             // slug test alone would happily duplicate by title.
             //
             // Both are scoped to the destination repo. A puck called "Auth" in another
@@ -2320,7 +2336,7 @@
             //
             // And the row is offered only where the write could land: `canAddMember`
             // deliberately opens the picker when a *foreign* child can be added to an
-            // etapp in a read-only repo, but creating always writes to this one — so
+            // parent in a read-only repo, but creating always writes to this one — so
             // without the second guard the row would promise a commit that is rejected
             // on arrival.
             var writable = opts.create && canCreateIn(opts.create.repo || opts.repo);
@@ -2679,7 +2695,7 @@
     home.title = "Back to the board";
     home.addEventListener("click", function () { closeModal(); });
     crumb.appendChild(home);
-    // The etapp sits in the path, not only in a field far down the rail: a
+    // The parent sits in the path, not only in a field far down the rail: a
     // breadcrumb is where a reader learns the shape of things, and it puts the
     // level above one tap away instead of a scroll.
     var up = parentItem(item);
@@ -2687,7 +2703,7 @@
       crumb.appendChild(sep());
       var upLink = el("button", "crumb-back", up.title);
       upLink.type = "button";
-      upLink.title = "Etapp: " + up.title;
+      upLink.title = "Parent: " + up.title;
       upLink.addEventListener("click", function () { openModal(up); });
       crumb.appendChild(upLink);
     }
@@ -2695,12 +2711,12 @@
     crumb.appendChild(el("span", "crumb-cur", item.repoName + " · " + item.slug));
     container.appendChild(crumb);
 
-    // Puck glyph — Etapp's answer to Linear's project icon, tinted with the repo
+    // Puck glyph — Parent's answer to Linear's project icon, tinted with the repo
     // (project) colour. The single colour marker on the page, and it makes the same
-    // etapp/member distinction the cards do.
+    // parent/member distinction the cards do.
     var pic = el("div", "detail-icon");
     pic.style.color = item.repoColor;
-    pic.appendChild(icon((item.children || []).length ? "etapp" : "commit"));
+    pic.appendChild(icon((item.children || []).length ? "parent" : "commit"));
     container.appendChild(pic);
 
     container.appendChild(el("h2", "modal-title", item.title));
@@ -2843,20 +2859,20 @@
       gLabels.rows.push(propRow("Labels", labelsValue(item, editable), "keyless"));
     }
 
-    // Etapp: the level above. One pointer up, so the row is a link + an edit —
+    // Parent: the level above. One pointer up, so the row is a link + an edit —
     // there is no epic record to open, just another puck.
     if (editable || item.parentRef || item.parent) {
-      // "Etapp" up and "Pucks" down were two unrelated nouns for the two ends of one
+      // "Parent" up and "Pucks" down were two unrelated nouns for the two ends of one
       // edge — a type name and a generic plural — so the row read as its own field
       // rather than as the other half of the pair below. One verb, two directions,
-      // the way Blocked by / Blocks already reads. The word "etapp" stays where it
-      // belongs: on the *value*, and in the board's Etapp grouping.
-      gRel.rows.push(propRow("Part of", parentValue(item, editable), null, "etapp"));
+      // the way Blocked by / Blocks already reads. The word "parent" stays where it
+      // belongs: on the *value*, and in the board's Parent grouping.
+      gRel.rows.push(propRow("Part of", parentValue(item, editable), null, "parent"));
     }
 
     // …and the level below. With members it becomes a section of its own further
     // down (a comma-separated line works for two pucks and collapses at eight);
-    // without them the rail keeps one quiet control, so an etapp can be *started*
+    // without them the rail keeps one quiet control, so a parent can be *started*
     // from the parent side instead of only from each child.
     if (!(item.children || []).length && canAddMember(item)) {
       gRel.rows.push(propRow("Contains", addPuckPicker(item), "blocked", "pucks"));
@@ -2896,9 +2912,9 @@
       lastBox = box;
     });
 
-    // ── Contains: the etapp's members, as rows ──
-    // The page where you *run* an etapp, not just read that it has one. Direct
-    // members only — a sub-etapp shows its own count and answers for its subtree,
+    // ── Contains: the parent's members, as rows ──
+    // The page where you *run* a parent, not just read that it has one. Direct
+    // members only — a sub-parent shows its own count and answers for its subtree,
     // which is what makes the number compose at any depth.
     if ((item.children || []).length) {
       var head = el("div", "sect-label sect-with-badge");
@@ -2909,7 +2925,7 @@
       childItems(item).forEach(function (k) { members.appendChild(memberRow(k)); });
       // Not `editable`: that asks whether *this* puck's file is writable, and adding
       // a member writes the **child's** `parent:` line. A token that owns another
-      // source repo can add from it to an etapp it could never edit itself.
+      // source repo can add from it to a parent it could never edit itself.
       if (canAddMember(item)) members.appendChild(addPuckPicker(item));
       overview.appendChild(members);
     }
@@ -3216,7 +3232,7 @@
     name.appendChild(el("span", "list-title", item.title));
     if (sig.length) name.appendChild(warnBadge(sig));
     if (item.progress) name.appendChild(progressBadge(item));
-    if (item.parentRef && state.group !== "parent") name.appendChild(etappChip(item));
+    if (item.parentRef && state.group !== "parent") name.appendChild(parentChip(item));
     if ((item.blockedBy || []).length) name.appendChild(blockBadge(item));
     r.appendChild(name);
 
@@ -3313,20 +3329,20 @@
       labelOf: function (k) { return k === NO_VALUE ? "No target" : monthLabel(k); },
       write: function (item, k) { changeTarget(item, k === NO_VALUE ? null : endOfMonth(k)); },
     },
-    // The etapp board: one column per etapp, plus the pucks that stand outside
-    // every etapp. Same renderer again — the level above a puck is a grouping, not
+    // The parent board: one column per parent, plus the pucks that stand outside
+    // every parent. Same renderer again — the level above a puck is a grouping, not
     // a second card type, which is exactly why it costs one registry entry.
     parent: {
-      label: "Etapp",
+      label: "Parent",
       field: "parent",
       keyOf: function (i) { return i.parentRef || NO_VALUE; },
       keys: function (items) {
         var order = {};
-        DATA.items.forEach(function (it, i) { order[it.id] = i; }); // etapps in board order
+        DATA.items.forEach(function (it, i) { order[it.id] = i; }); // parents in board order
         return presentKeys(items, this.keyOf, function (k) { return order[k] == null ? 1e9 : order[k]; });
       },
       labelOf: function (k) {
-        if (k === NO_VALUE) return "No etapp";
+        if (k === NO_VALUE) return "No parent";
         var p = itemById(k);
         return p ? p.title : k;
       },
@@ -3335,7 +3351,7 @@
         return p && p.repoColor;
       },
       write: function (item, k) { changeParent(item, k === NO_VALUE ? null : k); },
-      // The etapp's own rollup in the column header — counted over all its pucks,
+      // The parent's own rollup in the column header — counted over all its pucks,
       // not just the ones the current filter left on screen.
       headExtra: function (k) {
         var p = k === NO_VALUE ? null : itemById(k);
@@ -3404,12 +3420,12 @@
       .map(function (k) { return { key: k, label: g.labelOf(k), items: byKey[k] }; });
   }
   // Does this query value name this column? A value is not always spelled the way the
-  // column is keyed: `repo:` accepts `tor2dbear/roadmap`, `roadmap` and `Etapp`, and
+  // column is keyed: `repo:` accepts `tor2dbear/roadmap`, `roadmap` and `Parent`, and
   // `parent:` accepts the raw `parent:` line, the resolved id and the bare slug — that
   // is `FIELDS[…].vals()`, and it is what `termMatches` asks when it decides which
   // cards the term keeps. Anything comparing the raw value against the column key was
   // therefore asking a narrower question than the filter itself: `-repo:roadmap` hid
-  // the Etapp column, the tray listed it under its canonical key, and the eye —
+  // the Parent column, the tray listed it under its canonical key, and the eye —
   // hunting for "roadmap" among the tray's keys — found nothing and left the term
   // standing. The affordance rendered, clicked, re-rendered, and changed nothing.
   //
@@ -3467,9 +3483,9 @@
     // The "No target" column is still nameable, because absence is a single question.
     if (g.field === "target" && key !== NO_VALUE) return null;
     if (key === NO_VALUE) {
-      // The etapp grouping buckets on `parentRef` — the *resolved* link — while
+      // The parent grouping buckets on `parentRef` — the *resolved* link — while
       // `has:parent` asks whether the file says anything, and answers yes for a
-      // `parent:` that resolves to nothing. Such a puck sits in "No etapp" and would
+      // `parent:` that resolves to nothing. Such a puck sits in "No parent" and would
       // have survived hiding it. `is:member` is the same question the column asks.
       if (g.field === "parent") return { field: "is", value: "member", hideNeg: false };
       return { field: "has", value: g.field, hideNeg: false };
@@ -3480,13 +3496,13 @@
   // — is a column constrained, which term hid it, which terms must go when you say
   // "only this" — and getting it wrong in any one of them is a board that disagrees
   // with itself. One predicate, three callers. The three shapes a group can be spoken
-  // about in: its own field, the `has:` pair for its absence bucket, and (for etapps)
+  // about in: its own field, the `has:` pair for its absence bucket, and (for parents)
   // `is:member`, which is that bucket said in the grammar the column actually uses.
   function termAboutGroup(t, g) {
     if (!g.field) return false;
     if (t.field === "has") return t.values[0] === g.field;
     // Every value, not the first: an `is:` term carries alternatives now, so
-    // `is:etapp,member` is as much about the etapp grouping as a bare `is:member` —
+    // `is:parent,member` is as much about the parent grouping as a bare `is:member` —
     // and reading `values[0]` would have answered no for one spelling and yes for the
     // other, which is a board that disagrees with its own tray.
     if (t.field === "is") return g.field === "parent" && t.values.indexOf("member") !== -1;
@@ -3724,17 +3740,17 @@
   // tick does: ticking Membership *widens* the board, because a section's values are
   // ORed. So routing the hide through the tick added `member` to `is:standalone` and
   // published `is:standalone,member` — every standalone puck still matched, the column
-  // the menu had just promised to hide stayed exactly where it was, and the etapp
+  // the menu had just promised to hide stayed exactly where it was, and the parent
   // columns appeared beside it. The menu made the board bigger.
   //
   // Only the absence bucket hits this: every other column hides by negation, and a
-  // negated term ANDs with the section's without touching it. `No etapp` is the one
+  // negated term ANDs with the section's without touching it. `No parent` is the one
   // that needs a *positive* `is:member` (a puck can carry a `parent:` that resolves to
   // nothing, so `has:parent` answers about the file while the column buckets on the
   // resolved link), and positive is exactly where it collides with the facet.
   //
   // Setting the section to `member` alone is the honest reading of the command: hiding
-  // the pucks that stand outside every etapp *is* "show only the ones inside one". It
+  // the pucks that stand outside every parent *is* "show only the ones inside one". It
   // drops the other ticks, and it has to — those ticks are what was keeping the column
   // on screen. `unhideColumn` is the mirror: it drops the term entirely.
   function hideColumnTerm(t) {
@@ -4003,7 +4019,7 @@
       // The heading stays a heading and the *button* goes inside it: `role="button"`
       // on the row would have made its contents presentational, and the list's group
       // headings would have dropped out of the heading map. The rollup badge stays
-      // outside the button — it is the etapp's number, not part of the control.
+      // outside the button — it is the parent's number, not part of the control.
       var h = el("h2");
       // A group the archive emptied has nothing to collapse and no visible count worth
       // printing — "Done 0 · 3 archived" says zero twice. So it is a plain heading, not
@@ -4143,11 +4159,11 @@
     if (focus === "inbox") return ["inbox"];
     if (focus === "ready") return ["now", "next"];
     if (focus === "attention") return DATA.statuses; // flagged can be any status
-    // An etapp is any puck that holds others, so it can sit anywhere — including
+    // A parent is any puck that holds others, so it can sit anywhere — including
     // inbox, which the committed board hides. Without this the sidebar counted one
     // and the board showed none, which is exactly the drift viewCounts exists to
     // prevent. Done still follows the toggle.
-    if (focus === "etapps") {
+    if (focus === "parents") {
       return DATA.statuses.filter(function (s) { return !TERMINAL[s] || showDone; });
     }
     // "all" = the committed board: now/next/later (+done/cancelled when shown), never inbox.
@@ -4159,7 +4175,7 @@
   // The consistent view-header reflects the current focus + how many are shown.
   var VIEW_TITLES = {
     all: "All pucks", ready: "Ready to take", inbox: "Inbox",
-    etapps: "Etapps", standalone: "Standalone", attention: "Needs attention",
+    parents: "Parents", standalone: "Standalone", attention: "Needs attention",
   };
   function repoNameOf(repo) {
     for (var i = 0; i < DATA.sources.length; i++) if (DATA.sources[i].repo === repo) return DATA.sources[i].name;
@@ -4173,7 +4189,7 @@
     placeValues("agent").forEach(function (a) { p.push("→ " + agentLabel(a)); });
     return p;
   }
-  // The full view title, place scope included ("Inbox · Etapp") — the single
+  // The full view title, place scope included ("Inbox · Parent") — the single
   // source for both the view header and the detail breadcrumb's back label, so a
   // place-scoped view reads the same whether or not a puck is open.
   function currentViewTitle() {
@@ -4304,7 +4320,7 @@
   // Sidebar repos/agents are single-select within their own dimension (radio, not
   // checkbox). Clicking a repo scopes to exactly that repo; clicking the one that is
   // already the sole scope clears it (back to All pucks). Repo and agent stay
-  // orthogonal, so "Backend, within Etapp" still composes — they are two fields, and
+  // orthogonal, so "Backend, within Parent" still composes — they are two fields, and
   // the query ANDs them for free. The same three behaviours the Set version had, said
   // as a term operation: the radio, the toggle-off, and the replace.
   function pickScope(field, key) {
@@ -4364,7 +4380,7 @@
     var wasSole = vals.length === 1 && vals[0] === lower(key);
     // What a place navigation drops: the *refinement* — the tag, the text, the priority
     // you had on top. What it keeps: the other place. The two dimensions are orthogonal
-    // on purpose ("Backend, within Etapp" composes), and the sidebar counts each one
+    // on purpose ("Backend, within Parent" composes), and the sidebar counts each one
     // *inside* the other — so clearing the agent while landing on a repo would make
     // every repo number a promise the click immediately breaks.
     var rest = parseQuery(state.query).filter(function (t) {
@@ -4397,7 +4413,7 @@
     // This used to pin the archive out whatever the toggle said, "so the count
     // doesn't jump". Turning on Show done then left the sidebar saying 2 and the
     // header saying 4 for one view, which only became visible once two of three
-    // etapps were done. A number that jumps is explained by the switch you just
+    // parents were done. A number that jumps is explained by the switch you just
     // flipped; two different numbers for one view are never explained.
     Object.keys(VIEWS).forEach(function (k) {
       c[k] = 0;
@@ -4410,7 +4426,7 @@
   }
   // The views, named once and read by both the sidebar and the ⌘K palette — a new
   // view can't now appear in one and be missing from the other, which is exactly
-  // what happened to Etapps (a sidebar row with no command).
+  // what happened to Parents (a sidebar row with no command).
   var VIEW_DEFS = {
     // Only Inbox carries a glyph, and that is the point rather than an oversight:
     // it is the one row that is a *room* and not a slice of the board (see
@@ -4418,8 +4434,8 @@
     // Giving all six an icon would say the opposite — that they are six of a kind.
     inbox: { label: "Inbox", icon: "inbox", title: "Raw ideas to triage — nothing here is a promise yet" },
     all: { label: "All pucks", title: "The committed board — now/next/later" },
-    etapps: { label: "Etapps", title: "The pucks that hold other pucks — each with its rollup" },
-    standalone: { label: "Standalone", title: "Pucks in no etapp — the loose ones" },
+    parents: { label: "Parents", title: "The pucks that hold other pucks — each with its rollup" },
+    standalone: { label: "Standalone", title: "Pucks in no tree — the loose ones" },
     ready: { label: "Ready", title: "Unblocked now/next — pick one up or hand it to an agent" },
     attention: { label: "Needs attention", title: "Pucks whose declared status disagrees with reality" },
   };
@@ -4431,23 +4447,23 @@
   // so it was already a room; only the presentation said otherwise.)
   var VIEW_GROUPS = [
     { label: null, keys: ["inbox"] },
-    { label: "Views", keys: ["all", "etapps", "standalone"] },
+    { label: "Views", keys: ["all", "parents", "standalone"] },
     { label: "Signals", keys: ["ready", "attention"] },
   ];
   // Which rows this board has earned — the sidebar is navigation, not a feature
   // list. Each row is gated on the thing it actually adds, not on hierarchy in
-  // general: Etapps earns its place as soon as one exists (it may sit in the inbox,
-  // which the committed board hides — the Etapps view is then the only way to see
+  // general: Parents earns its place as soon as one exists (it may sit in the inbox,
+  // which the committed board hides — the Parents view is then the only way to see
   // it), while Standalone earns its place only when it *differs* from All pucks,
   // i.e. when at least one member is on the committed board. Gating both on
-  // `counts.etapps` looked right and rendered "All pucks 31 / Standalone 31" — one
-  // list under two names — because the only etapp we had was an inbox one.
+  // `counts.parents` looked right and rendered "All pucks 31 / Standalone 31" — one
+  // list under two names — because the only parent we had was an inbox one.
   function viewsShown(counts) {
     return VIEW_GROUPS.map(function (g) {
       return {
         label: g.label,
         keys: g.keys.filter(function (k) {
-          if (k === "etapps") return !!counts.etapps;
+          if (k === "parents") return !!counts.parents;
           if (k === "standalone") return counts.standalone !== counts.all;
           if (k === "attention") return !!counts.attention;
           return true;
@@ -4551,7 +4567,7 @@
   //
   // The rows come from viewsShown(), the same call the sidebar makes, so the two
   // lists cannot disagree about which views exist — the drift that produced a
-  // palette without Etapps, and "All pucks 31 / Standalone 31".
+  // palette without Parents, and "All pucks 31 / Standalone 31".
   function buildViewSwitch() {
     ["viewTitleBtn", "topTitleBtn"].forEach(function (id) {
       var btn = document.getElementById(id);
@@ -4712,7 +4728,7 @@
   function setDisplay(key, value, storeAs) {
     // A fold belongs to the columns it was folded in. Changing the grouping replaces
     // every column, so carrying the keys over means folding a group nobody touched —
-    // and the "none" bucket is keyed the same (NO_VALUE) under Agent, Target, Etapp
+    // and the "none" bucket is keyed the same (NO_VALUE) under Agent, Target, Parent
     // and Priority, so collapsing "Unrouted" would silently collapse "No priority".
     if (key === "group" && value !== state.group) state.collapsed.clear();
     state[key] = value;
@@ -5222,7 +5238,9 @@
       // en vy som inte finns i någon av dem ska inte nås av en genväg heller.
       var open = {};
       viewsShown(viewCounts()).forEach(function (g) { g.keys.forEach(function (x) { open[x] = 1; }); });
-      var want = { a: "all", r: "ready", i: "inbox", e: "etapps", s: "standalone", t: "attention" }[k];
+      // `e` is kept beside `p`: it is what the row was called, and muscle memory is not
+    // worth breaking to save a letter nobody else uses.
+    var want = { a: "all", r: "ready", i: "inbox", p: "parents", e: "parents", s: "standalone", t: "attention" }[k];
       if (want && open[want]) setFocus(want);
       else jumped = false;
       clearG();
@@ -5256,7 +5274,7 @@
     { keys: ["G", "then", "A"], desc: "Go to All pucks" },
     { keys: ["G", "then", "R"], desc: "Go to Ready" },
     { keys: ["G", "then", "I"], desc: "Go to Inbox" },
-    { keys: ["G", "then", "E"], desc: "Go to Etapps" },
+    { keys: ["G", "then", "P"], desc: "Go to Parents" },
     { keys: ["G", "then", "T"], desc: "Go to Needs attention" },
     { keys: ["S"], desc: "Set status (open puck)" },
     { keys: ["P"], desc: "Set priority (open puck)" },
@@ -5432,10 +5450,10 @@
       },
     },
     {
-      // Etapp: a real field (unlike repo/agent, which are places), so it filters
-      // here. Only pucks that actually *are* etapps are offered — a value that
+      // Parent: a real field (unlike repo/agent, which are places), so it filters
+      // here. Only pucks that actually *are* parents are offered — a value that
       // matches nothing would be a trap.
-      key: "parent", label: "Etapp", search: "Filter etapps…",
+      key: "parent", label: "Parent", search: "Filter parents…",
       values: function () {
         return DATA.items.filter(function (it) { return (it.children || []).length; })
           .map(function (it) { return { value: it.id, label: it.title }; });
@@ -5454,15 +5472,15 @@
     //
     // Three sections, not one list called State, because they were never one question.
     // A single list has to answer two ticks with one rule, and neither rule is right
-    // for both cases: within a dimension a tick widens, so `etapp` + `standalone` must
+    // for both cases: within a dimension a tick widens, so `parent` + `standalone` must
     // be a union — it asks for two of the three ways a puck can sit in the hierarchy,
     // and gave *nothing*; across dimensions each tick narrows, so `ready` + `member`
-    // must stay an intersection — "ready, and inside an etapp" is a question worth
+    // must stay an intersection — "ready, and inside a parent" is a question worth
     // asking, and a flat OR would have thrown it away to fix the first case.
     //
     // Not because a section's values exclude each other — they do not. A puck can be
-    // `blocked` and `blocking` at once, and an etapp nested in another etapp is
-    // `etapp` and `member` both. Union is the facet convention rather than a fact
+    // `blocked` and `blocking` at once, and a parent nested in another parent is
+    // `parent` and `member` both. Union is the facet convention rather than a fact
     // about the values: `tags` has always OR'd, and nobody reads two ticked labels as
     // "carries both". Ticking Blocked and Blocking others therefore asks for pucks
     // tangled in dependencies *either* way, and the pair that is both is simply in it
@@ -5485,14 +5503,14 @@
     },
     {
       // Named for the question, not for the code's word for it (`hierarchy`): this
-      // sits next to the Etapp field, and the pair reads as *which* etapp against
+      // sits next to the Parent field, and the pair reads as *which* parent against
       // *whether* one.
-      key: "membership", label: "Membership", states: ["etapp", "member", "standalone"],
+      key: "membership", label: "Membership", states: ["parent", "member", "standalone"],
       values: function () {
         return [
-          { value: "etapp", label: "Is an etapp" },
-          { value: "member", label: "In an etapp" },
-          { value: "standalone", label: "In no etapp" },
+          { value: "parent", label: "Is a parent" },
+          { value: "member", label: "Has a parent" },
+          { value: "standalone", label: "Standalone" },
         ];
       },
     },
@@ -5554,7 +5572,7 @@
   }
   // Can this value match anything at all in this view? One that can't is a trap: it
   // commits, the board empties, and nothing says why. In Inbox that was every status
-  // but `inbox`, plus `is:ready` and `is:done`. The Etapp field already followed this
+  // but `inbox`, plus `is:ready` and `is:done`. The Parent field already followed this
   // rule inside its own `values()` — this makes it the panel's rule instead of one
   // field's.
   //
@@ -5587,8 +5605,8 @@
   // It used to model the *click* instead — "how many you would get if you pressed
   // this" — which for a ticked row meant "if you unticked it". Two different sentences
   // on rows that look identical, with nothing to say which you were reading: ticking
-  // `Is an etapp` on a board of 33 made its own number jump from 1 to 32, and 32 read
-  // as a claim about how many etapps there are.
+  // `Is a parent` on a board of 33 made its own number jump from 1 to 32, and 32 read
+  // as a claim about how many parents there are.
   //
   // The other sections still apply, so the numbers describe the board you are on;
   // only this section's own ticks are lifted, or every unticked sibling would read 0
@@ -6833,9 +6851,9 @@
     }
     item.order = order; item.updated = today();
     // A drop between status columns is a status change that happens to also carry a
-    // rank, so it owes the same derivation the picker's path does — the etapp's
+    // rank, so it owes the same derivation the picker's path does — the parent's
     // rollup and the puck's own flags. Routing only `changeStatus` left a dragged
-    // etapp with a stale `N/M` and a `rollup-*` warning until the next harvest.
+    // parent with a stale `N/M` and a `rollup-*` warning until the next harvest.
     afterOrderEdit(item, keyField);
     toast("Saving…");
     commitFields(item, fields, "roadmap: " + item.slug + " " + label)
@@ -6853,10 +6871,10 @@
   // status; every other grouping writes its own field and leaves the rollup alone.
   function afterOrderEdit(item, keyField) {
     if (keyField === "status") {
-      recountEtapp(item.parentRef);
+      recountParent(item.parentRef);
       syncRollupSignals(item);
-      // Bägge ändarna, som i changeParent: härledningen uppdaterar etappens objekt,
-      // men bara den puck vi skickar med målas om — och etappen är precis lika
+      // Bägge ändarna, som i changeParent: härledningen uppdaterar parentens objekt,
+      // men bara den puck vi skickar med målas om — och parenten är precis lika
       // trolig som den öppna sidan när man drar ett av dess barn.
       afterEdit(item, item.parentRef);
       return;
@@ -6881,7 +6899,7 @@
       !!currentDetailItem && currentDetailItem.id === item.id;
   }
   // What every optimistic edit owes the rest of the interface: the board, the
-  // navigation (counts move when a puck changes status or etapp), and the open puck
+  // navigation (counts move when a puck changes status or parent), and the open puck
   // — whichever end of the edit it happens to be. Written once because each of the
   // three has been forgotten separately.
   function afterEdit(/* …items whose page may be open */) {
@@ -6914,7 +6932,7 @@
     if (status === item.status || !ghToken()) return;
     var prevS = item.status, prevU = item.updated;
     item.status = status; item.updated = today();
-    recountEtapp(item.parentRef); // the etapp's rollup follows its pucks
+    recountParent(item.parentRef); // the parent's rollup follows its pucks
     syncRollupSignals(item);      // …and its own flag follows its status
     // refreshNav too: moving a puck between active and terminal changes what a repo
     // chip, an agent queue and every view row count. Without it the sidebar kept
@@ -6925,7 +6943,7 @@
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
         item.status = prevS; item.updated = prevU;
-        recountEtapp(item.parentRef);
+        recountParent(item.parentRef);
         syncRollupSignals(item);
         noteWriteError(item, err);
         afterEdit(item);
@@ -7275,14 +7293,14 @@
     return wrap;
   }
 
-  // ── etapp (`parent`) ────────────────────────────────────────────────────────
+  // ── parent (`parent`) ────────────────────────────────────────────────────────
   // The level above a puck is one frontmatter line pointing *up*; `children` and
   // `progress` are derived at harvest. So the write is a single field on a single
-  // file — no epic record to keep in sync, and dragging a card between etapp
+  // file — no epic record to keep in sync, and dragging a card between parent
   // columns is the same one-file commit a status flip is.
 
   // Would this link close a loop? Walk up from the proposed parent; meeting the
-  // puck itself means the etapp would contain its own ancestor. The harvester cuts
+  // puck itself means the parent would contain its own ancestor. The harvester cuts
   // such a link anyway — refusing here keeps a nonsense line out of git.
   function wouldLoop(item, parentId) {
     var seen = {}, cur = parentId;
@@ -7294,10 +7312,10 @@
     }
     return false;
   }
-  // Recount one etapp from its children's current statuses. The board mutates
-  // status optimistically, so the rollup has to follow locally or an etapp would
+  // Recount one parent from its children's current statuses. The board mutates
+  // status optimistically, so the rollup has to follow locally or a parent would
   // read stale until the next harvest.
-  function recountEtapp(id) {
+  function recountParent(id) {
     var p = id && itemById(id);
     if (!p) return;
     var kids = childItems(p);
@@ -7309,11 +7327,11 @@
   // The rollup pair is a pure function of a puck's own status and its progress, and
   // the board already maintains both optimistically — so it can be recomputed here
   // instead of waiting for the next harvest, an hour away. Without it, following a
-  // `rollup-done` warning and marking the etapp done left the warning standing and
-  // the etapp sitting in Needs attention until the harvest caught up.
+  // `rollup-done` warning and marking the parent done left the warning standing and
+  // the parent sitting in Needs attention until the harvest caught up.
   //
   // The rule is stated twice (here and in harvest.mjs), which is the same trade
-  // `relink`/`recountEtapp` already make for `children`/`progress`: an optimistic
+  // `relink`/`recountParent` already make for `children`/`progress`: an optimistic
   // edit has to derive what the harvester derives, or the board contradicts itself
   // between an edit and the next sync.
   function syncRollupSignals(item) {
@@ -7326,7 +7344,7 @@
     }
     item.signals = out;
   }
-  // Move a puck between etapps locally (the same derivation the harvester does).
+  // Move a puck between parents locally (the same derivation the harvester does).
   function relink(item, parentId, raw) {
     var old = item.parentRef;
     if (old) {
@@ -7339,10 +7357,10 @@
       var np = itemById(parentId);
       if (np && (np.children || []).indexOf(item.id) === -1) np.children = (np.children || []).concat([item.id]);
     }
-    recountEtapp(old);
-    recountEtapp(parentId);
-    // `parent-missing` says the etapp named in the file does not exist. Once the link
-    // resolves it plainly does, so the flag goes — creating the etapp a puck already
+    recountParent(old);
+    recountParent(parentId);
+    // `parent-missing` says the parent named in the file does not exist. Once the link
+    // resolves it plainly does, so the flag goes — creating the parent a puck already
     // named is the repair the flag asks for, and the note would otherwise keep naming
     // a puck that is now on the board.
     //
@@ -7468,7 +7486,7 @@
       wrap.appendChild(chip);
     });
     // "Nothing" next to "Add" is the same empty-value-plus-link pair the Target and
-    // Etapp rows had: the button already says what the row is for.
+    // Parent rows had: the button already says what the row is for.
     if (!(item.depends || []).length && !editable) wrap.appendChild(el("span", "prop-muted", "—"));
     if (editable) {
       wrap.appendChild(puckPicker("Add", {
@@ -7495,9 +7513,9 @@
           changeDepends(item, (item.depends || []).concat([ref]),
             "roadmap: " + item.slug + " blocked by " + ref);
         },
-        // Same two-write shape as the etapp, and the puck argued for having it: the
+        // Same two-write shape as the parent, and the puck argued for having it: the
         // blocker you cannot find is more often work nobody has written down yet
-        // than an etapp is.
+        // than a parent is.
         create: {
           noun: "blocker",
           run: function (title) {
@@ -7525,7 +7543,7 @@
 
   function commitParent(item, raw) {
     return commitFields(item, { parent: raw },
-      "roadmap: " + item.slug + (raw ? " → etapp " + raw : " out of its etapp"));
+      "roadmap: " + item.slug + (raw ? " → parent " + raw : " out of its parent"));
   }
   // `parentId` is a board id ("repo/slug") or null to take the puck out.
   function changeParent(item, parentId) {
@@ -7537,8 +7555,8 @@
     if (parentId ? parentId === item.parentRef : !item.parentRef && !item.parent) return;
     var target = parentId ? itemById(parentId) : null;
     if (parentId && !target) return;
-    if (parentId === item.id) { toast("✗ A puck can’t be its own etapp", true); return; }
-    if (wouldLoop(item, parentId)) { toast("✗ That would make an etapp loop", true); return; }
+    if (parentId === item.id) { toast("✗ A puck can’t be its own parent", true); return; }
+    if (wouldLoop(item, parentId)) { toast("✗ That would make a parent loop", true); return; }
     var raw = target ? refFor(item, target) : null;
     var prevRef = item.parentRef, prevRaw = item.parent, prevU = item.updated;
     // Saved, not recomputed. `relink` clears `parent-missing` when the link resolves and
@@ -7549,13 +7567,13 @@
     var prevSignals = item.signals;
     relink(item, parentId, raw);
     item.updated = today();
-    // Both ends changed, and the etapp is as likely to be the page you're on: adding
+    // Both ends changed, and the parent is as likely to be the page you're on: adding
     // from `＋ Add puck` writes the *child*, so refreshing only that left the
-    // Contains list and its rollup stale on the etapp you were looking at.
+    // Contains list and its rollup stale on the parent you were looking at.
     afterEdit(item, prevRef, parentId);
     toast("Saving…");
     commitParent(item, raw)
-      .then(function () { toast(raw ? "✓ In etapp " + target.title + " — live in ~1 min" : "✓ Out of its etapp — live in ~1 min"); })
+      .then(function () { toast(raw ? "✓ Part of " + target.title + " — live in ~1 min" : "✓ Out of its parent — live in ~1 min"); })
       .catch(function (err) {
         relink(item, prevRef, prevRaw);
         item.signals = prevSignals;
@@ -7565,11 +7583,11 @@
         toast("✗ " + err.message, true);
       });
   }
-  // Which pucks could be this one's etapp: anything but itself and its own
+  // Which pucks could be this one's parent: anything but itself and its own
   // descendants (that would close a loop). Excluded up front, so the loop refusal
   // in changeParent() is a backstop rather than something you meet by clicking.
-  // A member of an etapp, as a row: the status it is in, its title, and its own
-  // rollup when it is an etapp too.
+  // A member of a parent, as a row: the status it is in, its title, and its own
+  // rollup when it is a parent too.
   function memberRow(k) {
     var r = el("button", "row member" + (TERMINAL[k.status] ? " done" : ""));
     r.type = "button";
@@ -7595,7 +7613,7 @@
   // The relation is authored on the *child* (`parent:`), so adding from here is
   // the same single-field write with the arguments swapped — no second direction
   // in the data, just one in the interface.
-  // Who could join this etapp: a native puck that isn't already in it, isn't itself,
+  // Who could join this parent: a native puck that isn't already in it, isn't itself,
   // and wouldn't close a loop — and whose *own* file we can write, because that is
   // the file this writes. One predicate, asked twice: once to decide whether to
   // offer the control at all, once to fill it.
@@ -7605,7 +7623,7 @@
   }
   function canAddMember(item) {
     if (!ghToken()) return false;
-    // Creating the first member is precisely what an empty etapp needs, and the old
+    // Creating the first member is precisely what an empty parent needs, and the old
     // condition made that unreachable: no existing candidate, no picker, no way to
     // make one. The picker is worth drawing whenever *either* end is possible — but
     // "can create here" is `canCreateIn`, not merely "can write here".
@@ -7624,7 +7642,7 @@
       onPick: function (chosen) { if (chosen) changeParent(chosen, item.id); },
       // The one place where creating is a single commit: membership is authored on
       // the child, and here the child is the thing being made. `later` rather than
-      // `inbox` because putting a puck in an etapp *is* filing it — an inbox stub
+      // `inbox` because putting a puck in a parent *is* filing it — an inbox stub
       // would be filed and then hidden by the board it was filed on.
       create: {
         noun: "puck",
@@ -7633,11 +7651,11 @@
     });
   }
 
-  function etappCandidates(item) {
+  function parentCandidates(item) {
     return function (other) { return other === item || wouldLoop(item, other.id); };
   }
 
-  // The Etapp cell in the rail: a link to the etapp when set, plus an edit
+  // The Parent cell in the rail: a link to the parent when set, plus an edit
   // affordance. Same inline shape as Issue and Target.
   function parentValue(item, editable) {
     var wrap = el("span", "issue-cell");
@@ -7657,15 +7675,15 @@
       // behind a quiet secondary control. Empty: one chip that says what it does.
       // What is gone is the pair — a value that only restated "nothing" next to a
       // link that did the work.
-      wrap.appendChild(puckPicker(item.parent ? "\u22ef" : "Set etapp", {
+      wrap.appendChild(puckPicker(item.parent ? "\u22ef" : "Set parent", {
         repo: item.repo,
-        title: "Etapp",
+        title: "Parent",
         help: "https://github.com/tor2dbear/roadmap/blob/main/CONVENTION.md#the-level-above-parent",
         current: item.parentRef,
-        exclude: etappCandidates(item),
-        placeholder: "Find an etapp…",
-        // One token: the etapp this puck sits in. Its ✕ takes it out, which is why
-        // the list needs no separate "No etapp" row any more.
+        exclude: parentCandidates(item),
+        placeholder: "Find a parent…",
+        // One token: the parent this puck sits in. Its ✕ takes it out, which is why
+        // the list needs no separate "No parent" row any more.
         tokens: function () {
           if (!item.parent) return [];
           var cur = parentItem(item);
@@ -7676,14 +7694,14 @@
           }];
         },
         onPick: function (target) { changeParent(item, target && target.id); },
-        // Two writes, and they cannot be one: the etapp is the *parent*, so the
+        // Two writes, and they cannot be one: the parent is the *parent*, so the
         // relation is authored on the puck we are standing in, not on the file being
         // created. The second only runs if the first committed — otherwise a puck
-        // would point at an etapp that had just been rolled back. If the link fails
-        // the etapp still exists and is on the board, which is recoverable in one
+        // would point at a parent that had just been rolled back. If the link fails
+        // the parent still exists and is on the board, which is recoverable in one
         // click, and `changeParent` says so itself.
         create: {
-          noun: "etapp",
+          noun: "parent",
           run: function (title) {
             var made = createPuck(item.repo, title, "later", [], null, "", { open: false });
             if (made) made.then(function (p) { if (p) changeParent(item, p.id); });
@@ -7784,14 +7802,14 @@
     toast("Deleting…");
     commitDelete(item)
       .then(function () {
-        // Ur etappen först, sen ur listan: annars stod föräldern kvar med ett barn
+        // Ur parenten först, sen ur listan: annars stod föräldern kvar med ett barn
         // som inte finns, fel `progress` och en `rollup-open`-varning om delar som
         // inte längre är öppna — ända till nästa skörd.
         var parent = item.parentRef;
         relink(item, null, null);
         var i = DATA.items.indexOf(item);
         if (i >= 0) DATA.items.splice(i, 1);
-        if (parent) { recountEtapp(parent); syncRollupSignals(itemById(parent)); }
+        if (parent) { recountParent(parent); syncRollupSignals(itemById(parent)); }
         closeModal();
         afterEdit(parent);
         toast("✓ Deleted — live after next sync");
@@ -7964,9 +7982,9 @@
     var lines = ["---", "title: " + t, "status: " + status];
     if (tags.length) lines.push("tags: [" + tags.join(", ") + "]");
     if (agent) lines.push("agent: " + agent);
-    // Membership is authored on the child, so a puck created *from* its etapp can
+    // Membership is authored on the child, so a puck created *from* its parent can
     // carry the relation in the file it is born with — one write instead of two,
-    // and no window where the puck exists outside the etapp it was made for.
+    // and no window where the puck exists outside the parent it was made for.
     if (parentRef) lines.push("parent: " + parentRef);
     lines.push("updated: " + today(), "created: " + today(), "---", "");
     var body = puckBody(context);
@@ -8031,7 +8049,7 @@
     };
     var parentItm = opts.parent ? itemById(opts.parent) : null;
     var parentRef = parentItm ? refFor(item, parentItm) : null;
-    // Pushed before linked: `relink` recounts the etapp's rollup through `itemById`,
+    // Pushed before linked: `relink` recounts the parent's rollup through `itemById`,
     // so a child that is not in the list yet would be left out of the number that is
     // supposed to have just grown.
     DATA.items.push(item); DATA.total += 1;
@@ -8043,7 +8061,7 @@
     recomputeDeps();
     buildAgentChips();
     var opened = opts.open !== false;
-    // Both ends changed, and with `open: false` the etapp is the page still on screen —
+    // Both ends changed, and with `open: false` the parent is the page still on screen —
     // the same lesson `changeParent` learned: redrawing only the board left its Contains
     // list and its rollup describing the state from before the click, on the one page
     // the caller asked to stay on. `afterEdit` is the path that refreshes an open puck,
@@ -8060,7 +8078,7 @@
         var i = DATA.items.indexOf(item); if (i >= 0) DATA.items.splice(i, 1);
         DATA.total -= 1; recomputeDeps(); buildAgentChips();
         // The rollback is as visible as the addition was — and `currentDetailItem` is
-        // the point, not just `parentItm`. Creating from the Etapp or Blocked by picker
+        // the point, not just `parentItm`. Creating from the Parent or Blocked by picker
         // has no parent to refresh, so this passed `null` and left the puck you are
         // standing in untouched. `noteWriteError` has *just* learned the repo is
         // read-only, and the rail was still offering the controls that had proved it.
