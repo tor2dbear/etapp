@@ -7352,14 +7352,41 @@
   // Recount one parent from its children's current statuses. The board mutates
   // status optimistically, so the rollup has to follow locally or a parent would
   // read stale until the next harvest.
+  // Every descendant of a puck, not just the ones naming it directly — the board's
+  // optimistic mirror of `resolveHierarchy`'s subtree walk. `seen` guards it rather
+  // than trusting the payload: a `parent-cycle` is cut at harvest, but the board writes
+  // `parentRef` optimistically too, and a loop here would hang the tab rather than draw
+  // a wrong number.
+  function descendantItems(item) {
+    var out = [], stack = childItems(item), seen = {};
+    while (stack.length) {
+      var k = stack.pop();
+      if (!k || seen[k.id]) continue;
+      seen[k.id] = 1;
+      out.push(k);
+      stack = stack.concat(childItems(k));
+    }
+    return out;
+  }
+  // Up the whole chain, not one node. `progress` counts a subtree now, so *every*
+  // ancestor's number moves when a descendant does — and this is the board's optimistic
+  // copy of a derivation that lives in the harvester. Two copies of one calculation is
+  // the arrangement that fails quietly: counting one level here left the immediate
+  // parent collapsing back to a direct-child count and every ancestor above it stale,
+  // with the wrong `rollup-open` / `rollup-done` to match, until the next harvest an
+  // hour later corrected the board without anyone learning why it had been wrong.
   function recountParent(id) {
+    var seen = {};
     var p = id && itemById(id);
-    if (!p) return;
-    var kids = childItems(p);
-    p.progress = kids.length
-      ? { done: kids.filter(function (k) { return !!TERMINAL[k.status]; }).length, total: kids.length }
-      : null;
-    syncRollupSignals(p);
+    while (p && !seen[p.id]) {
+      seen[p.id] = 1;
+      var kin = descendantItems(p);
+      p.progress = kin.length
+        ? { done: kin.filter(function (k) { return !!TERMINAL[k.status]; }).length, total: kin.length }
+        : null;
+      syncRollupSignals(p);
+      p = p.parentRef ? itemById(p.parentRef) : null;
+    }
   }
   // The rollup pair is a pure function of a puck's own status and its progress, and
   // the board already maintains both optimistically — so it can be recomputed here

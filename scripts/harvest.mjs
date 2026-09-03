@@ -235,13 +235,34 @@ function resolveHierarchy(items) {
     child.parentRef = p.id;
     p.children.push(child.id);
   }
+  for (const it of items) it.children.sort(); // stable output — the board sorts them for display
+  // `progress` counts the whole **subtree**, not the pucks that happen to name me
+  // directly. "How far has this come?" is a question about the tree: a root whose one
+  // child holds three of its own reported 0/1 and said nothing at all about the three.
+  // Depth is unlimited in the format — a grandchild is one `parent:` line away — so a
+  // rollup that stops at the first level is a number that quietly means something else
+  // the moment anyone uses the depth the convention allows.
+  //
+  // Every descendant counts, not only the leaves. A puck with children is still a puck,
+  // with its own status and its own body; leaving it out of the count would make it a
+  // container, and a container is the second record type this model does not have.
+  //
+  // Safe to recurse: cycles were cut above, so `children` describes a forest.
+  const subtree = (it, out) => {
+    for (const id of it.children) {
+      const k = byId.get(id);
+      if (!k) continue;
+      out.push(k);
+      subtree(k, out);
+    }
+    return out;
+  };
   for (const it of items) {
     if (!it.children.length) continue;
-    it.children.sort(); // stable output — the board sorts them for display itself
-    const kids = it.children.map((id) => byId.get(id));
+    const kin = subtree(it, []);
     it.progress = {
-      done: kids.filter((k) => k && TERMINAL.has(k.status)).length,
-      total: kids.length,
+      done: kin.filter((k) => TERMINAL.has(k.status)).length,
+      total: kin.length,
     };
   }
   return cycles;
