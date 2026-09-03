@@ -485,7 +485,26 @@ body {
   z-index: 1;
 }
 .col-head .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); }
+/* Two kinds of head, and until parent grouping arrived there was only one. A category
+   label (`NOW`, `ETAPP SITE`) is short by construction and wears the eyebrow. A head
+   named after a puck carries an arbitrary title, so it keeps the puck's own casing —
+   uppercase plus letter-spacing costs 15–20% of the width and legibility both — and it
+   truncates, which `min-width: 0` is what allows: a flex item defaults to never being
+   narrower than its content, so the title wrapped to three lines and left the count and
+   the rollup badge centred against it. */
+.col-head h2, .list-head h2 { min-width: 0; }
 .col-head h2 { margin: 0; font-size: var(--fs-md); text-transform: uppercase; letter-spacing: var(--tr-eyebrow); }
+.col-head h2:not(.named) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-head h2.named, .list-head h2.named { text-transform: none; letter-spacing: normal; }
+/* The button *is* the title: no chrome of its own, and it truncates rather than the
+   `h2` around it, because the text it has to cut is inside it. */
+.head-open {
+  font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit;
+  background: none; border: 0; padding: 0; margin: 0; cursor: pointer; text-align: left;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
+}
+@media (hover: hover) { .head-open:hover { color: var(--accent); } }
+.head-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-xs); }
 .col-head .count { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 /* "N archived" — what the archive is holding back from *this* column, in the head of
    the column that is short of it. Shaped like the tray's row rather than like a chip:
@@ -530,6 +549,7 @@ body {
 }
 .list-head .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); }
 .list-head h2 { margin: 0; font-size: var(--fs-md); text-transform: uppercase; letter-spacing: var(--tr-eyebrow); }
+.lh-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .list-head .count { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 /* The whole heading is the fold control, so it carries the row's own spacing and
    reaches a little past the content line — a header you can click should look like
