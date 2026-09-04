@@ -616,11 +616,25 @@ body {
 /* A folded group keeps its heading and loses its bottom margin — the gap belonged to
    the rows that are no longer there. */
 .list-group.shut { margin-bottom: 4px; }
+/* The row drops columns as the *board* narrows, not as the viewport does — and those
+   are different numbers, which is the whole reason this is a container query. The
+   sidebar takes 240px whenever it is open, so a 900px window can hand the list a 660px
+   box while a viewport media query still calls it "wide" and asks for six columns.
+   Measured at 700px: the four fixed tracks kept 410px between them and the title — the
+   one thing a row is for — was squeezed to 154px and ellipsised to "Nästling: li…".
+   Before `min-width: 0` the same shortage pushed the page wider than the screen
+   instead; the shortage was always there, the failure mode just moved.
+
+   So the order the columns leave in is stated once, and it is a claim about what a row
+   is worth: agent goes first (rarely set), then repo (the glyph already carries its
+   colour, and the row's tooltip its name). The title never leaves, and past the last
+   breakpoint it is still the track that grows. */
+.board.as-list { container-type: inline-size; container-name: list; }
 .list-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 44px 108px 148px 92px;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   padding: 8px 6px 8px 12px;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
@@ -679,10 +693,38 @@ body {
 .list-repo .repo-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .list-dt { justify-content: flex-end; }
 .list-date { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* Mobile: drop to Name · Priority · Updated so the row stays legible when narrow. */
-@media (max-width: 640px) {
-  .list-row { grid-template-columns: 18px minmax(0, 1fr) auto auto; gap: 10px; }
-  .list-agent, .list-repo { display: none; }
+/* The tiers themselves, and they stand *here* rather than beside `.list-row` for the
+   same reason the archive stub's shape does: `.list-cell { display: flex }` ties them on
+   specificity, so whichever comes last wins. The viewport-keyed version of this rule
+   (`max-width: 640px`) stood in exactly this spot and asked the wrong box — the row is
+   as wide as the board, not as the window. */
+.list-agent, .list-repo { display: none; }
+@container list (min-width: 560px) {
+  .list-group:not(.is-tree) .list-row { grid-template-columns: 18px minmax(0, 1fr) 44px 148px 92px; gap: 14px; }
+  .list-group:not(.is-tree) .list-repo { display: flex; }
+}
+@container list (min-width: 720px) {
+  .list-group:not(.is-tree) .list-row { grid-template-columns: 18px minmax(0, 1fr) 44px 108px 148px 92px; }
+  .list-group:not(.is-tree) .list-agent { display: flex; }
+}
+/* The tree pays for its own indent, so it reaches each tier 92px later: 28px of caret
+   gutter on every nested row plus the 64px the indent is capped at. Without the offset
+   the tier was decided for a row that does not exist — the container knows the board's
+   width, and a depth-4 row is 92px narrower than that. Measured at the 900px viewport
+   this file already guards: the flat row got its 220px title and the deep one 156px, the
+   very squeeze the tiers were added to remove.
+   The number is what makes the two comparable: at 652 a deepest row has exactly the
+   title a flat row has at 560, so no row is ever worse off than the tier promises. It
+   cannot be asked per row — a container query reads its container, and a row cannot size
+   its own tracks by its own width — so the worst case in the group decides for the
+   group, which is why these are separate rules rather than a bigger number for both. */
+@container list (min-width: 652px) {
+  .is-tree .list-row { grid-template-columns: 18px minmax(0, 1fr) 44px 148px 92px; gap: 14px; }
+  .is-tree .list-repo { display: flex; }
+}
+@container list (min-width: 812px) {
+  .is-tree .list-row { grid-template-columns: 18px minmax(0, 1fr) 44px 108px 148px 92px; }
+  .is-tree .list-agent { display: flex; }
 }
 .card {
   background: var(--panel);
@@ -1373,6 +1415,12 @@ body.preload * { transition: none !important; }
 .issue-cell { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .issue-link { color: var(--accent); text-decoration: none; font-family: var(--mono); font-size: var(--fs-md); }
 .issue-link:hover { text-decoration: underline; }
+/* The repo row's value: the mark first, then the name it belongs to. `--ink` rather
+   than the accent — it is a fact about the puck like the ones under it, not a link out
+   of the page; the press scopes the board, which is navigation *within* the app. */
+.repo-cell { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); }
+.repo-cell .repo-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+@media (hover: hover) { .repo-cell:hover { color: var(--accent); } }
 .issue-cell .linklike { background: none; border: 0; padding: 0; font: inherit; font-size: var(--fs-md); color: var(--accent); cursor: pointer; }
 .issue-cell .linklike:hover { text-decoration: underline; }
 .issue-editbtn { font-size: var(--fs-base); color: var(--ink-3); }
