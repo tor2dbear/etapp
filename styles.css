@@ -535,6 +535,17 @@ body {
   overflow-x: visible;
   max-width: none;
   padding: 12px 24px 40px;
+  /* The board is a grid item, and a grid item's automatic minimum is its *min-content*
+     width — which for the column layout is 0 only because `overflow-x: auto` makes it a
+     scroll container. The list turns that off, so the widest unbreakable thing on the
+     page started deciding the document's width: a long parent name in a heading is
+     `white-space: nowrap`, and `min-width: 0` on its own flex item lets it *shrink*
+     without lowering what it *contributes*. Measured on a 390px phone against the live
+     board: the document came out 652px wide, so the topbar and the chip row — sized to
+     the viewport — sat in 60% of the page with the rows running off the right edge.
+     One declaration lets the item shrink below its content, and the ellipsis that was
+     always specified finally has a width to work against. */
+  min-width: 0;
 }
 .list-group { margin-bottom: 20px; }
 .list-head {
@@ -569,6 +580,11 @@ body {
    makes the claim checkable: a span cannot pick up an interaction it is not given. */
 .lh-toggle, .lh-stub {
   display: inline-flex; align-items: center; gap: 8px;
+  /* Both are flex items of the heading, and both hold the label that is supposed to
+     ellipsize. Without this the shrink stops at the item and the name runs under the
+     archive mark — which is what a fully archived parent with a long title did on a
+     phone, the two texts overlapping in the same 30 pixels. */
+  min-width: 0;
   font: inherit; color: inherit; background: none; border: 0;
   margin: -4px -8px; padding: 4px 8px; border-radius: var(--r-sm);
   /* `font: inherit` does not cover these two, and the UA sheet *declares* them on
@@ -608,7 +624,48 @@ body {
   padding: 8px 6px 8px 12px;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
+  position: relative; /* the tree's caret sits in the gutter, see .list-fold */
 }
+/* The tree's indent. Capped, because the format caps nothing: `parent:` goes as deep as
+   anyone writes it, and on a 390px screen the fifth level is a staircase out of the
+   viewport. Past the cap the rows stop stepping and the caret keeps saying what nests
+   inside what. */
+.is-tree .list-row, .is-tree .list-empty {
+  padding-left: calc(28px + min(var(--depth, 0) * 16px, 64px));
+}
+/* Reserved on every row in a tree, taken by only some: a caret in a grid track of its
+   own would have to exist on the leaves too, to keep the five columns in register, and
+   a leaf that reserves a control it never gets is a target that answers nothing. In the
+   gutter, both rows put their glyph in the same place and only the parents have a
+   caret. */
+.list-fold {
+  position: absolute;
+  left: calc(4px + min(var(--depth, 0) * 16px, 64px));
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0;
+  background: none; border: 0; border-radius: var(--r-sm);
+  color: var(--ink-3); cursor: pointer;
+}
+.list-fold:hover { background: var(--panel-2); color: var(--ink-2); }
+.list-fold .lh-caret { width: 13px; height: 13px; }
+/* A parent whose parts the filter took. Not a row: there is nothing to open, and the
+   line exists to stop the parent above it from drawing exactly like a leaf. */
+.list-empty {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%;
+  padding: 6px 6px 6px 12px;
+  background: none; border: 0; border-bottom: 1px solid var(--line);
+  text-align: left;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-style: italic;
+}
+.list-archived { cursor: pointer; font-style: normal; }
+.list-archived:hover { background: var(--panel-2); color: var(--ink-2); }
+.list-archived .icn { width: 13px; height: 13px; }
 @media (hover: hover) { .list-row:hover { background: var(--panel-2); } }
 .list-name { min-width: 0; display: flex; align-items: center; gap: 8px; }
 .list-title {

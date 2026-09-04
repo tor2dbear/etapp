@@ -795,6 +795,12 @@
     var layout = o.layout || DISPLAY_DEFAULTS.view;
     var cols = columnsForFocus(focus, o.done === "1");
     var eff = function (k) { return k !== "status" || cols.length > 1 ? k : "repo"; };
+    // A hierarchy grouping cannot be drawn as columns, so `group=parent&layout=board` is
+    // not a view: the layout wins and the grouping is dropped, which is the same shape
+    // as `empty` and `collapsed` below. Dropped rather than kept, so the parameters say
+    // what is actually drawn — a stored view that keeps a setting the board ignores is
+    // how an untouched view came to read as *(edited)*.
+    if (o.group === "parent" && layout !== "list") delete o.group;
     if (o.group && eff(o.group) === eff(DISPLAY_DEFAULTS.group)) delete o.group;
     if (o.done && !ARCHIVABLE[focus]) delete o.done;
     if (o.empty && layout !== "board") delete o.empty;
@@ -1311,9 +1317,16 @@
     if (item.priority) meta.appendChild(priorityBadge(item.priority));
     if (item.agent) meta.appendChild(agentBadge(item.agent));
     if (item.progress) meta.appendChild(progressBadge(item));
-    // Membership is worth showing everywhere except in the parent columns, where the
-    // column header already says it.
-    if (item.parentRef && state.group !== "parent") meta.appendChild(parentChip(item));
+    // Membership is worth showing everywhere except under the parent grouping, where the
+    // heading above the card already says it.
+    //
+    // The *effective* grouping, not the stored preference. They came apart the moment
+    // the board stopped drawing parent columns: `state.group` deliberately keeps your
+    // choice while `effectiveGroup()` falls back, so a member card on the board hid its
+    // only parent label with no heading anywhere saying the same thing — and since the
+    // fallback is normalised out of the URL, the same link drew different metadata
+    // depending on which grouping the reader happened to have stored.
+    if (item.parentRef && effectiveGroup() !== "parent") meta.appendChild(parentChip(item));
     if ((item.blockedBy || []).length) meta.appendChild(blockBadge(item));
     if (item.owner) meta.appendChild(ownerEl(item.owner));
     var dc = dateCell(item);
@@ -3219,12 +3232,32 @@
   // A table row — full-width, aligned columns (Name · Priority · Agent · Repo ·
   // Updated), Linear-style. Grid tracks are shared across rows so the columns
   // line up; on mobile the extra columns fold away (see styles.css). Tap → modal.
-  function listRow(item) {
+  // `opts` is the tree's half of the row: `{ depth, fold }`. A row inside the nested
+  // list carries its own indent and, when it has parts below it, the caret that folds
+  // them — the row *is* the heading of its subtree, so the control belongs on it rather
+  // than on a second heading drawn above the same puck.
+  //
+  // The caret sits in the row's left gutter, not in a grid track of its own: a track
+  // would have to exist on every row to keep the columns in register, and then a leaf
+  // would reserve space for a control it never gets. The gutter is reserved once, by
+  // `.is-tree`, and both rows land in the same place.
+  function listRow(item, opts) {
+    opts = opts || {};
     var sig = signalMessages(item);
     var r = el("div", "list-row" + (sig.length ? " flagged" : "") + (item.id === selectedId ? " sel" : ""));
     r.setAttribute("data-id", item.id);
     r.style.setProperty("--repo", item.repoColor);
+    if (opts.depth) r.style.setProperty("--depth", String(opts.depth));
     r.title = item.repoName;
+    if (opts.fold) {
+      var caret = el("button", "list-fold");
+      caret.type = "button";
+      caret.setAttribute("aria-expanded", opts.fold === "shut" ? "false" : "true");
+      caret.title = (opts.fold === "shut" ? "Expand " : "Collapse ") + item.title;
+      caret.appendChild(icon(opts.fold === "shut" ? "chev-right" : "chev-down", "lh-caret"));
+      caret.addEventListener("click", function (e) { e.stopPropagation(); toggleGroup(item.id); });
+      r.appendChild(caret);
+    }
     r.appendChild(puckGlyph(item));
 
     // Name: title (truncates) + inline drift/blocked badges.
@@ -3232,7 +3265,7 @@
     name.appendChild(el("span", "list-title", item.title));
     if (sig.length) name.appendChild(warnBadge(sig));
     if (item.progress) name.appendChild(progressBadge(item));
-    if (item.parentRef && state.group !== "parent") name.appendChild(parentChip(item));
+    if (item.parentRef && effectiveGroup() !== "parent") name.appendChild(parentChip(item)); // effective: see card()
     if ((item.blockedBy || []).length) name.appendChild(blockBadge(item));
     r.appendChild(name);
 
@@ -3350,7 +3383,13 @@
         var p = k === NO_VALUE ? null : itemById(k);
         return p && p.repoColor;
       },
-      write: function (item, k) { changeParent(item, k === NO_VALUE ? null : k); },
+      // No `write`, and that is the one thing this grouping loses by being list-only:
+      // `write` is the *drop* writer, and dropping happens between columns. With no
+      // parent columns it could never fire, and a writer that cannot be reached is a
+      // capability the registry claims and the board does not have. Re-parenting keeps
+      // its two real paths — the `Parent` field in the rail (a searchable picker, which
+      // is the one a phone can use at all) and `＋ Add puck` on a parent, which writes
+      // the relation into the new file.
       // Which puck a column is named after, when it is named after one at all. Only
       // this grouping has an answer: status, repo, agent, priority and target label
       // their columns with categories, and a category has nothing to open.
@@ -3386,8 +3425,33 @@
   // The *effective* group falls back; `state.group` keeps what you chose. Visiting
   // the inbox therefore doesn't overwrite the grouping you set elsewhere, and the
   // URL still carries the choice you made.
-  function groupUsable(k) { return k !== "status" || columnsForFocus().length > 1; }
-  function effectiveGroup() { return groupUsable(state.group) ? state.group : "repo"; }
+  // Two questions, and they are not the same one. `groupOffered` is what the menus ask —
+  // may this grouping be chosen at all here — and `groupUsable` is what the renderer
+  // asks: can it be *drawn* in the layout we are standing in.
+  //
+  // `parent` is the one grouping that answers them differently, because it is the one
+  // grouping that is a hierarchy rather than a facet. A tree spans statuses, so there is
+  // no level to draw inside a kanban column — and measured against the real board it is
+  // not a close call: 173 pucks, 19 of them in a tree, so `group=parent` drew columns of
+  // 2 and 3 cards beside a `No parent` holding 28 (144 with the archive on) in a grid
+  // that gives every column the same width. Hierarchy is sparse by nature; that
+  // distribution is the normal case, not a phase.
+  //
+  // So the rule is: **flat facets group the board, the one hierarchy groups the list**.
+  // The menus keep offering Parent — `setDisplay` switches the layout with it, visibly —
+  // because a row that vanishes depending on the layout teaches nothing.
+  function groupOffered(k) { return k !== "status" || columnsForFocus().length > 1; }
+  function groupUsable(k, layout) {
+    if (k === "parent") return (layout || state.view) === "list";
+    return groupOffered(k);
+  }
+  function effectiveGroup() {
+    if (groupUsable(state.group)) return state.group;
+    // `status` is the board's own axis; where the view has already fixed it, `repo` is
+    // the fallback the inbox has always used. `state.group` keeps your choice either
+    // way, so stepping back into the list restores it.
+    return groupUsable("status") ? "status" : "repo";
+  }
   function activeGroup() { return GROUPS[effectiveGroup()] || GROUPS.status; }
   // "Manual" is the only ordering where a hand-placed position means anything —
   // every other mode derives it from a field (see sortComparator).
@@ -3860,13 +3924,19 @@
   // The exemption lives in the *callers*, not here: the data is the data, and only the
   // board can say "the tray already covers this". `order` comes back too, because the
   // list has to slot a fully-archived group into its own place rather than at the end.
-  function archivedPerColumn() {
+  function archivedPerColumn(shownRoots) {
     if (state.showDone || !ARCHIVABLE[state.focus]) return null;
     var count = {}, order = [];
     withShowDone(true, function () {
       var q = activeTerms();
       var all = DATA.items.filter(function (it) { return runQuery(it, q); });
-      groupsOf(all).forEach(function (grp) { count[grp.key] = grp.items.length; order.push(grp.key); });
+      var gs = groupsOf(all);
+      // Counted in the shape the layout actually draws: in the tree a root that *is* a
+      // heading is never a row under `No parent`, so it is not one of the rows that
+      // column can be short of. `shownRoots` is exactly the set the live board lifted —
+      // see `liftRoots` for why "exactly" matters.
+      if (shownRoots) liftRoots(gs, shownRoots);
+      gs.forEach(function (grp) { count[grp.key] = grp.items.length; order.push(grp.key); });
     });
     return { count: count, order: order };
   }
@@ -4009,6 +4079,74 @@
     refreshDisplayDot();
     renderBoard();
   }
+  // Under `group=parent` the list is a tree, and the flat groups `groupsOf` hands both
+  // renderers are already its edges: one group per parent, holding that parent's
+  // *direct* children. Three moves turn the one into the other, and none of them re-key
+  // anything — the board keeps the flat buckets it was designed around.
+  //
+  //   1. **A group whose puck is drawn as a row somewhere nests under that row.** That
+  //      is the whole of "a child's children go one level further down": the mid puck
+  //      used to be two things at once — a row inside its parent's group and, elsewhere
+  //      on the page, a heading of its own — and now it is one thing with its parts
+  //      beneath it.
+  //   2. **A root parent stops being a row in `No parent`** and becomes its own heading.
+  //      `No parent` then means what it says: pucks in no tree at all.
+  //   3. **A parent whose parts the filter took keeps its place**, as a heading or row
+  //      with an empty line under it, rather than silently reading as a leaf.
+  //
+  // What it deliberately does not do: nest a group whose own puck the filter removed.
+  // There is no row to hang it from, so it keeps a top-level heading — the same context
+  // heading the list has always drawn for a parent that is not itself on screen.
+  function treeMode() { return state.view === "list" && effectiveGroup() === "parent"; }
+  // (2), on its own because the archive has to be counted the same way. `No parent`
+  // holds rows, and a root is not one of them — so counting a lifted root among the
+  // pucks the archive is holding back made the heading advertise one more hidden puck
+  // than it had, and could conjure an archive-only `No parent` out of a column whose
+  // only remaining rows were roots. Returns them, since the tree needs to know which
+  // headings to build.
+  // `only` is what makes the archive's copy of this honest. A root is lifted from the
+  // count because it is *already on screen as a heading* — so only the roots the live
+  // board actually lifted may be lifted here. An archived root has no heading (the
+  // archive is hiding the puck itself, not its parts), and lifting it unconditionally
+  // deleted the one thing that could bring it back: with a query matching an archived
+  // root and none of its parts, the board went completely blank — no rows, no stub, no
+  // eye. It stays counted, so `No parent` keeps its mark and the eye still opens it.
+  function liftRoots(groups, only) {
+    var none = null;
+    groups.forEach(function (grp) { if (grp.key === NO_VALUE) none = grp; });
+    if (!none) return {};
+    var roots = {};
+    none.items.forEach(function (it) {
+      if ((it.children || []).length && (!only || only[it.id])) roots[it.id] = it;
+    });
+    none.items = none.items.filter(function (it) { return !roots[it.id]; });
+    return roots;
+  }
+  function listTree(groups, roots) {
+    var byKey = {}, visible = {};
+    groups.forEach(function (grp) {
+      byKey[grp.key] = grp;
+      grp.items.forEach(function (it) { visible[it.id] = it; });
+    });
+    var sections = [];
+    groups.forEach(function (grp) {
+      var p = grp.key === NO_VALUE ? null : itemById(grp.key);
+      if (!(p && p.parentRef && visible[p.id])) sections.push(grp); // (1)
+    });
+    Object.keys(roots).forEach(function (id) {
+      // (3) at the top level: a visible root whose every part the filter took has no
+      // group of its own, so its heading has to be built rather than found.
+      if (!byKey[id]) sections.push({ key: id, label: roots[id].title, items: [], emptyParent: true });
+    });
+    // Board order, `No parent` last — the order `presentKeys` would have given. The
+    // synthesised headings have to land *in* it, not after everything that was found.
+    var rank = {};
+    DATA.items.forEach(function (it, i) { rank[it.id] = i; });
+    var at = function (k) { return k === NO_VALUE ? 2e9 : rank[k] == null ? 1e9 : rank[k]; };
+    sections.sort(function (a, b) { return at(a.key) - at(b.key); });
+    return { sections: sections, byKey: byKey };
+  }
+
   function renderList(groups) {
     var g = activeGroup();
     // No exemption for status grouping here, unlike the board. The list has no tray, so
@@ -4016,7 +4154,25 @@
     // simply had no Done section, in the *default* grouping, with nothing saying so. The
     // chip row cannot cover it either (`viewTerms()` holds the switch outside
     // `state.query`), which is what left this layout silent in every grouping.
-    var archived = archivedPerColumn();
+    // The lift comes first, and its result is handed to the archive count: the two have
+    // to agree about which roots became headings. Before `shownKeys`, deliberately, so a
+    // `No parent` the lift empties can become an archive stub like any other emptied
+    // column rather than standing as a column with no rows.
+    var roots = treeMode() ? liftRoots(groups) : null;
+    // …and "became a heading" is the wider question. A root gets one two ways: the lift
+    // takes it out of `No parent`, or a *child's* group supplies it. The second is how
+    // an archived root with an open part is drawn — the archive took the puck itself, so
+    // the lift cannot see it, but the list draws its heading from the child all the same.
+    // Counting it among the rows `No parent` is short of promised a card the eye could
+    // not deliver: the mark said 5, the eye gave back 4 and promoted the fifth to the
+    // heading it already had.
+    var headed = null;
+    if (roots) {
+      headed = {};
+      Object.keys(roots).forEach(function (id) { headed[id] = 1; });
+      groups.forEach(function (grp) { if (grp.key !== NO_VALUE && grp.items.length) headed[grp.key] = 1; });
+    }
+    var archived = archivedPerColumn(headed);
     var shownKeys = {};
     groups.forEach(function (grp) { if (grp.items.length) shownKeys[grp.key] = 1; });
     // A group the archive emptied *entirely* never reaches `groups`, so it has to be put
@@ -4041,11 +4197,16 @@
           });
       }
     }
+    // Nesting *is* what grouping by parent means, so it is not a switch anywhere: any
+    // other grouping cuts across the trees (a tree spans statuses) and stays flat.
+    var tree = roots ? listTree(groups, roots) : null;
+    if (tree) groups = tree.sections;
     groups.forEach(function (grp) {
       // A flat list has no drop targets, so no empty headers — except one the archive
-      // emptied, which is exactly the thing that has to be said out loud.
-      if (!grp.items.length && !grp.archivedOnly) return;
-      var section = el("section", "list-group" + (g.cls ? " " + g.cls(grp.key) : " col-plain"));
+      // emptied, and, in the tree, a parent the filter emptied. Both are exactly the
+      // thing that has to be said out loud.
+      if (!grp.items.length && !grp.archivedOnly && !grp.emptyParent) return;
+      var section = el("section", "list-group" + (tree ? " is-tree" : "") + (g.cls ? " " + g.cls(grp.key) : " col-plain"));
       if (g.tint && g.tint(grp.key)) section.style.setProperty("--tint", g.tint(grp.key));
       var shut = state.collapsed.has(grp.key);
       if (shut) section.classList.add("shut");
@@ -4065,6 +4226,12 @@
       // phone rather than a rename.
       var opens = g.opens && g.opens(grp.key);
       if (opens) h.classList.add("named");
+      // The heading names a puck, so it carries that puck's flag. In the tree a root
+      // parent is drawn *only* as a heading — its row under `No parent` is exactly what
+      // the promotion removes — so without this a `stale` or `rollup-open` on a
+      // top-level parent vanished from the list while the puck was still on screen. The
+      // ⚠ is the one badge nothing may hide: it says the puck's own claim is false.
+      var warn = opens ? signalMessages(opens) : [];
       // A group the archive emptied has nothing to collapse and no visible count worth
       // printing — "Done 0 · 3 archived" says zero twice. So it is a plain heading, not
       // a control: swatch and label, and the mark carries both the number and the way
@@ -4083,6 +4250,7 @@
         stub.appendChild(opens ? openButton(opens, grp.label, "lh-label") : el("span", "lh-label", grp.label));
         h.appendChild(stub);
         head.appendChild(h);
+        if (warn.length) head.appendChild(warnBadge(warn));
         head.appendChild(archivedMark(archived.count[grp.key], grp.key));
         section.appendChild(head);
         board.appendChild(section);
@@ -4113,15 +4281,78 @@
         h.appendChild(el("span", "count", String(grp.items.length)));
       }
       head.appendChild(h);
+      if (warn.length) head.appendChild(warnBadge(warn));
       // Outside the toggle, for the reason stated above it: a <button> inside a <button>
       // is invalid, and this one has its own click.
       var held = archived ? (archived.count[grp.key] || 0) - grp.items.length : 0;
       if (held > 0) head.appendChild(archivedMark(held, grp.key));
       if (g.headExtra) { var hx = g.headExtra(grp.key); if (hx) head.appendChild(hx); }
       section.appendChild(head);
-      if (!shut) grp.items.forEach(function (it) { section.appendChild(listRow(it)); });
+      if (!shut) {
+        if (tree) renderNodes(section, grp.items, 0, tree, archived);
+        else grp.items.forEach(function (it) { section.appendChild(listRow(it)); });
+        // (3) at the top level. Only when the archive is not already answering for it:
+        // the mark beside the heading says both what is missing and how to get it back,
+        // and "no parts match" would be a second, false explanation for the same hole.
+        if (tree && !grp.items.length && held <= 0) section.appendChild(emptyNode(0));
+      }
       board.appendChild(section);
     });
+  }
+
+  // A puck's parts, directly beneath it, one indent further in. Recursive, and safe to
+  // be: `parent-cycle` is cut at harvest, so `children` describes a forest — the same
+  // guarantee the rollup walk leans on.
+  //
+  // The row carries no count of its own. `progress` is already on it and answers a
+  // steadier question — how many parts the puck *has* — while a count of the rows below
+  // would change with the filter and read as though the puck had lost parts.
+  function renderNodes(section, items, depth, tree, archived) {
+    items.forEach(function (it) {
+      var kids = tree.byKey[it.id];
+      var open = !!(kids && kids.items.length);
+      var shut = state.collapsed.has(it.id);
+      section.appendChild(listRow(it, { depth: depth, fold: open ? (shut ? "shut" : "open") : null }));
+      if (open && !shut) renderNodes(section, kids.items, depth + 1, tree, archived);
+      // A folded puck says nothing about parts it is deliberately hiding — but only when
+      // there was something to fold. A stale fold (collapsed, then a filter took every
+      // part) leaves a row with no caret to clear it, so `shut` alone suppressed both
+      // lines and left the puck reading as a leaf with no way back.
+      if (open && shut) return;
+      // What is missing from under this puck, and why — on a line of its own rather than
+      // as a badge on the row. Measured on a phone: the row already carries a rollup, a
+      // priority, a flag and a date, and an `N archived 👁` badge beside them took the
+      // title down to two characters. A line reads as a sentence and costs the row
+      // nothing.
+      var held = archived ? (archived.count[it.id] || 0) - (kids ? kids.items.length : 0) : 0;
+      if (held > 0) section.appendChild(archivedNode(depth + 1, held, it.id));
+      else if (!open && (it.children || []).length) section.appendChild(emptyNode(depth + 1));
+    });
+  }
+  // A parent with parts and nothing under it is the one place the tree can lie by
+  // omission: it draws exactly like a leaf. So it says so, on a line of its own, at the
+  // depth its parts would have had.
+  function emptyNode(depth) {
+    var e = el("div", "list-empty", "No matching parts");
+    if (depth) e.style.setProperty("--depth", String(depth));
+    return e;
+  }
+  // The archive's version of that line. Same shape, and the same repair the heading's
+  // mark and the board's tray offer — `liftArchive()` is still the one writer.
+  function archivedNode(depth, n, key) {
+    var b = el("button", "list-empty list-archived");
+    b.type = "button";
+    b.title = "Show " + n + " archived " + (n === 1 ? "part" : "parts");
+    b.appendChild(el("span", null, n + " archived " + (n === 1 ? "part" : "parts")));
+    b.appendChild(icon("eye"));
+    if (depth) b.style.setProperty("--depth", String(depth));
+    b.addEventListener("click", function (e) {
+      e.stopPropagation();
+      state.collapsed.delete(key);
+      liftArchive();
+      renderBoard();
+    });
+    return b;
   }
 
   // Client-side sort. "default" is the *manual* order — it mirrors the harvester
@@ -4794,6 +5025,15 @@
     // and Priority, so collapsing "Unrouted" would silently collapse "No priority".
     if (key === "group" && value !== state.group) state.collapsed.clear();
     state[key] = value;
+    // Picking the hierarchy picks the layout that can draw it, and the segment moves so
+    // you can see it happen. The alternative — falling back silently — is the mistake
+    // this file already names one screen down: a control that claims a choice which
+    // never took effect. (A stored layout is written too, so the switch is as durable
+    // as if you had pressed List yourself.)
+    if (key === "group" && !groupUsable(value)) {
+      state.view = "list";
+      saveDisplay("view", "list");
+    }
     saveDisplay(storeAs || key, typeof value === "boolean" ? (value ? "1" : "0") : value);
     refreshDisplayDot();
     // The sidebar's numbers read `state.showDone` now, so a display change can move
@@ -4823,7 +5063,7 @@
     { key: "group", label: "Grouping",
       current: function () { return effectiveGroup(); },
       options: function () {
-        return Object.keys(GROUPS).filter(groupUsable).map(function (k) {
+        return Object.keys(GROUPS).filter(function (k) { return groupOffered(k); }).map(function (k) {
           return { value: k, label: GROUPS[k].label };
         });
       } },
@@ -5012,7 +5252,7 @@
     }
     // Display options belong in the palette too — the palette is the extensibility
     // surface, so a new display choice never has to become another button.
-    Object.keys(GROUPS).filter(groupUsable).forEach(function (k) {
+    Object.keys(GROUPS).filter(function (k) { return groupOffered(k); }).forEach(function (k) {
       if (k === effectiveGroup()) return;
       cmds.push({ __cmd: true, label: "Group by " + GROUPS[k].label.toLowerCase(), hint: "Display", icon: "sliders", run: function () { setDisplay("group", k); } });
     });
