@@ -531,32 +531,62 @@ body {
 
 /* ── list view ── a full-width table grouped by status. #board gets .as-list. */
 .board.as-list {
-  display: block;
+  /* One column, sized to the widest group. Every group is stretched to it, which is what
+     lets an archive stub — a heading with no rows, and therefore no width of its own —
+     keep its heading pinned when the list is scrolled right. As `display: block` each
+     group was only as wide as its own content, so the short ones slid off the left edge
+     entirely: a sticky box cannot be held outside its own containing block. */
+  display: grid;
+  /* At least what the rows need, and all of the box when there is more. `min-content`,
+     not `max-content`: the latter reads the longest *title*, which is how a single long
+     puck name came to set the scroll width for every row in the list — and, worse, to
+     widen the frozen name cell past the screen. Each row's own `min-width` is the number
+     that belongs here, and that is exactly its min-content.
+     `1fr` and not bare `min-content`: without it the column stopped at the content and
+     left 214px of nothing to the right of the date on a 1400px screen. */
+  grid-template-columns: minmax(min-content, 1fr);
+  /* `.board` sets `grid-auto-flow: column` for the kanban columns; without this the
+     groups laid themselves out side by side. */
+  grid-auto-flow: row;
   overflow-x: visible;
   max-width: none;
   padding: 12px 24px 40px;
-  /* The board is a grid item, and a grid item's automatic minimum is its *min-content*
-     width — which for the column layout is 0 only because `overflow-x: auto` makes it a
-     scroll container. The list turns that off, so the widest unbreakable thing on the
-     page started deciding the document's width: a long parent name in a heading is
-     `white-space: nowrap`, and `min-width: 0` on its own flex item lets it *shrink*
-     without lowering what it *contributes*. Measured on a 390px phone against the live
-     board: the document came out 652px wide, so the topbar and the chip row — sized to
-     the viewport — sat in 60% of the page with the rows running off the right edge.
-     One declaration lets the item shrink below its content, and the ellipsis that was
-     always specified finally has a width to work against. */
+  /* Wide content scrolls in its own box; the page stays put. The same rule the code
+     blocks and the tables already follow, and the reason the document no longer comes
+     out 652px wide on a 390px phone with the topbar sized to the viewport sitting in
+     60% of it. `min-width: 0` is kept as belt and braces: a scroll container's
+     automatic minimum is already 0, but the declaration is what makes that independent
+     of whichever overflow value this rule ends up carrying. */
+  overflow-x: auto;
   min-width: 0;
+  /* Not for queries any more — the tiers are gone — but `cqw` in `.lh-inner` needs a
+     container to measure against, and "the board's width" is exactly the number it
+     wants. */
+  container-type: inline-size;
 }
 .list-group { margin-bottom: 20px; }
+/* The heading is two boxes. The outer one spans the group so its background reaches
+   across the scrolled width; the inner one is only as wide as its content, which is what
+   lets `left: 0` pin it — a sticky box cannot be offset inside a containing block it
+   fills completely, and a full-width heading in a scrolled row simply slid away to the
+   left (measured: −376px at scrollLeft 400).
+   `100cqw` caps the inner box at the *board's* width, so a long parent name still
+   ellipsises instead of widening every row's scroll range. That is the one thing
+   `container-type` is still here for; the tiers it used to serve are gone. */
 .list-head {
+  padding: 6px 2px 8px;
+  background: var(--bg);
+  z-index: 1;
+}
+.lh-inner {
   display: flex;
   align-items: center;
   gap: 8px;
   position: sticky;
-  top: var(--topbar-h, 0px); /* sit below the sticky topbar, not under it */
-  padding: 6px 2px 8px;
+  left: 0;
+  width: max-content;
+  max-width: 100cqw;
   background: var(--bg);
-  z-index: 1;
 }
 .list-head .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); }
 .list-head h2 { margin: 0; font-size: var(--fs-md); text-transform: uppercase; letter-spacing: var(--tr-eyebrow); }
@@ -616,35 +646,55 @@ body {
 /* A folded group keeps its heading and loses its bottom margin — the gap belonged to
    the rows that are no longer there. */
 .list-group.shut { margin-bottom: 4px; }
-/* The row drops columns as the *board* narrows, not as the viewport does — and those
-   are different numbers, which is the whole reason this is a container query. The
-   sidebar takes 240px whenever it is open, so a 900px window can hand the list a 660px
-   box while a viewport media query still calls it "wide" and asks for six columns.
-   Measured at 700px: the four fixed tracks kept 410px between them and the title — the
-   one thing a row is for — was squeezed to 154px and ellipsised to "Nästling: li…".
-   Before `min-width: 0` the same shortage pushed the page wider than the screen
-   instead; the shortage was always there, the failure mode just moved.
-
-   So the order the columns leave in is stated once, and it is a claim about what a row
-   is worth: agent goes first (rarely set), then repo (the glyph already carries its
-   colour, and the row's tooltip its name). The title never leaves, and past the last
-   breakpoint it is still the track that grows. */
-.board.as-list { container-type: inline-size; container-name: list; }
+/* The row keeps every column and scrolls when they do not fit. What stood here before
+   was the opposite — tiers that dropped agent, then repo, as the *board* narrowed — and
+   the numbers were the problem: 560/720 for a flat row, then 652/812 once the tree's
+   indent turned out to shrink the row the container query could not see. Two rounds of
+   arithmetic, one of them wrong, for a rule whose whole purpose was deciding what to
+   throw away.
+   A row that may scroll needs nobody to know what fits. The title never scrolls out from
+   under you (see the frozen cells below), so the thing that was being protected is
+   protected by construction instead of by a breakpoint. */
 .list-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  /* The name gets a floor and not only a ceiling: `1fr` alone collapses to nothing once
+     the fixed tracks fill the box, and the title is the one thing a row is for. Wider
+     than the box, the row scrolls; narrower, `min-width` keeps it filling the box so the
+     borders still reach the edge. */
+  grid-template-columns: 18px minmax(220px, 1fr) 44px 108px 148px 92px;
+  /* The minimum comes from the *columns*, never from the content. `min-width: max-content`
+     read the longest title instead, and on a phone that is a disaster rather than a
+     nicety: measured with one 120-character title, the name cell came out 851px wide on a
+     390px screen — and since that cell is frozen and opaque, it covered the whole viewport
+     and put priority, agent, repo and date out of reach behind it, for every row in the
+     list. A frozen column only works while it is narrower than the screen.
+     The sum is the tracks it must not squeeze: five gaps and the row's own padding, plus
+     the name's floor. The title ellipsises inside that floor, which is what it has always
+     been specified to do. */
+  --list-fixed: calc(18px + 44px + 108px + 148px + 92px + 5 * 14px + 18px);
+  min-width: calc(var(--list-fixed) + 220px);
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   padding: 8px 6px 8px 12px;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
-  position: relative; /* the tree's caret sits in the gutter, see .list-fold */
 }
 /* The tree's indent. Capped, because the format caps nothing: `parent:` goes as deep as
    anyone writes it, and on a 390px screen the fifth level is a staircase out of the
    viewport. Past the cap the rows stop stepping and the caret keeps saying what nests
-   inside what. */
-.is-tree .list-row, .is-tree .list-empty {
+   inside what.
+   On the *name*, not on the row: the name is the frozen cell, so the structure stays on
+   screen while the metadata scrolls — and it puts every row's metadata on the same x
+   whatever its depth, which padding on the row could not. */
+/* The indent lives inside the name cell, so a nested row needs that much more before its
+   title reaches the same floor a flat row has. The cap is what makes it a number: 16px of
+   gutter plus the 64px the indent stops at. */
+.is-tree .list-row { min-width: calc(var(--list-fixed) + 220px + 80px); }
+.is-tree .list-name {
+  position: relative; /* the caret sits in this cell's own indent, see .list-fold */
+  padding-left: calc(16px + min(var(--depth, 0) * 16px, 64px));
+}
+.is-tree .list-empty {
   padding-left: calc(28px + min(var(--depth, 0) * 16px, 64px));
 }
 /* Reserved on every row in a tree, taken by only some: a caret in a grid track of its
@@ -654,7 +704,9 @@ body {
    caret. */
 .list-fold {
   position: absolute;
-  left: calc(4px + min(var(--depth, 0) * 16px, 64px));
+  /* Inside the name cell now, which is what keeps it on screen when the row is scrolled.
+     The indent is that cell's padding, so the caret only has to sit inside it. */
+  left: calc(min(var(--depth, 0) * 16px, 64px) - 4px);
   top: 50%;
   transform: translateY(-50%);
   display: flex; align-items: center; justify-content: center;
@@ -693,39 +745,43 @@ body {
 .list-repo .repo-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .list-dt { justify-content: flex-end; }
 .list-date { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* The tiers themselves, and they stand *here* rather than beside `.list-row` for the
-   same reason the archive stub's shape does: `.list-cell { display: flex }` ties them on
-   specificity, so whichever comes last wins. The viewport-keyed version of this rule
-   (`max-width: 640px`) stood in exactly this spot and asked the wrong box — the row is
-   as wide as the board, not as the window. */
-.list-agent, .list-repo { display: none; }
-@container list (min-width: 560px) {
-  .list-group:not(.is-tree) .list-row { grid-template-columns: 18px minmax(0, 1fr) 44px 148px 92px; gap: 14px; }
-  .list-group:not(.is-tree) .list-repo { display: flex; }
+/* The columns the tiers used to drop. They are all here, always — the row is as wide as
+   its columns need and the box scrolls, so nothing has to be dropped and nothing has to
+   be computed. What went with them: `@container list (min-width: 560px|720px)` for flat
+   rows and 652|812 for nested ones, four rules whose numbers were hand-derived twice and
+   wrong once. A row that may scroll needs no one to know what fits.
+   The title never scrolls out from under you, which is the whole reason this is
+   affordable: the glyph and the name are frozen at the left edge, so the column you are
+   reading stays while the metadata slides. The tree's indent and caret live *inside* the
+   frozen name cell for the same reason — the structure is part of the name, not part of
+   the data you scroll to — and that also puts every row's metadata on the same x
+   regardless of depth. */
+.list-row > .puck-glyph, .list-row > .list-name {
+  position: sticky;
+  background: var(--bg);
+  z-index: 2;
 }
-@container list (min-width: 720px) {
-  .list-group:not(.is-tree) .list-row { grid-template-columns: 18px minmax(0, 1fr) 44px 108px 148px 92px; }
-  .list-group:not(.is-tree) .list-agent { display: flex; }
+.list-row > .puck-glyph { left: 0; }
+.list-row > .list-name { left: 18px; }
+/* The board keeps 24px of padding, and a frozen cell only covers its own box — so the
+   scrolled metadata slid *through* that gutter and reappeared to the left of the glyph.
+   The bleed is `background: inherit`, not a colour, so it follows the row through hover
+   and selection without a second place to update. */
+.list-row > .puck-glyph::before, .lh-inner::before {
+  content: "";
+  position: absolute;
+  /* 24px is `.board.as-list`'s own horizontal padding, literal there and literal here;
+     `--pad` is a different (22px) token and would leave a 2px seam. */
+  left: -24px;
+  top: 0; bottom: 0;
+  width: 24px;
+  background: inherit;
 }
-/* The tree pays for its own indent, so it reaches each tier 92px later: 28px of caret
-   gutter on every nested row plus the 64px the indent is capped at. Without the offset
-   the tier was decided for a row that does not exist — the container knows the board's
-   width, and a depth-4 row is 92px narrower than that. Measured at the 900px viewport
-   this file already guards: the flat row got its 220px title and the deep one 156px, the
-   very squeeze the tiers were added to remove.
-   The number is what makes the two comparable: at 652 a deepest row has exactly the
-   title a flat row has at 560, so no row is ever worse off than the tier promises. It
-   cannot be asked per row — a container query reads its container, and a row cannot size
-   its own tracks by its own width — so the worst case in the group decides for the
-   group, which is why these are separate rules rather than a bigger number for both. */
-@container list (min-width: 652px) {
-  .is-tree .list-row { grid-template-columns: 18px minmax(0, 1fr) 44px 148px 92px; gap: 14px; }
-  .is-tree .list-repo { display: flex; }
-}
-@container list (min-width: 812px) {
-  .is-tree .list-row { grid-template-columns: 18px minmax(0, 1fr) 44px 108px 148px 92px; }
-  .is-tree .list-agent { display: flex; }
-}
+@media (hover: hover) { .list-row:hover > .puck-glyph, .list-row:hover > .list-name { background: var(--panel-2); } }
+.list-row.sel > .puck-glyph, .list-row.sel > .list-name { background: var(--panel-2); }
+/* The heading is frozen the same way, or it slides out to the left and the group loses
+   its name at exactly the moment you are furthest from it. */
+
 .card {
   background: var(--panel);
   border: 1px solid var(--line);

@@ -3280,6 +3280,14 @@
     r.style.setProperty("--repo", item.repoColor);
     if (opts.depth) r.style.setProperty("--depth", String(opts.depth));
     r.title = item.repoName;
+    r.appendChild(puckGlyph(item));
+
+    // Name: title (truncates) + inline drift/blocked badges.
+    var name = el("div", "list-name");
+    // The caret lives *in the name cell*, not in the row: the name is the frozen column,
+    // and the structure has to stay on screen with the title it describes rather than
+    // scrolling off with the metadata. It is absolutely positioned inside the cell's own
+    // indent, so its place among the flex children says nothing.
     if (opts.fold) {
       var caret = el("button", "list-fold");
       caret.type = "button";
@@ -3287,12 +3295,8 @@
       caret.title = (opts.fold === "shut" ? "Expand " : "Collapse ") + item.title;
       caret.appendChild(icon(opts.fold === "shut" ? "chev-right" : "chev-down", "lh-caret"));
       caret.addEventListener("click", function (e) { e.stopPropagation(); toggleGroup(item.id); });
-      r.appendChild(caret);
+      name.appendChild(caret);
     }
-    r.appendChild(puckGlyph(item));
-
-    // Name: title (truncates) + inline drift/blocked badges.
-    var name = el("div", "list-name");
     name.appendChild(el("span", "list-title", item.title));
     if (sig.length) name.appendChild(warnBadge(sig));
     if (item.progress) name.appendChild(progressBadge(item));
@@ -4241,7 +4245,13 @@
       if (g.tint && g.tint(grp.key)) section.style.setProperty("--tint", g.tint(grp.key));
       var shut = state.collapsed.has(grp.key);
       if (shut) section.classList.add("shut");
+      // The heading is two boxes, and the inner one is why: a sticky box cannot be
+      // offset inside a containing block it fills completely, so a full-width heading in
+      // a scrolled row simply slid away to the left. `.lh-inner` is only as wide as its
+      // own content, which gives `left: 0` the room it needs to pin.
       var head = el("div", "list-head");
+      var inner = el("div", "lh-inner");
+      head.appendChild(inner);
       // The heading stays a heading and the *button* goes inside it: `role="button"`
       // on the row would have made its contents presentational, and the list's group
       // headings would have dropped out of the heading map. The rollup badge stays
@@ -4280,9 +4290,9 @@
         // keeps the one thing a name always does.
         stub.appendChild(opens ? openButton(opens, grp.label, "lh-label") : el("span", "lh-label", grp.label));
         h.appendChild(stub);
-        head.appendChild(h);
-        if (warn.length) head.appendChild(warnBadge(warn));
-        head.appendChild(archivedMark(archived.count[grp.key], grp.key));
+        inner.appendChild(h);
+        if (warn.length) inner.appendChild(warnBadge(warn));
+        inner.appendChild(archivedMark(archived.count[grp.key], grp.key));
         section.appendChild(head);
         board.appendChild(section);
         return;
@@ -4311,13 +4321,13 @@
         h.appendChild(openButton(opens, grp.label, "lh-label"));
         h.appendChild(el("span", "count", String(grp.items.length)));
       }
-      head.appendChild(h);
-      if (warn.length) head.appendChild(warnBadge(warn));
+      inner.appendChild(h);
+      if (warn.length) inner.appendChild(warnBadge(warn));
       // Outside the toggle, for the reason stated above it: a <button> inside a <button>
       // is invalid, and this one has its own click.
       var held = archived ? (archived.count[grp.key] || 0) - grp.items.length : 0;
-      if (held > 0) head.appendChild(archivedMark(held, grp.key));
-      if (g.headExtra) { var hx = g.headExtra(grp.key); if (hx) head.appendChild(hx); }
+      if (held > 0) inner.appendChild(archivedMark(held, grp.key));
+      if (g.headExtra) { var hx = g.headExtra(grp.key); if (hx) inner.appendChild(hx); }
       section.appendChild(head);
       if (!shut) {
         if (tree) renderNodes(section, grp.items, 0, tree, archived);
