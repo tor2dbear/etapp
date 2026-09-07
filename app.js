@@ -1460,14 +1460,220 @@
   }
 
   // ── detail: a side pane on desktop, a modal overlay on mobile ──
-  var detailPane, detailContent, workEl, selectedId = null, currentDetailItem = null;
+  var detailPane, detailContent, workEl, selectedId = null, currentDetailItem = null, boardAt = null;
   function isWide() { return window.matchMedia("(min-width: 900px)").matches; }
   function paneRefs() {
     if (!detailPane) {
       detailPane = document.getElementById("detailPane");
       detailContent = document.getElementById("detailContent");
       workEl = document.getElementById("work");
+      if (workEl) { armAxisLock(workEl); armChromeWheel(workEl); }
     }
+  }
+
+  // ── one axis per drag ───────────────────────────────────────────────────────
+  // The port scrolls both ways in the list — that is the price of a sticky group heading,
+  // since a box that scrolls sideways is a scroll container in both axes — and a phone
+  // drag is never perfectly straight. A flick down the list with a few degrees of drift
+  // moved the columns sideways too, which is what "det skrollar i alla led" was.
+  //
+  // The first answer read the scroll the browser had already done and put the off-axis
+  // back. It passed a synthetic test and did nothing on a real phone, for a reason worth
+  // keeping: **an iOS touch scroll runs on the compositor, and writing `scrollTop` while
+  // the finger is down does not reach it.** A test that moves the offsets itself never
+  // touches that mechanism, so it measured the arithmetic and not the thing.
+  //
+  // So the browser is told up front instead. `touch-action: pan-y pinch-zoom` on the port
+  // (list layout only — the kanban board is its own sideways scroller and `pan-y` on an
+  // ancestor would forbid it) means a drag *cannot* pan it sideways however crooked it is:
+  // the drift is gone at the source rather than corrected after the fact. Sideways is then
+  // ours to drive: the first 8px pick the axis, and a sideways one refuses the browser's
+  // vertical pan (`preventDefault`) and moves `scrollLeft` by the finger's own delta.
+  //
+  // What it costs, and it is the honest half: a sideways flick has no momentum, because it
+  // is not the browser scrolling. Vertical keeps everything — momentum, the rubber band —
+  // which is the axis a long list is actually read in.
+  var axisArmed = false;
+  // The glide belongs to its gesture, and anything that takes the port over ends it: a
+  // touch anywhere (the finger that opened Filter never reached `.work`, so the port's own
+  // `touchstart` could not see it), a scroll lock (`overflow: hidden` does not stop a
+  // programmatic `scrollLeft`, so the board slid on under an open sheet — measured 229 at
+  // the tap, 271 as it opened, 352 by the time it stopped), and a board that is replaced
+  // under it. Set by `armAxisLock`; a no-op until then.
+  var stopGlide = function () {};
+  function armAxisLock(port) {
+    if (axisArmed) return;
+    axisArmed = true;
+    var sx = 0, sy = 0, lastX = 0, lastT = 0, vx = 0, axis = null, live = false, fling = 0;
+    // The flag needs no timer to expire: every touchstart reassigns it, so a catch that
+    // ends in a drag (no click to eat) cannot leak into the next press. A timer was
+    // written first and removed when no sabotage could fell it.
+    var caught = false;
+    // The finger's velocity, smoothed, in pixels per millisecond. A single frame's delta
+    // is too noisy to fling on — one stuttered frame at the end of a swipe would decide
+    // the whole glide — so each sample is folded into the last.
+    function sample(x, t) {
+      var dt = t - lastT;
+      if (dt > 0) vx = vx * 0.7 + ((x - lastX) / dt) * 0.3;
+      lastX = x; lastT = t;
+    }
+    // The half of native scrolling that `touch-action: pan-y` gives away, given back by
+    // hand: a sideways swipe that ends with the finger moving keeps moving. Without it the
+    // axis reads dead — 1:1 with the finger and stopping the instant it lifts, which is
+    // not how any other scroll on the phone behaves.
+    function glide() {
+      var prev = performance.now();
+      fling = requestAnimationFrame(function step(now) {
+        var gap = now - prev;
+        prev = now;
+        // An interrupted fling is no fling. Put the page aside and `requestAnimationFrame`
+        // stands still; clamping the gap would let the inertia survive the pause and roll
+        // on when you come back — the same mistake as a stale velocity sample, and the
+        // same rule the sheet's inertia already follows a floor below.
+        if (gap > 100) { fling = 0; return; }
+        var dt = Math.min(gap, 32) || 16;
+        var was = port.scrollLeft;
+        port.scrollLeft -= vx * dt;
+        // Per millisecond, not per frame: a slow frame must not buy the glide extra life.
+        vx *= Math.pow(0.9975, dt);
+        // The second test is the edge. `scrollLeft` clamps itself, so a glide that has run
+        // into one stops moving, and that is the only signal that says so.
+        if (Math.abs(vx) < 0.02 || port.scrollLeft === was) { fling = 0; return; }
+        fling = requestAnimationFrame(step);
+      });
+    }
+    stopGlide = function () { if (fling) { cancelAnimationFrame(fling); fling = 0; } vx = 0; };
+    // Every touch, not only one that lands in the port: the tap that opens Filter or picks
+    // a view from the sidebar starts outside it, and the glide has to end there too.
+    // Capture, so a surface that stops the event cannot keep the list moving behind itself
+    // — and because this runs *before* the port's own handler, it is also the only place
+    // that can still see whether there was a glide to interrupt.
+    //
+    // Which is the second half: with no movement the browser synthesises a click, so
+    // catching a gliding list opened the puck under your thumb (measured: gliding at 246,
+    // tapped to stop, the puck page opened). The catch is remembered and the click it
+    // produces is eaten below — but only for a touch *inside* the port. A tap on Filter
+    // that happens to stop the glide still means Filter.
+    document.addEventListener("touchstart", function (e) {
+      caught = !!fling && port.contains(e.target);
+      stopGlide();
+    }, { capture: true, passive: true });
+    port.addEventListener("touchstart", function (e) {
+      // Two fingers is a pinch, not a pan — and `pinch-zoom` is in the touch-action for
+      // exactly that reason, so nothing here may take it over.
+      live = e.touches.length === 1;
+      axis = null;
+      if (!live) return;
+      sx = lastX = e.touches[0].clientX;
+      sy = e.touches[0].clientY;
+      lastT = e.timeStamp;
+    }, { passive: true });
+    port.addEventListener("touchmove", function (e) {
+      // The flag is a receipt for a click that is about to arrive, and only a still finger
+      // produces one. Move it — the catch became a drag — and no click follows, so the
+      // receipt would sit there and eat the *next* real one instead. The touch checks
+      // cannot see that: their next tap is a touch, and its own `touchstart` clears the
+      // flag on the way in. A mouse on a hybrid device, or a click from assistive
+      // technology, arrives with no `touchstart` at all — measured, the puck stopped
+      // opening. Cleared before the single-finger guard: a second finger is no click either.
+      if (caught && e.touches[0] &&
+          (Math.abs(e.touches[0].clientX - sx) > 8 || Math.abs(e.touches[0].clientY - sy) > 8)) caught = false;
+      if (!live || e.touches.length !== 1) return;
+      var t = e.touches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+      if (!axis) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        // Sideways only counts where there is somewhere sideways to go *in the direction
+        // being asked for*. In the board layout this box has no horizontal travel at all
+        // — the kanban scrolls itself — and at either edge it has none that way: claiming
+        // x there refused the browser's vertical pan and then wrote a `scrollLeft` that
+        // clamped, so the gesture moved neither axis (measured at the left edge, dragging
+        // further left: 0/0). A finger moving left raises `scrollLeft`, hence the sides.
+        var maxX = port.scrollWidth - port.clientWidth;
+        var roomX = dx < 0 ? port.scrollLeft < maxX - 1 : port.scrollLeft > 1;
+        axis = Math.abs(dx) > Math.abs(dy) && maxX > 1 && roomX ? "x" : "y";
+      }
+      if (axis !== "x") return;
+      // Not cancelable once the browser has committed to a scroll; the 8px threshold is
+      // what usually gets us in before that, and asking first keeps the console clean.
+      if (e.cancelable) e.preventDefault();
+      var from = lastX;
+      sample(t.clientX, e.timeStamp);
+      port.scrollLeft -= t.clientX - from;
+    }, { passive: false });
+    function up(e) {
+      // A finger that stopped before it lifted meant to stop: the last sample is stale, so
+      // an old velocity would send the list off after a deliberate halt.
+      if (axis === "x" && e && e.timeStamp - lastT > 100) vx = 0;
+      if (axis === "x" && Math.abs(vx) > 0.05) glide();
+      live = false; axis = null;
+    }
+    port.addEventListener("touchend", up, { passive: true });
+    // A cancelled sequence is not a finished one. `touchcancel` means the system took the
+    // gesture — a call, an edge swipe, a scroll the browser decided to own — and finishing
+    // it through `up` would fling the list on the strength of a swipe the user never
+    // completed. It clears instead: no velocity, no glide.
+    // A gesture the system takes produces no click either, so the receipt goes with it.
+    port.addEventListener("touchcancel", function () { vx = 0; live = false; axis = null; caught = false; }, { passive: true });
+    // Capture, so it runs before the row's own listener rather than after it.
+    port.addEventListener("click", function (e) {
+      if (!caught) return;
+      caught = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }, true);
+  }
+
+  // ── the chrome above the port is not a dead zone ────────────────────────────
+  // The topbar, the view header and the chip row are *siblings* of the port, and with the
+  // document no longer scrolling there is nothing for a wheel over them to move: measured,
+  // 300 notches over the topbar left `.work.scrollTop` at 0. Before the fixed height they
+  // scrolled the page, which is to say they scrolled the board.
+  //
+  // Only the main column, not the whole page: the sidebar is a region beside the board
+  // rather than above it, and a wheel there that moved the board would be a new behaviour
+  // rather than a restored one. The chip row gets first refusal — it scrolls itself when
+  // a long query wraps it — so the walk asks each box on the way up whether it has room
+  // in the direction being asked for, and only forwards what nobody wanted.
+  var wheelArmed = false;
+  function armChromeWheel(port) {
+    if (wheelArmed) return;
+    var col = port.parentElement;
+    if (!col) return;
+    wheelArmed = true;
+    col.addEventListener("wheel", function (e) {
+      // Ctrl+wheel is the browser's zoom gesture — a trackpad pinch arrives as exactly
+      // that — so forwarding its delta would scroll the board out from under someone who
+      // is only trying to make it bigger.
+      if (port.contains(e.target) || scrollLocks || e.ctrlKey) return;
+      // First refusal is per axis, and it is a *claim on that axis alone* rather than on
+      // the gesture. The chip row scrolls vertically and cannot take a `deltaX` at all,
+      // so two things went wrong in turn: asking `deltaY < 0` about a purely sideways
+      // swipe (`deltaY === 0`) read it as "downwards" and swallowed it (measured: 150px
+      // of sideways wheel moved nothing with 352px of list to the right), and then a
+      // diagonal one let the row keep the half it could use *and* the half it could not
+      // (measured: chip row 120, list 0). Each axis is followed separately and whatever
+      // no one wanted is forwarded.
+      //
+      // A scroll *container*, not merely a box whose content rounds a few pixels past it:
+      // the view-switch button measures 24 against 21 from line-height alone, and asking
+      // about overflow only would have let it swallow every wheel over the topbar.
+      var takeY = e.deltaY !== 0, takeX = e.deltaX !== 0;
+      for (var n = e.target; n && n !== col && (takeY || takeX); n = n.parentElement) {
+        var cs = getComputedStyle(n);
+        if (takeY && (cs.overflowY === "auto" || cs.overflowY === "scroll") &&
+          n.scrollHeight > n.clientHeight + 1 &&
+          (e.deltaY < 0 ? n.scrollTop > 0 : n.scrollTop < n.scrollHeight - n.clientHeight - 1)) takeY = false;
+        if (takeX && (cs.overflowX === "auto" || cs.overflowX === "scroll") &&
+          n.scrollWidth > n.clientWidth + 1 &&
+          (e.deltaX < 0 ? n.scrollLeft > 0 : n.scrollLeft < n.scrollWidth - n.clientWidth - 1)) takeX = false;
+      }
+      if (!takeY && !takeX) return;
+      // Lines and pages are real delta modes — Firefox sends lines for a mouse wheel —
+      // and forwarding them as pixels would move the board by three.
+      var k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? port.clientHeight : 1;
+      if (takeY) port.scrollTop += e.deltaY * k;
+      if (takeX) port.scrollLeft += e.deltaX * k;
+    }, { passive: true });
   }
 
   // The repo, as a rail value: its dot and its name, and a press that scopes the board
@@ -1522,20 +1728,33 @@
   // the thing you are about to come back to. `overflow: hidden` alone doesn't hold
   // on iOS, so the body is pinned at its current offset and put back afterwards.
   // Counted, because a sheet can open over the puck modal, which locks too.
-  var scrollLocks = 0, lockedY = 0;
+  // The scrollport is `.work`, not the page — the shell is a fixed-height column — so
+  // this locks that box. Pinning the *body* was the old shape and would now hold
+  // nothing: the body no longer scrolls, and the board behind the sheet would move
+  // freely. `overflow: hidden` on the port is enough here precisely because it is not
+  // the document scroller, which is the case iOS mishandles.
+  var scrollLocks = 0, lockedY = 0, lockedX = 0;
+  function scrollPort() { paneRefs(); return workEl; }
   function lockScroll() {
     if (scrollLocks++) return;
-    lockedY = window.scrollY || document.documentElement.scrollTop || 0;
-    document.body.style.top = -lockedY + "px";
-    document.body.classList.add("scroll-locked");
+    var port = scrollPort();
+    if (!port) return;
+    // `overflow: hidden` holds the *user's* scrolling, not ours.
+    stopGlide();
+    lockedY = port.scrollTop;
+    lockedX = port.scrollLeft;
+    port.style.overflow = "hidden";
   }
   function unlockScroll() {
     scrollLocks = Math.max(0, scrollLocks - 1);
     if (scrollLocks) return;
-    document.body.classList.remove("scroll-locked");
-    document.body.style.top = "";
-    void document.body.offsetHeight; // settle the layout before restoring, or the
-    window.scrollTo(0, lockedY);     // scroll lands on a body that is still fixed
+    var port = scrollPort();
+    if (!port) return;
+    port.style.overflow = "";
+    // Hiding the overflow drops the scroll offset, so it is put back — the sheet closes
+    // onto the row you opened it from, not onto the top of the list.
+    port.scrollTop = lockedY;
+    port.scrollLeft = lockedX;
   }
 
   // The scrim stops the pointer, not the keyboard. A sheet is modal, so the app
@@ -1860,6 +2079,10 @@
     }
     body.addEventListener("touchmove", handoff, { passive: true });
     body.addEventListener("touchend", function () { if (handOn) up(); }, { passive: true });
+    // Här *ska* ett avbrott avslutas, till skillnad från listans sidledskast en våning upp:
+    // det finns ingen tröghet att sjösätta, bara ett ark som står mitt i ett drag med en
+    // inline-höjd och `.dragging` kvar. Alternativet till `up()` är ett ark som hänger sig,
+    // inte ett som står stilla.
     body.addEventListener("touchcancel", function () { if (handOn) up(); }, { passive: true });
     // Panoreringen är listans bara när listan har någonstans att ta vägen *åt det
     // håll webbläsaren låser sig vid*.
@@ -1927,13 +2150,77 @@
   // A popover wider than the window can't be satisfied; pin it to the left edge
   // rather than the right, so it is the *end* of a row that is lost and not the
   // beginning — a truncated label is still readable from its start.
+  function wrapOf(root) { return root.parentElement || document.body; }
+  // Every clipping ancestor, intersected, and per axis — not the first one found. The
+  // kanban board sets `overflow-x: auto`, which makes its computed `overflow-y` `auto`
+  // as well, so a first-match walk stopped there and read a bottom edge that is wherever
+  // the tallest column ends: measured at 1000×240, a column menu ran to 245 while `.work`
+  // ended at 240, with no cap applied because the board's bottom was 473. The nearest
+  // clipper is a different box on each axis, so the answer is an intersection.
+  function clipBox(node) {
+    var box = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+    for (var n = node; n && n !== document.documentElement; n = n.parentElement) {
+      var cs = getComputedStyle(n);
+      var cy = /auto|scroll|hidden/.test(cs.overflowY), cx = /auto|scroll|hidden/.test(cs.overflowX);
+      if (!cy && !cx) continue;
+      var b = n.getBoundingClientRect();
+      if (cy) { box.top = Math.max(box.top, b.top); box.bottom = Math.min(box.bottom, b.bottom); }
+      if (cx) { box.left = Math.max(box.left, b.left); box.right = Math.min(box.right, b.right); }
+    }
+    return box;
+  }
   function fitPop(root) {
     var m = 8;
+    // Measured as the surface *wants* to be, not as the last fit left it. This runs
+    // again whenever the content changes — opening a field's value list grows the panel
+    // — and a rect that already carries the previous correction makes them accumulate.
+    root.style.transform = "";
+    root.style.maxHeight = "";
+    root.classList.remove("pop-flip");
     var r = root.getBoundingClientRect();
+    // The box that actually cuts, which is not the window: a rail popover lives inside
+    // `.work`, whose `overflow: auto` clips at its own top edge — 52px down on a puck
+    // page — so a flip measured against the viewport put the menu's first rows behind the
+    // topbar with no scroll range above them to bring back (measured: top 8, `.work` top
+    // 52, 44px gone). Asking the nearest clipping ancestor answers for every surface at
+    // once, and falls back to the viewport when nothing above it clips.
+    var box = clipBox(wrapOf(root));
     var dx = 0;
-    if (r.right > window.innerWidth - m) dx = window.innerWidth - m - r.right;
-    if (r.left + dx < m) dx = m - r.left;
+    if (r.right > box.right - m) dx = box.right - m - r.right;
+    if (r.left + dx < box.left + m) dx = box.left + m - r.left;
     if (dx) root.style.transform = "translateX(" + Math.round(dx) + "px)";
+    // And the same question downwards, which the fixed-height shell made a real one:
+    // `.app` clips, and there is no page scroll left, so a popover running past the
+    // bottom does not merely look wrong — its lower rows cannot be reached at all.
+    // Measured at 1000×420 with the Labels list open: 328px tall, 14 of them below the
+    // window.
+    //
+    // Which side it hangs from is *not* authored, unlike `menu-right`: a rail control
+    // near the bottom of a puck page leaves no room below at any width, so capping to
+    // what is there gives a 15px menu (measured, status picker at y=247 in a 300px
+    // window) or, one row lower, a negative cap — invalid CSS, dropped, and the menu
+    // runs off the bottom again. So the side is measured too, and the gap comes from
+    // the stylesheet rather than being restated here.
+    var wrap = root.parentElement;
+    var a = wrap ? wrap.getBoundingClientRect() : r;
+    var gap = r.top - a.bottom;
+    var below = box.bottom - r.top - m;
+    var above = a.top - gap - box.top - m;
+    var flip = r.height > below && above > below;
+    root.classList.toggle("pop-flip", flip);
+    var room = flip ? above : below;
+    // `room > 0` guards the one case the flip cannot help with: a window shorter than the
+    // trigger itself, where both sides are negative. A cap of zero would hide the menu
+    // outright and a negative one is invalid CSS that the browser drops — so there it is
+    // left uncapped, which is no worse than before. No test reaches it; a floor with a
+    // number in it was written first and removed, since it changed real placements to
+    // guard an unreachable one.
+    if (room > 0 && r.height > room) {
+      root.style.maxHeight = Math.round(room) + "px";
+      root.style.overflowY = "auto";
+    } else {
+      root.style.overflowY = "";
+    }
   }
 
   //   opts: { title, anchorWrap, cls, help, onClose, build(body, api) }
@@ -2105,7 +2392,29 @@
     // Only the anchored shell. A sheet spans the window by construction, and
     // `.pop-center` is already placed by transform — shifting either would move a
     // surface that was never out of bounds.
-    if (!phone && opts.anchorWrap) fitPop(root);
+    if (!phone && opts.anchorWrap) {
+      fitPop(root);
+      // The panel rebuilds itself in place — a field row swaps the list for that field's
+      // values — so a fit measured only at open is a fit for the smallest thing the
+      // surface will ever be. Watching the body is what makes the cap follow it.
+      var refit = new MutationObserver(function () { fitPop(root); });
+      refit.observe(body, { childList: true, subtree: true });
+      // And when the window changes rather than the content: a shortened window left the
+      // flip and the cap that were right for the old one, and with no page scroll the rows
+      // that fell outside had nothing to bring them back short of closing the menu.
+      var onResize = function () {
+        // A window that shrank past the trigger leaves the menu hanging off a control
+        // nobody can see any more — measured at 1000×220: the chip's row sits at 250,
+        // the port ends at 220, and no cap can bring either back. Refitting answers the
+        // case where the anchor survived; the other one is a menu about nothing, so it
+        // closes.
+        var anchor = wrapOf(root).getBoundingClientRect(), box = clipBox(wrapOf(root));
+        if (anchor.bottom > box.bottom || anchor.top < box.top) { close(); return; }
+        fitPop(root);
+      };
+      window.addEventListener("resize", onResize);
+      onDestroy.push(function () { refit.disconnect(); window.removeEventListener("resize", onResize); });
+    }
     // Give a sheet's search field breathing room before the list, the way the
     // reference apps do. The gap has to belong to the *pinned* element, not sit
     // between it and the list: a margin there is not painted, so rows would scroll
@@ -3196,8 +3505,18 @@
     closeSurfaces();
     paneRefs();
     fillDetail(detailContent, item);
+    // Where the board was. Hiding it takes the port's scroll range away, so both
+    // offsets clamp to 0 and coming back would land on the top-left of the list —
+    // measured 150/250 → 0/0. Captured only on the way *in* from the board: puck →
+    // puck keeps the first one, which is the place Back actually returns to.
+    if (workEl && !document.body.classList.contains("viewing-puck")) {
+      boardAt = { x: workEl.scrollLeft, y: workEl.scrollTop };
+    }
     detailPane.hidden = false;
     document.body.classList.add("viewing-puck");
+    // The scrollport is a labelled region (it is the only thing that scrolls, so it is
+    // also a tab stop), and what it holds has just changed from the board to one puck.
+    if (workEl) workEl.setAttribute("aria-label", "Puck");
     // The mobile topbar becomes the puck's context (Linear-style): Pucks › Title,
     // where "Pucks" is the back action and the title truncates.
     var tc = document.getElementById("topCrumb");
@@ -3211,7 +3530,7 @@
       tc.appendChild(el("span", "crumb-title", item.title));
     }
     detailContent.scrollTop = 0;
-    window.scrollTo(0, 0);
+    if (workEl) workEl.scrollTop = 0; // the port, not the page: see lockScroll
     selectedId = item.id;
   }
   function highlightSelected() {
@@ -3240,7 +3559,18 @@
   // reopen it over the newly-picked view, so close in place and strip the hash.
   function exitPuckView() {
     if (!document.body.classList.contains("viewing-puck")) return;
+    // The place the board was left in belongs to *that* board. This exit is a navigation
+    // to a different one — a view, a repo, a tag from the rail — so the offsets are
+    // dropped rather than restored: measured, a four-row view opened at `scrollLeft: 150`
+    // with its titles off screen because a longer list had been read there.
+    boardAt = null;
     closeDetail();
+    // And the offset standing in the port right now is the *puck's* — `openDetail` zeroes
+    // it on the way in, but the reader may have scrolled the page itself since. Dropping
+    // the saved place without dropping the live one just moves the problem: measured, a
+    // view picked after reading 300px into a puck opened 186px down its own list.
+    var port = scrollPort();
+    if (port) { port.scrollTop = 0; port.scrollLeft = 0; }
     if (location.hash) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {} }
   }
   function closeDetail() {
@@ -3256,8 +3586,16 @@
     // the puck it belonged to and can still commit to it.
     closeSurfaces();
     document.body.classList.remove("viewing-puck");
+    if (workEl) workEl.setAttribute("aria-label", "Board");
     if (detailPane) detailPane.hidden = true;
     highlightSelected();
+    // The board is back and has its scroll range again, so the place it was left in can
+    // be. After `highlightSelected`, which is the last thing that touches the rows.
+    if (workEl && boardAt) {
+      workEl.scrollTop = boardAt.y;
+      workEl.scrollLeft = boardAt.x;
+      boardAt = null;
+    }
   }
 
   // A table row — full-width, aligned columns (Name · Priority · Agent · Repo ·
@@ -3294,7 +3632,8 @@
       caret.setAttribute("aria-expanded", opts.fold === "shut" ? "false" : "true");
       caret.title = (opts.fold === "shut" ? "Expand " : "Collapse ") + item.title;
       caret.appendChild(icon(opts.fold === "shut" ? "chev-right" : "chev-down", "lh-caret"));
-      caret.addEventListener("click", function (e) { e.stopPropagation(); toggleGroup(item.id); });
+      caret.setAttribute("data-fold", item.id);
+      caret.addEventListener("click", function (e) { e.stopPropagation(); toggleGroup(item.id, caret); });
       name.appendChild(caret);
     }
     name.appendChild(el("span", "list-title", item.title));
@@ -4108,11 +4447,28 @@
 
   // Fold a group shut or open it. Display state, so it travels the same road as the
   // rest: into `state`, out through the URL, onto the board.
-  function toggleGroup(key) {
+  // A fold rebuilds the board, and a rebuilt board starts at the top — measured, 262 → 0
+  // — so the row you had just pressed scrolled out from under your finger and the thing
+  // you folded was off screen when it finished. The control is therefore the anchor: its
+  // distance from the port's top edge is read before the render and restored after, so
+  // the caret stays exactly where you tapped it whatever changed height above it.
+  //
+  // Found again by its `data-fold` key rather than kept as a node: the render replaces
+  // the element, so the old one is detached and measures nothing.
+  function toggleGroup(key, control) {
     if (state.collapsed.has(key)) state.collapsed.delete(key);
     else state.collapsed.add(key);
     refreshDisplayDot();
+    var port = scrollPort();
+    var before = port && control ? control.getBoundingClientRect().top - port.getBoundingClientRect().top : null;
     renderBoard();
+    if (before == null) return;
+    var again = null;
+    [].forEach.call(port.querySelectorAll("[data-fold]"), function (e) {
+      if (again == null && e.getAttribute("data-fold") === String(key)) again = e;
+    });
+    if (!again) return;
+    port.scrollTop += (again.getBoundingClientRect().top - port.getBoundingClientRect().top) - before;
   }
   // Under `group=parent` the list is a tree, and the flat groups `groupsOf` hands both
   // renderers are already its edges: one group per parent, holding that parent's
@@ -4315,7 +4671,8 @@
         toggle.appendChild(el("span", "lh-label", grp.label));
         toggle.appendChild(el("span", "count", String(grp.items.length)));
       }
-      toggle.addEventListener("click", function () { toggleGroup(grp.key); });
+      toggle.setAttribute("data-fold", grp.key);
+      toggle.addEventListener("click", function () { toggleGroup(grp.key, toggle); });
       h.appendChild(toggle);
       if (opens) {
         h.appendChild(openButton(opens, grp.label, "lh-label"));
@@ -4446,6 +4803,15 @@
     // an Update offering to overwrite it with the new filter. Every mutation ends in a
     // render, so this is where the transition can be seen at all.
     if (state.fromView && !Object.keys(viewParamObject()).length) state.fromView = null;
+    // Emptying a scrollport's tall child *would* clamp its offsets to the origin — but the
+    // clamp happens at layout, and nothing between here and the appends below reads
+    // geometry, so the board is never measured while it is empty. That is what keeps an
+    // async redraw (`loadWritableRepos` resolving under a scrolled list) from throwing the
+    // reader back to the top. Measured with a forced reflow inserted in this gap: 150/200
+    // → 0/0. So: no `getBoundingClientRect`, `offsetHeight` or `scrollHeight` between the
+    // clear and the fill. `tests/chrome.test.mjs` holds the guarantee.
+    // A glide still running would carry on moving whatever replaces the list it belonged to.
+    stopGlide();
     board.innerHTML = "";
     // The layout is whatever the toggle says — in every view.
     //
@@ -8236,9 +8602,13 @@
     // follows: the field at the top, the first lines in the band above the keyboard.
     function reveal() {
       if (!ta.isConnected) return;
-      var bar = document.querySelector(".topbar");
-      var barH = bar && getComputedStyle(bar).position === "sticky" ? bar.getBoundingClientRect().height : 0;
-      window.scrollTo(0, Math.max(0, ta.getBoundingClientRect().top + window.scrollY - barH - 8));
+      // Scrolls the port, and measures against the port's own top rather than the
+      // viewport's: the chrome above it (topbar, view header, chip row) is outside the
+      // scrollport now, so subtracting the topbar's height would aim 52px too high.
+      paneRefs();
+      if (!workEl) return;
+      var box = workEl.getBoundingClientRect();
+      workEl.scrollTop = Math.max(0, workEl.scrollTop + ta.getBoundingClientRect().top - box.top - 8);
     }
     // iOS can scroll again *after* focus, once the keyboard is up, which would undo the
     // line above. A shrinking visual viewport is the only event that says the keyboard
@@ -8935,4 +9305,7 @@
   }
   window.addEventListener("popstate", syncHash);
   window.addEventListener("hashchange", syncHash);
+  // Resolves the scrollport and, with it, arms the axis lock — which otherwise would not
+  // exist until something else happened to want the port.
+  paneRefs();
 })();

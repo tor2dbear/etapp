@@ -121,13 +121,22 @@
         <!-- active filters, one chip per predicate; hidden when nothing is filtered -->
         <div class="chiprow" id="chipRow" hidden></div>
 
-        <div class="work" id="work">
+        <!-- `.work` is the app's scrollport: the shell is a fixed-height column, so the
+             topbar, the view header and the chip row stay put without sticky positioning
+             and this box scrolls under them. The footer lives *inside* it so it still
+             scrolls away with the board it dates, rather than becoming a permanent bar. -->
+        <!-- The one scrollport, and therefore a keyboard target: with the shell at a fixed
+             height the document no longer scrolls, so Page Down and Space from the topbar
+             or the chip row had nothing to move. Chrome puts scrollers in the tab order by
+             itself; Safari does not, which is where this is the difference between a board
+             a keyboard can read and one it cannot. The label follows what the box is
+             holding — see `openDetail`. -->
+        <div class="work" id="work" tabindex="0" role="region" aria-label="Board">
           <main id="board" class="board" aria-live="polite"></main>
           <aside class="detail-pane" id="detailPane" hidden aria-label="Puck detail">
             <button class="detail-close" id="detailClose" type="button" aria-label="Close"></button>
             <div class="detail-content" id="detailContent"></div>
           </aside>
-        </div>
 
         <footer class="foot">
           <span id="footmeta"></span>
@@ -139,6 +148,7 @@
           <a href="data/roadmap.json">roadmap.json</a> ·
           <a id="sourceLink" href="#">source</a>
         </footer>
+        </div>
       </div>
     </div>
     <div class="scrim" id="scrim" hidden></div>
