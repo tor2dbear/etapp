@@ -638,11 +638,24 @@ body {
    is still shrinkable, so a long parent name pressed against the heading's `100cqw` cap
    squeezed them instead of ellipsising itself: measured at 393px, the swatch went from
    10px to **0** (the colour dot simply gone) and the count from 16px to 7, clipping the
-   digit. The two shrinkable boxes are named, in the order they give: the `h2` that holds
-   the name, and the name itself. Both exceptions are written more specifically than the
-   blanket rule, since that is the only thing deciding them. */
-.list-head .lh-inner > *, .list-head h2 > *, .list-head .lh-toggle > * { flex: none; }
+   digit. The shrinkable boxes are named — and they are every box *on the way down to the
+   name*, which is the part the first version got wrong. It named the `h2` and the name
+   itself and stopped; between them sit `.lh-stub` and `.lh-toggle`, children of the `h2`
+   and therefore caught by the blanket rule. Rigid, they kept their content width inside a
+   shrunk parent and simply overflowed it: measured on live data at 390px, a stub 359px
+   wide inside a 246px `h2`, its name running **89px** under the archive mark. The
+   stylesheet already carried a comment saying this exact overlap had been fixed once — it
+   had, one box further in, and this rule re-broke it from one box further out. Each
+   exception is written more specifically than the blanket rule, since source order is the
+   only thing deciding them. */
+.list-head .lh-inner > *, .list-head h2 > *, .list-head .lh-toggle > *, .list-head .lh-stub > * { flex: none; }
 .list-head .lh-inner > h2 { flex: 0 1 auto; min-width: 0; }
+/* A box may give only if the name is *inside* it. `.lh-toggle--split` is the toggle of a
+   heading whose name is its own sibling button, so it holds nothing but the caret and the
+   swatch — letting it shrink squeezed it to 28px around 39px of content and pushed the
+   swatch out of its own box onto the first letter of the title (measured: swatch at
+   47–57, name starting at 46). Which is the blanket rule's own point, one level in. */
+.list-head h2 > .lh-stub, .list-head h2 > .lh-toggle:not(.lh-toggle--split) { flex: 0 1 auto; min-width: 0; }
 .list-head .lh-label { flex: 0 1 auto; min-width: 0; }
 .lh-toggle--split { margin-right: 0; padding-right: 0; }
 .list-head .head-open { font: inherit; text-transform: inherit; letter-spacing: inherit; }
@@ -674,7 +687,16 @@ body {
 }
 /* Only the control behaves like one. */
 .lh-toggle { cursor: pointer; }
-.lh-toggle:hover { background: var(--panel-2); }
+/* Bakom guarden, som elva andra regler i den här filen — och de här fyra hade missat den.
+   På en telefon finns ingen pekare som lämnar: `:hover` fastnar efter ett tapp och står
+   kvar tills man rör något annat. För de flesta hover-reglerna spelar det ingen roll (de
+   sitter i ytor som stängs av tappet, eller flyttar bara en textfärg), men listans egna
+   fäll- och arkivkontroller *står kvar under fingret* och målar en bakgrund — så det syns
+   som en mörk ruta runt precis det man nyss tryckte på. Rapporterat från en telefon, en
+   bild per kontroll. Mätt med `(hover: hover)` falskt och framtvingad `:hover`:
+   `.lh-toggle` och `.list-fold` målade `--panel-2`, medan `.list-row` — som redan hade
+   guarden — inte gjorde det. */
+@media (hover: hover) { .lh-toggle:hover { background: var(--panel-2); } }
 /* The stub has no caret, so it pays the caret's width in padding instead and its label
    lands where every other label in the list does. There is nothing under it to expand
    until the archive toggle lifts, so it offers no cursor and no hover.
@@ -691,7 +713,7 @@ body {
    stylesheet said otherwise. The caret only ever appears inside a toggle, so nothing is
    narrowed by qualifying it. */
 .lh-toggle .lh-caret { width: 13px; height: 13px; color: var(--ink-3); }
-.lh-toggle:hover .lh-caret { color: var(--ink-2); }
+@media (hover: hover) { .lh-toggle:hover .lh-caret { color: var(--ink-2); } }
 /* A folded group keeps its heading and loses its bottom margin — the gap belonged to
    the rows that are no longer there. */
 .list-group.shut { margin-bottom: 4px; }
@@ -715,7 +737,13 @@ body {
   --glyph-w: 18px;
   --row-gap: 14px;
   --row-pad: 12px;
-  grid-template-columns: var(--glyph-w) minmax(220px, 1fr) 44px 108px 148px 92px;
+  /* Only the two the chooser never asks about are written here. Everything after the name
+     is `--list-tracks`, set on the list by `applyListTracks()` from the same walk over
+     FIELDS that builds the cells — so a property that is switched off takes its column
+     with it, and a track can never outlive the cell that filled it. The fallbacks are the
+     shipped set, so a row rendered before the variable lands is still the old row rather
+     than a two-column one. */
+  grid-template-columns: var(--glyph-w) minmax(220px, 1fr) var(--list-tracks, 44px 108px 148px 92px);
   /* The minimum comes from the *columns*, never from the content. `min-width: max-content`
      read the longest title instead, and on a phone that is a disaster rather than a
      nicety: measured with one 120-character title, the name cell came out 851px wide on a
@@ -726,7 +754,7 @@ body {
      The sum is the tracks it must not squeeze: five gaps and the row's own padding, plus
      the name's floor. The title ellipsises inside that floor, which is what it has always
      been specified to do. */
-  --list-fixed: calc(var(--glyph-w) + 44px + 108px + 148px + 92px + 5 * var(--row-gap) + var(--row-pad) + 6px);
+  --list-fixed: calc(var(--glyph-w) + var(--list-track-px, 392px) + var(--list-gaps, 5) * var(--row-gap) + var(--row-pad) + 6px);
   min-width: calc(var(--list-fixed) + 220px);
   align-items: center;
   gap: var(--row-gap);
@@ -770,7 +798,7 @@ body {
   background: none; border: 0; border-radius: var(--r-sm);
   color: var(--ink-3); cursor: pointer;
 }
-.list-fold:hover { background: var(--panel-2); color: var(--ink-2); }
+@media (hover: hover) { .list-fold:hover { background: var(--panel-2); color: var(--ink-2); } }
 .list-fold .lh-caret { width: 13px; height: 13px; }
 /* A parent whose parts the filter took. Not a row: there is nothing to open, and the
    line exists to stop the parent above it from drawing exactly like a leaf. */
@@ -786,7 +814,7 @@ body {
   font-style: italic;
 }
 .list-archived { cursor: pointer; font-style: normal; }
-.list-archived:hover { background: var(--panel-2); color: var(--ink-2); }
+@media (hover: hover) { .list-archived:hover { background: var(--panel-2); color: var(--ink-2); } }
 .list-archived .icn { width: 13px; height: 13px; }
 @media (hover: hover) { .list-row:hover { background: var(--panel-2); } }
 .list-name { min-width: 0; display: flex; align-items: center; gap: 8px; }
@@ -799,7 +827,19 @@ body {
 .list-repo { color: var(--ink-2); font-size: var(--fs-md); }
 .list-repo .repo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list-repo .repo-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.list-dt { justify-content: flex-end; }
+.list-dt { justify-content: flex-end; gap: 8px; }
+.list-status { justify-content: flex-start; }
+.list-owner { justify-content: center; }
+.list-owner .owner-avatar { width: 20px; height: 20px; }
+.list-tags { gap: 4px; overflow: hidden; }
+/* The field's name, drawn only when a view shows more than one date — see dateEl(). Small
+   and quiet: it is there so two numbers are not ambiguous, not to compete with them. */
+.date-tag {
+  margin-right: 4px;
+  color: var(--ink-3); opacity: .8;
+  font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+  text-transform: uppercase; letter-spacing: .04em;
+}
 .list-date { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* The columns the tiers used to drop. They are all here, always — the row is as wide as
    its columns need and the box scrolls, so nothing has to be dropped and nothing has to
@@ -862,6 +902,14 @@ body {
 .card-repo { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-weight: var(--fw-semibold); white-space: nowrap; }
 .repo-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .card-date { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Two or three dates, kept inside the card. `min-width: 0` is what lets the box be
+   narrower than the dates it holds — a flex item defaults to its content width, which is
+   how a nowrap row came to paint outside the card in the first place — and the wrap then
+   has somewhere to go. The auto margin moves here from `.card-date`, so the single-date
+   card is laid out by exactly the rule it always was; the inner one is cancelled, or each
+   date would push the next one to a line of its own. */
+.card-dates { margin-left: auto; min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 8px; }
+.card-dates .card-date { margin-left: 0; }
 /* Row 3 — tags. Badges are STATIC (flat, rounded-rect, no border, default cursor);
    the round bordered pills in the filter bar (.chip) are the CLICKABLE ones. */
 .card-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
@@ -1360,6 +1408,19 @@ body.scroll-locked { overflow: hidden; }
    — without it the box grows and the shell's height means nothing. */
 .work {
   display: grid; grid-template-columns: 1fr; align-items: start;
+  /* The rows are sized by what is in them, said out loud — because with a scroll container
+     in one, `auto` does not mean that. `#board` carries `overflow-x: auto`, which makes it
+     a scroll container in *both* axes, and a scroll container contributes almost nothing to
+     its row's height: it can scroll, so it need not be tall. Left `auto`, row one took the
+     leftover space (573px) while the board itself, `align-self: start` and therefore its
+     own content height, stood 3019px tall — and the 2446px difference was painted straight
+     over the footer beneath it. Reported from a phone as the footer's text sitting among
+     the cards, mid-board.
+     It only became reachable when the shell gained a definite height: with none, the rows
+     had no free space to distribute and sized to their content by default. So this is the
+     one thing that change cost, and it costs it only in the kanban layout — the list's
+     board is short enough that its row and its content agreed. */
+  grid-auto-rows: max-content;
   flex: 1; min-height: 0; overflow: auto;
 }
 /* It is a tab stop (see `index.html`), so a click on the empty space beside the columns
@@ -1376,6 +1437,19 @@ body.scroll-locked { overflow: hidden; }
    list at all, and forbid sideways panning inside its own code blocks and tables. The same
    puck reached from the board layout had none — an asymmetry with no reason behind it. */
 body:not(.viewing-puck) .work:has(> .board.as-list) { touch-action: pan-y pinch-zoom; }
+/* And no rubber band sideways. `touch-action` stops the browser *starting* a horizontal
+   pan; it does not re-decide a scroll already under way, which is why chaining a swipe
+   down straight into a swipe right moves both axes on iOS (measured on the device: 1 of 9
+   touchmoves cancelable, we refused none and wrote nothing, and x still travelled 138 with
+   y 318). The half we cannot take back is the browser's. The half we can is what it does
+   at the *edge*: with a bounce, that gesture drags the whole list past its own left edge —
+   headings and rows shifted ~180px right of where they belong, the sticky boxes riding
+   along with the compositor while `scrollLeft` sits at 0 and cannot say so.
+   `-x` only, and `none` rather than `contain`: the vertical rubber band is the one a long
+   list is actually read with, and it stays. The property is not new here — the sheet has
+   used it since `overscroll-behavior: none` was what removed *its* bounce, so it is known
+   to land on the device this is for. */
+body:not(.viewing-puck) .work:has(> .board.as-list) { overscroll-behavior-x: none; }
 /* No native scroll indicators on a phone, and the reason is that a two-axis port draws
    two of them badly. Reported from a real device, three symptoms of one cause: the
    vertical bar is painted *under* the sticky group headings, it travels with the sideways
