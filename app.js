@@ -141,23 +141,11 @@
   };
   var SORTS = ["default", "updated-desc", "priority", "status", "target", "updated-asc", "created-desc", "created-asc", "title"];
   var PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
-  // Display preferences persist (they're settings, not a transient filter); a URL
-  // that names them wins over these on load — see readUrl().
-  try {
-    var savedView = localStorage.getItem("roadmap-view");
-    if (savedView === "list" || savedView === "board") state.view = savedView;
-    var savedSort = localStorage.getItem("roadmap-sort");
-    if (SORTS.indexOf(savedSort) !== -1) state.sort = savedSort;
-    var savedGroup = localStorage.getItem("roadmap-group");
-    if (savedGroup) state.group = savedGroup; // validated after GROUPS is defined
-    state.showDone = localStorage.getItem("roadmap-done") === "1";
-    if (localStorage.getItem("roadmap-empty") === "0") state.showEmpty = false;
-    savedProps = localStorage.getItem("roadmap-props");
-  } catch (e) {}
-  // Read here, parsed after FIELDS is defined — the parser validates against it, and a
-  // stored key from a newer board must not become a property this one cannot draw.
-  var savedProps;
-  function saveDisplay(key, value) { try { localStorage.setItem("roadmap-" + key, value); } catch (e) {} }
+  // Display preferences persist (they're settings, not a transient filter) — but they
+  // persist *to the view they were set in*, not to the board as a whole. There is no
+  // read here any more, and that is the point: which memory to restore is a question
+  // only the view can answer, and at this line there is no view yet. See
+  // `restoreDisplay` and `readUrl`, where the three levels are ordered.
 
   // ── auto-status ──
   // The harvester computes the flags (item.signals, discrete types) so the JSON,
@@ -931,6 +919,155 @@
     if (next === location.search) return; // nothing moved — don't churn history
     try { history.replaceState(history.state, "", location.pathname + next + location.hash); } catch (e) {}
   }
+  // ── the view's display memory ───────────────────────────────────────────────
+  // The grouping, the ordering, the properties, the folds and the two whole-board
+  // toggles belong to **the view they were set in**. Setting `All pucks` to group by
+  // repo used to regroup Ready and Inbox with it — and in Inbox the URL could not even
+  // say so, because `effectiveParams` drops a `group` the view has already fixed: a
+  // setting invisible in the link and visible on the screen, which is the hardest kind
+  // to find.
+  //
+  // The rule this closes was already written one storey down, in `goToView`: *"Navigation
+  // is a fresh start. Clearing only the places left the rest of the filter riding along
+  // […] leaving one has to leave all of it, or the rows in the sidebar stop meaning what
+  // they say."* That paragraph is about the filter. The display was the half still
+  // riding along.
+  //
+  // It settles against the other stated rule — display preferences are settings, not a
+  // transient filter — by *narrowing* it rather than dropping it: a setting still
+  // persists, and what it persists to is the view. The strongest clue was in the file
+  // already. A saved view carries all of `VIEW_KEYS` and `applySavedView` restores every
+  // one of them, so half the views on this board could already do this; the question was
+  // never whether display can be per view but why only the saved ones had it.
+  //
+  // **Three levels, and the order is the contract: the URL wins, then the view's memory,
+  // then the board's defaults.** A shared link is what the product promises — it has to
+  // draw the same board for whoever opens it — so a link that names a setting beats the
+  // memory and, as `applyParams` already said, is never written into it: someone else's
+  // view must not quietly become yours.
+  var DISPLAY_STORE = "roadmap-display";
+  // Every key in `VIEW_KEYS` except the two that are not display. `view` is the view's
+  // own identity — it is what the memory is keyed *by*. `q` is the filter, which
+  // navigation clears rather than remembers, and that is `goToView`'s rule left standing.
+  // What remains is exactly what a saved view stores about how a board looks, which is
+  // the whole argument: the built-in views were the only ones that could not.
+  var DISPLAY_KEYS = ["group", "layout", "sort", "done", "empty", "collapsed", "props"];
+  var displayMem = null;
+  function displayStore() {
+    if (displayMem) return displayMem;
+    var raw = null;
+    try { raw = localStorage.getItem(DISPLAY_STORE); } catch (e) {}
+    if (raw) {
+      try {
+        var o = JSON.parse(raw);
+        if (o && typeof o === "object") return (displayMem = o);
+      } catch (e) {} // unreadable is the same as absent, and migrating over it is right
+    }
+    return (displayMem = migrateDisplay());
+  }
+  function writeDisplayStore(store) {
+    displayMem = store;
+    try { localStorage.setItem(DISPLAY_STORE, JSON.stringify(store)); } catch (e) {}
+  }
+  // The old format was one localStorage key per setting with no notion of a view at all —
+  // the shape this closes. It is read once, into `all`: that is the view those settings
+  // were made in, since it is the board you land on, and seeding all six views from them
+  // would freeze one accident into six memories, which is the contagion being removed.
+  // The old keys are dropped as they are read, so nothing can go on reading them, and an
+  // empty object is written rather than nothing — a store that is present but empty is
+  // how the migration is stopped from running a second time and handing back a memory you
+  // have since reset.
+  //
+  // Only what differs from the defaults, which is what `viewParamObject` emits and
+  // therefore what every later write looks like. A stored `done: "0"` would be a memory
+  // of having changed nothing.
+  function migrateDisplay() {
+    var old = {};
+    ["view", "sort", "group", "done", "empty", "props"].forEach(function (k) {
+      try {
+        var v = localStorage.getItem("roadmap-" + k);
+        if (v != null) old[k] = v;
+        localStorage.removeItem("roadmap-" + k);
+      } catch (e) {}
+    });
+    var mem = {};
+    if (old.view === "list") mem.layout = "list";
+    if (old.sort && old.sort !== DISPLAY_DEFAULTS.sort) mem.sort = old.sort;
+    if (old.group && old.group !== DISPLAY_DEFAULTS.group) mem.group = old.group;
+    if (old.done === "1") mem.done = "1";
+    if (old.empty === "0") mem.empty = "0";
+    if (old.props) mem.props = old.props;
+    var store = Object.keys(mem).length ? { all: mem } : {};
+    writeDisplayStore(store);
+    return store;
+  }
+  // A copy, always: what this hands back goes straight into `applyParams`, and both it
+  // and `effectiveParams` mutate the object they are given — which here would be the
+  // store itself.
+  function displayMemory(focus) {
+    var mem = displayStore()[focus], o = {};
+    if (mem) DISPLAY_KEYS.forEach(function (k) { if (mem[k] != null) o[k] = String(mem[k]); });
+    return o;
+  }
+  // The one writer. It stores what the board *is*, never the key that just moved: the
+  // display is a tuple whose settings decide each other — picking the hierarchy picks the
+  // list layout, changing the grouping drops the folds — so a per-key write would store
+  // half a board. `viewParamObject` has already dropped every setting this view cannot
+  // act on (a fold outside the list, an archive toggle outside `ARCHIVABLE`), so the
+  // memory only ever holds what the view can draw, and a view left at the defaults holds
+  // no entry at all rather than an entry saying "default".
+  //
+  // Writing the whole board is also where the link rule gets its edge. Loading
+  // `?group=agent` writes nothing — that is `readUrl`, and it is what keeps someone
+  // else's view from quietly becoming yours. But turning one knob on that board stores
+  // the grouping too, because the tuple is what is stored. That is the line, and it is
+  // the right one: **a link you only look at writes nothing; a knob you turn adopts the
+  // board you turned it on.** The alternative stores half a board — a memory of a
+  // grouping and a layout that were never on screen together.
+  //
+  // **Silent inside a saved view.** A saved view is its own record, in
+  // `board.config.json`, and the way to persist a change to it is `Update "<name>"` in
+  // the chip row. A local memory laid over it would win on the way back in, so the view
+  // would read as *(edited)* the moment it opened — the same shape as the `etapps`
+  // rename bug. Nor may it fall through to the built-in view underneath: tweaking a saved
+  // view whose scope is Ready is not a statement about Ready.
+  function rememberDisplay() {
+    if (state.fromView) return;
+    var o = viewParamObject(), mem = {};
+    DISPLAY_KEYS.forEach(function (k) { if (o[k] != null) mem[k] = o[k]; });
+    var store = displayStore();
+    if (Object.keys(mem).length) store[state.focus] = mem;
+    else delete store[state.focus];
+    writeDisplayStore(store);
+  }
+  // Whether the archive would be *on* once you landed in `focus` — that view's remembered
+  // `done`, since `restoreDisplay` starts from the defaults and lays the memory over them.
+  //
+  // The sidebar's counts need this and it is not a detail: both `viewCounts` and
+  // `placeCounts` say, in their own comments, that a row's number is what clicking it
+  // shows. That held for free while `showDone` was one value for the whole board — the
+  // current value *was* every destination's value. Per view it is not, and reading
+  // `state.showDone` for a row you are not standing in makes the number a promise the
+  // click immediately breaks. Which is the very failure `goToPlace` already names one
+  // screen down, about clearing the agent while landing on a repo.
+  function willShowDone(focus) { return displayMemory(focus).done === "1"; }
+  // Put the board's display back to what `focus` was left in, over the board's defaults
+  // for whatever it was never given. A view you have never set up therefore opens at the
+  // defaults rather than inheriting the last one: inheritance is the contagion being
+  // removed, and it would be at its worst on a first visit, which is the one time there
+  // is nothing on screen to correct it.
+  //
+  // Both navigations go through it, and `goToPlace` is the one that is easy to miss:
+  // `state.focus` is the memory's key, so anything that moves it has to move the display
+  // with it. A repo or an agent is not a view of its own — that would be a memory per
+  // repo, which is more than anyone asked for — it is `all` with a filter, which is
+  // exactly what `goToPlace` sets, so landing on one restores `all`.
+  function restoreDisplay(focus) {
+    clearDisplay();
+    applyParams(displayMemory(focus)); // never `reset`: the query is not this one's to touch
+    refreshDisplayDot();
+  }
+
   // A repo can be written short (`pia-terminal`), full (`owner/pia-terminal`) or by
   // display name (`PIA`) — resolve any of them to the id the state holds.
   function resolveRepo(v) {
@@ -942,14 +1079,36 @@
     return hit;
   }
   function readUrl() {
-    var s = location.search.replace(/^\?/, "");
-    if (!s) return;
-    var got = {};
-    s.split("&").forEach(function (kv) {
+    var s = location.search.replace(/^\?/, ""), got = {};
+    if (s) s.split("&").forEach(function (kv) {
       var i = kv.indexOf("=");
       got[i < 0 ? kv : kv.slice(0, i)] = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
     });
+    // Where the three levels are ordered: the view's memory over the board's defaults,
+    // and the link over both. The view has to be read first — *which* memory to restore
+    // is the one question only the URL can answer — which is why this cannot be the
+    // boot-time localStorage read it replaces: that one ran before there was a view, and
+    // therefore had to apply one board's settings to all six.
+    //
+    // No early return on an empty search any more. A bare `/` is the `all` view, and it
+    // has a memory like every other.
+    var focus = canonicalView(got.view || "all");
+    if (!VIEWS[focus]) focus = "all";
+    restoreDisplay(focus);
     applyParams(got);
+  }
+  // Every display key back to the board's own default. Split out of `applyParams`'s
+  // reset branch because `restoreDisplay` needs the same half without the other one: a
+  // navigation to a place resets the display and keeps the query, which is the one
+  // combination the reset branch cannot express.
+  function clearDisplay() {
+    state.showDone = DISPLAY_DEFAULTS.showDone;
+    state.showEmpty = DISPLAY_DEFAULTS.showEmpty;
+    state.group = DISPLAY_DEFAULTS.group;
+    state.view = DISPLAY_DEFAULTS.view;
+    state.sort = DISPLAY_DEFAULTS.sort;
+    state.collapsed.clear();
+    state.props = null;
   }
   // Apply a view's params to the board. `reset` makes them authoritative (a saved
   // view is a complete description); the boot path leaves untouched keys alone
@@ -959,13 +1118,7 @@
       state.query = "";
       state.focus = "all";
       state.fromView = null; // applySavedView sets it back; every other reset means "no view"
-      state.showDone = DISPLAY_DEFAULTS.showDone;
-      state.showEmpty = DISPLAY_DEFAULTS.showEmpty;
-      state.group = DISPLAY_DEFAULTS.group;
-      state.view = DISPLAY_DEFAULTS.view;
-      state.sort = DISPLAY_DEFAULTS.sort;
-      state.collapsed.clear();
-      state.props = null;
+      clearDisplay();
     }
     // A link's display choices win over the saved preferences, but aren't saved
     // themselves — someone else's view shouldn't quietly become yours.
@@ -1432,7 +1585,6 @@
   ];
   var PROP_BY_KEY = {};
   PROPS.forEach(function (f) { PROP_BY_KEY[f.key] = f; });
-  state.props = parseProps(savedProps);
   var DATE_PROPS = PROPS.filter(function (f) { return f.where === "date"; }).map(function (f) { return f.key; });
   // The default set is the board as it shipped: everything on, with the dates left to the
   // automatic rule below. Written as "no choice" rather than as a list, so a view that has
@@ -4409,7 +4561,7 @@
   // counts end up disagreeing with the board they describe.
   function liftArchive() {
     state.showDone = true;
-    saveDisplay("done", "1"); // the same key `setDisplay("showDone", …, "done")` writes
+    rememberDisplay(); // the same write `setDisplay("showDone", …)` makes, into the same view
     refreshDisplayDot();
     refreshNav(); // the sidebar's counts read `state.showDone`
   }
@@ -4751,6 +4903,13 @@
   function toggleGroup(key, control) {
     if (state.collapsed.has(key)) state.collapsed.delete(key);
     else state.collapsed.add(key);
+    // A fold is one of the seven, and the one the puck called the worst case: the keys
+    // are the *grouping's* own values, so a fold made under `group=parent` carried into a
+    // view grouping by something else, where it matched nothing — or worse, matched that
+    // grouping's `NO_VALUE` bucket. `setDisplay` already cleared them when the grouping
+    // changed, for exactly that reason; a navigation had no equivalent, and now the
+    // memory is it.
+    rememberDisplay();
     refreshDisplayDot();
     var port = scrollPort();
     var before = port && control ? control.getBoundingClientRect().top - port.getBoundingClientRect().top : null;
@@ -5289,15 +5448,20 @@
   // counted with that view's query, not with the source's grand total. The old
   // number came straight from the harvester and counted the archive too, so "PIA
   // 52" landed you on six cards. Same rule the views already hold themselves to.
-  // Archive-aware for the same reason the view counts are: `goToPlace()` keeps
-  // `state.showDone`, so with the toggle on a repo click shows its landed cards
-  // while the chip's number excluded them. A place counts what its click shows.
+  // Archive-aware for the same reason the view counts are: a repo click used to keep
+  // `state.showDone`, so with the toggle on it showed its landed cards while the chip's
+  // number excluded them. A place counts what its click shows.
+  //
+  // What it shows is now `all`'s memory, not the live value — a place is not a view of
+  // its own, it is `all` with a filter, and `goToPlace` restores `all` accordingly. Read
+  // from the board you are standing in, a repo row inside Inbox counted against Inbox's
+  // archive setting and landed on All pucks'.
   // Siffran är vad klicket visar — och ett klick på ett repo behåller en aktiv
   // disciplinkö (goToPlace byter bara den dimension man klickade i). Så varje
   // dimension räknas *inuti* den andra: annars kunde ett repo säga 20 och landa på
   // de 3 som är routade till den valda disciplinen.
   function placeCounts() {
-    var base = parseQuery(VIEWS.all).concat(state.showDone ? [] : [NOT_DONE]);
+    var base = parseQuery(VIEWS.all).concat(willShowDone("all") ? [] : [NOT_DONE]);
     // The *other* active place, read out of the query rather than hand-built: one
     // producer for what a place term looks like, so the two can't drift.
     function withOthers(skip) {
@@ -5417,7 +5581,14 @@
     // view is a complete description of the board (`applySavedView` resets everything),
     // so leaving one has to leave all of it, or the rows in the sidebar stop meaning
     // what they say. A refinement is something you add *after* arriving.
+    //
+    // The display is that same sentence one storey up, and for a while it was the half
+    // still riding along: `state.group`, `state.sort`, `state.props` and the folds
+    // followed you into every view, so a grouping chosen in All pucks regrouped Ready.
+    // They belong to the view they were set in — so this does not merely clear them, it
+    // puts back what *this* view was left in. See `restoreDisplay`.
     state.fromView = null; // you have left the view, not modified it
+    restoreDisplay(key);
     setQueryTerms([]);
     refreshNav();
     renderBoard();
@@ -5440,6 +5611,11 @@
     // `scopeToPlace` below deliberately does not: that one is a refinement made from
     // inside the board, which is exactly the "you changed the view" case.
     state.fromView = null;
+    // And the display with it, for the same reason and by the same key: this navigation
+    // sets `focus` to "all" one line up, and `state.focus` is what the memory is keyed
+    // by. A repo gets no memory of its own — that is one per repo, more than anyone
+    // asked for — it lands on the `all` view, so it restores the `all` view.
+    restoreDisplay("all");
     var vals = placeValues(field);
     var wasSole = vals.length === 1 && vals[0] === lower(key);
     // What a place navigation drops: the *refinement* — the tag, the text, the priority
@@ -5481,7 +5657,13 @@
     // flipped; two different numbers for one view are never explained.
     Object.keys(VIEWS).forEach(function (k) {
       c[k] = 0;
-      qs[k] = parseQuery(VIEWS[k]).concat(ARCHIVABLE[k] && !state.showDone ? [NOT_DONE] : []);
+      // `willShowDone(k)` and not `state.showDone`: every row is a *different*
+      // destination now, each with its own remembered archive setting. Standing in Ready
+      // with All pucks holding `done: "1"`, the current value said "off" and the All
+      // pucks row advertised a number its own click would not produce — and
+      // `viewsShown` gates on these, so a row could vanish while its memory would have
+      // filled it.
+      qs[k] = parseQuery(VIEWS[k]).concat(ARCHIVABLE[k] && !willShowDone(k) ? [NOT_DONE] : []);
     });
     DATA.items.forEach(function (it) {
       Object.keys(qs).forEach(function (k) { if (runQuery(it, qs[k])) c[k]++; });
@@ -5780,7 +5962,6 @@
     "created-asc": "Oldest created", title: "Title A–Z",
   };
   var DISPLAY_DEFAULTS = { view: "board", sort: "default", group: "status", showDone: false, showEmpty: true };
-  if (!GROUPS[state.group]) state.group = DISPLAY_DEFAULTS.group; // a stale saved value
   var displayBtn = document.getElementById("displayBtn");
   var displayDot = document.getElementById("displayDot");
   function displayDirty() {
@@ -5793,7 +5974,7 @@
     return state.view === "list" && state.collapsed.size > 0;
   }
   function refreshDisplayDot() { if (displayDot) displayDot.hidden = !displayDirty(); }
-  function setDisplay(key, value, storeAs) {
+  function setDisplay(key, value) {
     // A fold belongs to the columns it was folded in. Changing the grouping replaces
     // every column, so carrying the keys over means folding a group nobody touched —
     // and the "none" bucket is keyed the same (NO_VALUE) under Agent, Target, Parent
@@ -5803,19 +5984,16 @@
     // Picking the hierarchy picks the layout that can draw it, and the segment moves so
     // you can see it happen. The alternative — falling back silently — is the mistake
     // this file already names one screen down: a control that claims a choice which
-    // never took effect. (A stored layout is written too, so the switch is as durable
-    // as if you had pressed List yourself.)
-    if (key === "group" && !groupUsable(value)) {
-      state.view = "list";
-      saveDisplay("view", "list");
-    }
-    // `props` is a Set or null, not a string — stored through its own serializer so the
-    // preference survives a reload the way `sort` and `group` do. The empty choice stores
-    // as `none` and "no choice" as the empty string, which is exactly the distinction
-    // `parseProps` reads back: without it a board that had every property switched off
-    // would come back showing them all.
-    if (key === "props") saveDisplay("props", value ? serializeProps(value) : "");
-    else saveDisplay(storeAs || key, typeof value === "boolean" ? (value ? "1" : "0") : value);
+    // never took effect. The write below carries it, so the switch is as durable as if
+    // you had pressed List yourself.
+    if (key === "group" && !groupUsable(value)) state.view = "list";
+    // One write, of the whole board, into the view you are standing in — see
+    // `rememberDisplay`. It replaces a `saveDisplay(key, value)` per setting, and the
+    // line above is why that shape had to go: picking the hierarchy moves the *layout*
+    // too, so the write following a `group` change was never only about `group`. It also
+    // means `props` needs no special case for being a Set rather than a string, since
+    // what is stored is `viewParamObject`'s serialization and not the raw value.
+    rememberDisplay();
     refreshDisplayDot();
     // The sidebar's numbers read `state.showDone` now, so a display change can move
     // them — and which rows exist at all, since a view whose count is zero is not
@@ -5927,9 +6105,9 @@
     function paintWholesale() {
       wholeHost.innerHTML = "";
       var rows = [];
-      if (ARCHIVABLE[state.focus]) rows.push(["showDone", "done", "Show done & cancelled", null]);
+      if (ARCHIVABLE[state.focus]) rows.push(["showDone", "Show done & cancelled", null]);
       if (state.view === "board") {
-        rows.push(["showEmpty", "empty", "Show empty columns", "An empty column is still a drop target."]);
+        rows.push(["showEmpty", "Show empty columns", "An empty column is still a drop target."]);
       }
       if (!rows.length) return;
       wholeHost.appendChild(el("div", "dp-rule"));
@@ -5937,9 +6115,9 @@
         var row = el("label", "fp-toggle");
         var cb = document.createElement("input");
         cb.type = "checkbox"; cb.checked = state[w[0]];
-        cb.addEventListener("change", function () { setDisplay(w[0], cb.checked, w[1]); });
-        row.appendChild(cb); row.appendChild(el("span", null, w[2]));
-        if (w[3]) row.title = w[3];
+        cb.addEventListener("change", function () { setDisplay(w[0], cb.checked); });
+        row.appendChild(cb); row.appendChild(el("span", null, w[1]));
+        if (w[2]) row.title = w[2];
         wholeHost.appendChild(row);
       });
     }
@@ -5955,11 +6133,12 @@
     reset.appendChild(icon("reset"));
     reset.appendChild(el("span", null, "Reset to default"));
     reset.addEventListener("click", function () {
-      for (var k in DISPLAY_DEFAULTS) state[k] = DISPLAY_DEFAULTS[k];
-      state.collapsed.clear();
-      state.props = null;
-      saveDisplay("view", state.view); saveDisplay("sort", state.sort); saveDisplay("group", state.group);
-      saveDisplay("done", "0"); saveDisplay("empty", "1"); saveDisplay("props", "");
+      clearDisplay();
+      // Which also *forgets* this view: `rememberDisplay` deletes an entry that has
+      // nothing non-default left in it, so a reset view opens at the defaults next time
+      // rather than at a stored copy of them. Reset is per view, like everything else
+      // here — the button is in the menu that changed this one board.
+      rememberDisplay();
       refreshDisplayDot();
       // Navigation, inte bara brädet: `viewCounts()` och `placeCounts()` läser
       // `showDone`, så en reset som släcker arkivet lämnade sidomenyns siffror — och
