@@ -1936,6 +1936,72 @@ body.preload * { transition: none !important; }
    way, or the two autos would split the free space and park the value mid-row. */
 .fp-cur { margin-left: auto; color: var(--ink-3); }
 .dp-rule { height: 1px; background: var(--line); margin: 2px 0; }
+/* ── the ordering chain ─────────────────────────────────────────────────────── */
+/* One row per key — `[↑] Field  direction  ✕` — at the same rhythm as a `.row`, but a
+   <div>: the row is not the target, its three controls are. There is no meaning to
+   invent for "press the key you are already sorting by".
+   The row's *position* is the setting — it says this key is asked third — which is
+   why there are no ordinals any more: with one list instead of two, the order is
+   readable from the stack itself, and a number was a second way of saying it. */
+.dp-sort { display: flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: var(--fs-md); }
+/* The field name gives first and the direction second: a name is what the row is
+   *about*, a direction is what it does. Both may ellipsise — `soonest → latest` is
+   the longest thing in here — but neither may squeeze the two icon controls, which
+   are fixed marks. That is the list headings' rule, one surface over. */
+.dp-sort-field, .dp-sort-dir {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 0;
+  padding: 3px 6px; border: 0; border-radius: var(--r-sm);
+  background: none; font: inherit; text-align: left; cursor: pointer;
+}
+/* Pulled back by its own padding, so the *label* starts on the content line and the hover
+   wash still has room around it. Without this the field name sat 15px right of every other
+   value label in the surface — the picker's rows one level down begin exactly there. */
+.dp-sort-field { flex: 1 1 auto; color: var(--ink); margin-left: -6px; }
+.dp-sort-dir { flex: 0 1 auto; color: var(--ink-3); }
+.dp-sort-field > span, .dp-sort-dir > span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dp-sort-chev { flex: none; width: 11px; height: 11px; color: var(--ink-3); }
+.dp-sort-act {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--ink-3); cursor: pointer;
+}
+/* The first row has no `↑`, so it gets this instead — the same width, no target.
+   Without it the field names stepped 24px left on row one and the column read as a
+   mistake rather than as a control that is missing on purpose. Its own class, not the
+   control's: sharing one put a <span> into every set that asks a row what controls it
+   has. */
+.dp-sort-gap { flex: none; width: 24px; }
+/* `(hover: hover)` because on a phone a tap leaves the state stuck under your finger
+   — the rule the list's own controls were swept into. */
+@media (hover: hover) {
+  .dp-sort-act:hover, .dp-sort-field:hover, .dp-sort-dir:hover {
+    background: var(--panel-2); color: var(--ink);
+  }
+}
+.dp-sort-act .icn { width: 13px; height: 13px; }
+/* `＋ Add a key` and `🗑 Reset ordering` are ordinary rows — they belong to the list
+   rather than to any key in it, and drawing them as anything else would have made
+   them read as a third kind of thing in a surface that just got down to one. */
+.dp-sort-add { color: var(--ink-3); }
+.dp-sort-add .icn { width: 13px; height: 13px; flex: none; }
+@media (max-width: 639px) {
+  /* A sheet is a thumb surface: the controls grow with its rows, like every other
+     target in here. */
+  /* Bled to the scroller's clip edge and re-inset, exactly like `.sheet .row` — the same
+     two edges for the same reason: the text is content and belongs on the content line,
+     while the box may reach further out. Without it the chain rows kept a 9px inset the
+     rows above and below them do not take, and the surface had three text columns. */
+  .sheet .dp-sort {
+    font-size: var(--fs-xl); min-height: 40px;
+    margin-inline: calc(var(--sheet-gap) - var(--pad));
+    padding-inline: calc(var(--pad) - var(--sheet-gap));
+  }
+  .sheet .dp-sort-act { width: 34px; height: 34px; }
+  .sheet .dp-sort-gap { width: 34px; }
+  .sheet .dp-sort-field, .sheet .dp-sort-dir { padding: 6px; }
+}
 /* ── .resetbtn — put this back the way it was ───────────────────────────────── */
 /* There were two of these and they wore different colours: the Display menu's in
    `--ink-3`, Settings' sidebar-width one in the accent red. Neither is destructive —
@@ -2410,6 +2476,19 @@ body.preload * { transition: none !important; }
        --fs-xl and not --fs-lg: the rows inside a sheet step up to --fs-xl, and a
        heading that sets smaller than the list it heads is not a heading. */
   }
+  /* The way back sits *on the title line*, not in a row of its own below it — the shape
+     every native sheet uses, and the one a phone reported the absence of: a back row inside
+     the body is labelled with the level you are standing in, which reads "you are here",
+     and its label can never line up with the rows beneath it because it sits one chevron in.
+     Absolute like the `?`, so the title stays centred in the *head* rather than in whatever
+     space a flex sibling leaves it. */
+  .sheet-back {
+    position: absolute; left: 2px; width: 30px; height: 30px; padding: 0;
+    border: 0; background: none; color: var(--ink-2); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: var(--r-sm);
+  }
+  .sheet-back .icn { width: 1.15em; height: 1.15em; }
   .sheet-help {
     position: absolute; left: 12px; width: 22px; height: 22px; border-radius: 50%;
     border: 1px solid var(--line); color: var(--ink-3); font-size: var(--fs-base);

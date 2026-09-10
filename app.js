@@ -119,7 +119,9 @@
     showDone: false,
     focus: "all", // "all" | "ready" (unblocked now/next) | "inbox" (triage) | "attention" (flagged)
     view: "board", // "board" (kanban columns) | "list" (one column, grouped)
-    sort: "default", // see SORTS below
+    // The ordering, as a chain of keys — see SORT_FIELDS. Always canonical: `applyParams`
+    // runs every value through `parseSort`, so a legacy one-word mode never reaches here.
+    sort: "order,updated-desc",
     group: "status", // which field becomes the columns — see GROUPS
     showEmpty: true, // board only: keep a column that has no pucks (it's a drop target)
     // List-only: which groups are folded shut. A folded group is a *display*
@@ -139,7 +141,6 @@
     // it has been through a saved view).
     fields: null,
   };
-  var SORTS = ["default", "updated-desc", "priority", "status", "target", "updated-asc", "created-desc", "created-asc", "title"];
   var PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
   // Display preferences persist (they're settings, not a transient filter) — but they
   // persist *to the view they were set in*, not to the board as a whole. There is no
@@ -837,6 +838,16 @@
       var chosen = parseProps(o.props);
       if (chosen) o.props = serializeProps(chosen); else delete o.props;
     }
+    // `sort` beside `props`, and for the identical reason: the board renders from
+    // `parseSort`, so a stored `sort: "default"` — the spelling every saved view and every
+    // shared link used before the chain — drew `order,updated-desc` and compared `default`,
+    // and read as *(edited)* the moment it opened. One normaliser, both sides of the
+    // comparison. Dropped when it is the default, since `viewParamObject` only emits a
+    // non-default and the two have to agree about which strings those are.
+    if (o.sort) {
+      o.sort = serializeSort(parseSort(o.sort));
+      if (o.sort === DEFAULT_SORT) delete o.sort;
+    }
     var focus = o.view || "all";
     var layout = o.layout || DISPLAY_DEFAULTS.view;
     var cols = columnsForFocus(focus, o.done === "1");
@@ -953,6 +964,32 @@
   // the whole argument: the built-in views were the only ones that could not.
   var DISPLAY_KEYS = ["group", "layout", "sort", "done", "empty", "collapsed", "props"];
   var displayMem = null;
+  // The two words the *released* board wrote into storage as whole sort values. They stopped
+  // meaning their old chains when the ordering became one, so a returning browser holding
+  // either would have its ties silently re-decided — priority by title instead of updated,
+  // status by title instead of manual rank. That is the instance the earlier rounds looked
+  // for and could not find: not a link and not a saved view, but `roadmap-display` itself,
+  // written by the shipped UI on this very board.
+  //
+  // The compatibility belongs **here and not in `parseSort`**. A migration runs once and
+  // then the grammar is clean; an expansion in the parser is forever, and takes the spelling
+  // of the one-key chain with it — which is what made the first attempt cost a `priority,title`
+  // nobody needed. Stamped, because without the stamp it would run on every read, and then
+  // deliberately narrowing the chain to just `priority` in the new menu would be rewritten
+  // back on the next load: the round-trip bug again, one storey up.
+  var STORED_SORT_V = 2;
+  var STORED_SORT_WAS = { priority: "priority,updated", status: "status,order" };
+  function upgradeStoredSort(store) {
+    if (!store || store.__v >= STORED_SORT_V) return false;
+    Object.keys(store).forEach(function (view) {
+      var mem = store[view];
+      if (mem && typeof mem === "object" && STORED_SORT_WAS[mem.sort]) {
+        mem.sort = STORED_SORT_WAS[mem.sort];
+      }
+    });
+    store.__v = STORED_SORT_V;
+    return true;
+  }
   function displayStore() {
     if (displayMem) return displayMem;
     var raw = null;
@@ -960,7 +997,12 @@
     if (raw) {
       try {
         var o = JSON.parse(raw);
-        if (o && typeof o === "object") return (displayMem = o);
+        if (o && typeof o === "object") {
+          displayMem = o;
+          // Written back, or the stamp never lands and the upgrade runs again next load.
+          if (upgradeStoredSort(o)) writeDisplayStore(o);
+          return displayMem;
+        }
       } catch (e) {} // unreadable is the same as absent, and migrating over it is right
     }
     return (displayMem = migrateDisplay());
@@ -992,12 +1034,14 @@
     });
     var mem = {};
     if (old.view === "list") mem.layout = "list";
-    if (old.sort && old.sort !== DISPLAY_DEFAULTS.sort) mem.sort = old.sort;
+    // The flat key was written by the same released UI, so it carries the same two words.
+    if (old.sort && old.sort !== DISPLAY_DEFAULTS.sort) mem.sort = STORED_SORT_WAS[old.sort] || old.sort;
     if (old.group && old.group !== DISPLAY_DEFAULTS.group) mem.group = old.group;
     if (old.done === "1") mem.done = "1";
     if (old.empty === "0") mem.empty = "0";
     if (old.props) mem.props = old.props;
     var store = Object.keys(mem).length ? { all: mem } : {};
+    store.__v = STORED_SORT_V; // already in the new spelling, so it must not be upgraded again
     writeDisplayStore(store);
     return store;
   }
@@ -1135,7 +1179,9 @@
     if (got.props != null) state.props = parseProps(got.props);
     if (GROUPS[got.group]) state.group = got.group;
     if (got.layout === "list" || got.layout === "board") state.view = got.layout;
-    if (SORTS.indexOf(got.sort) !== -1) state.sort = got.sort;
+    // Through the parser, so `state.sort` is always a canonical chain — a legacy one-word
+    // mode expands here and never has to be recognised again downstream.
+    if (got.sort) state.sort = serializeSort(parseSort(got.sort));
     if (got.view) got.view = canonicalView(got.view);
     if (VIEWS[got.view]) state.focus = got.view;
     if (!got.q) return;
@@ -1301,6 +1347,11 @@
     "chev-down": ["m3.75 5.625 3.75 3.75 3.75 -3.75"],
     check: ["M12.5 3.75 5.625 10.625l-3.125 -3.125"],
     "chev-up": ["m11.25 9.375 -3.75 -3.75 -3.75 3.75"],
+    // A chevron is a direction; an arrow is a *move*. The set had all four chevrons and no
+    // arrow at all, so "move this key up" was drawn with the glyph that everywhere else
+    // means "there is more above" — a fold, a caret, a menu. Same 15 grid, same 1px stroke:
+    // the chevron's own head, on a shaft that runs the full height.
+    "arrow-up": ["M7.5 13.125 7.5 1.875", "m3.75 5.625 3.75 -3.75 3.75 3.75"],
     // refresh-cw — ask CI for a fresher harvest. Scaled from Feather's 24 grid by the
     // same 0.625 as its neighbour `reset` (rotate-ccw), which is the nearest glyph in
     // the set: that one undoes an arrangement, this one goes and gets something. They
@@ -1616,9 +1667,22 @@
   // default, not an override — the moment a view names its dates, they win. Otherwise
   // ticking `Updated` under a created-sort would show the update date while the order
   // followed creation, which is the exact reading this rule exists to prevent.
+  // The *first* date key in the chain, since that is the one the eye is actually following —
+  // a `created` key sitting third behind `priority` and `status` is a tiebreak, not what the
+  // list looks ordered by. Reading only `[0]` would answer "updated" for the common
+  // `order,created-desc`, which is the exact shuffled-looking column this rule exists to
+  // prevent.
+  // Which date a key is about is the field's own business (`SORT_FIELDS[…].date`), not a
+  // second table keyed by spelling — that table had one row per key *and direction*, so a
+  // direction the catalogue gained would have to be remembered here too.
   function autoDateField() {
-    if (state.sort === "target" || state.group === "target") return "target";
-    return (state.sort === "created-desc" || state.sort === "created-asc") ? "created" : "updated";
+    if (state.group === "target") return "target";
+    var hit = null;
+    parseSort(state.sort).forEach(function (k) {
+      var d = SORT_FIELDS[sortField(k)].date;
+      if (!hit && d) hit = d;
+    });
+    return hit || "updated";
   }
   // The dates a card or row shows, as field keys. No choice → the automatic one. A choice
   // → exactly what it names, *including nothing*: an empty set is a choice, and a board
@@ -2346,7 +2410,15 @@
       // from the list, though — capture retargets the compatibility mouse events
       // too, so a tap on a row would resolve its click against the sheet and the
       // row's own handler would never run.
-      if (!fromBody) { try { root.setPointerCapture(e.pointerId); } catch (err) { /* older engines */ } }
+      // Nor from a *control* in the chrome, for the very reason the list is excluded: the
+      // back chevron sits in the head, so it is chrome by position and a button by purpose,
+      // and the capture has to follow purpose. Captured, its click resolved against the
+      // sheet and its handler never ran — the sheet drew a way back that did nothing, which
+      // is the same class of failure as a control that only fails when you press it.
+      var onControl = e.target && e.target.closest && e.target.closest("button, a, input, select, textarea");
+      if (!fromBody && !onControl) {
+        try { root.setPointerCapture(e.pointerId); } catch (err) { /* older engines */ }
+      }
     }
     function move(e) {
       if (!pending && !dragging) return;
@@ -2661,6 +2733,48 @@
 
   //   opts: { title, anchorWrap, cls, help, onClose, build(body, api) }
   //   → { close }
+  // A level inside a surface says two things: what it is called, and how to leave it. Where
+  // those are *drawn* is the shell's business and not the builder's — which is the promise
+  // `openSurface` has always made, and the reason this is a function rather than a branch at
+  // each call site.
+  //
+  // A sheet has a head, so the name becomes its title and the way back becomes a chevron
+  // beside it. That is the fix for what a phone reported: the way back used to be a row in
+  // the body labelled with the level you were *standing in*, which reads as "you are here"
+  // rather than "go back" — and it could never line up with the rows under it, since its
+  // label sits one chevron in. A popover has no head, so the same two facts stay a row at
+  // the top of the body, exactly as before.
+  //
+  // Called *after* the builder clears the body, because that is what the builders do.
+  // `title` omitted means level one: the surface's own name comes back and the way back goes.
+  function surfaceLevel(body, title, onBack) {
+    var sheet = body.closest && body.closest(".sheet");
+    if (sheet) {
+      var head = sheet.querySelector(".sheet-head");
+      if (!head) return;
+      var h3 = head.querySelector(".sheet-title");
+      if (h3) h3.textContent = title || head.dataset.title || "";
+      var old = head.querySelector(".sheet-back");
+      if (old) old.remove();
+      if (!onBack) return;
+      var b = el("button", "sheet-back");
+      b.type = "button";
+      b.title = "Back";
+      b.setAttribute("aria-label", "Back");
+      b.appendChild(icon("chev-left"));
+      b.addEventListener("click", onBack);
+      head.appendChild(b);
+      return;
+    }
+    if (!onBack) return;
+    var row = el("button", "fp-back");
+    row.type = "button";
+    row.appendChild(icon("chev-left", "fp-chev"));
+    row.appendChild(el("span", null, title || ""));
+    row.addEventListener("click", onBack);
+    body.insertBefore(row, body.firstChild);
+  }
+  var surfaceSeq = 0; // ids for the sheet headings that name their own dialog
   function openSurface(opts) {
     var phone = isPhone();
     var scrim = null;
@@ -2774,7 +2888,6 @@
       document.body.appendChild(scrim);
       root.setAttribute("role", "dialog");
       root.setAttribute("aria-modal", "true");
-      if (opts.title) root.setAttribute("aria-label", opts.title);
       root.tabIndex = -1; // focus lands on the sheet itself, never on a text field:
                           // that would raise the keyboard before anyone asked
       root.appendChild(el("div", "sheet-grip"));
@@ -2785,7 +2898,20 @@
         h.title = "What is this field?";
         head.appendChild(h);
       }
-      head.appendChild(el("h3", "sheet-title", opts.title || ""));
+      head.dataset.title = opts.title || ""; // level 1 restores this without knowing it
+      var h3 = el("h3", "sheet-title", opts.title || "");
+      // **Named by the heading, not by a copy of it.** An `aria-label` taken from
+      // `opts.title` is written once, and the heading is not: entering a level rewrites it
+      // to `Ordering` or `Add a key` while a screen reader went on announcing the surface
+      // as `Display`. Pointing at the heading means the accessible name *is* the visible
+      // one, with no second thing to keep in sync — the alternative is two writers for one
+      // fact, which is how they come to disagree. The id is per surface, since sheets can
+      // stack.
+      if (opts.title) {
+        h3.id = "sheet-title-" + (++surfaceSeq);
+        root.setAttribute("aria-labelledby", h3.id);
+      }
+      head.appendChild(h3);
       root.appendChild(head);
       root.appendChild(body);
       document.body.appendChild(root);
@@ -4272,9 +4398,16 @@
     return groupUsable("status") ? "status" : "repo";
   }
   function activeGroup() { return GROUPS[effectiveGroup()] || GROUPS.status; }
-  // "Manual" is the only ordering where a hand-placed position means anything —
-  // every other mode derives it from a field (see sortComparator).
-  function manualRank() { return state.sort === "default"; }
+  // Whether a hand-placed position is what the eye is reading — which, now that the
+  // ordering is a chain, is a question about *rank* and not about mode: `order` first means
+  // the list is in the order you put it in, and dragging moves you within it. Further down
+  // the chain `order` still breaks ties, but the list is not "manually ordered" any more,
+  // so a drag would land somewhere the fields decide rather than where you dropped it.
+  // `order` *forward* and first. Reversed (`order-desc`) the list still reads by rank, but a
+  // drop would have to write a rank that means the opposite of where the finger let go, so
+  // it is not manual ordering any more. The canonical spelling makes that free: a reversed
+  // key is `order-desc` and simply is not this string.
+  function manualRank() { return parseSort(state.sort)[0] === "order"; }
 
   // Bucket the visible pucks by the active grouping. Returns [{ key, label, items }]
   // in the group's own order — the one thing both renderers consume.
@@ -5252,56 +5385,172 @@
   function byDate(field, dir) {
     return function (a, b) {
       var av = a[field], bv = b[field];
-      if (av && bv) return (dir === 1 ? av.localeCompare(bv) : bv.localeCompare(av)) || a.title.localeCompare(b.title);
+      // 0 rather than a title comparison when the dates match: a key that settles its own
+      // ties can never be first in a chain, since nothing behind it would be reached.
+      if (av && bv) return dir === 1 ? av.localeCompare(bv) : bv.localeCompare(av);
       if (av) return -1;
       if (bv) return 1;
-      return a.title.localeCompare(b.title);
+      return 0;
     };
   }
 
-  function sortComparator() {
-    if (state.sort === "priority") {
-      return function (a, b) {
-        var ar = a.priority ? PRIORITY_RANK[a.priority] : 9;
-        var br = b.priority ? PRIORITY_RANK[b.priority] : 9;
-        if (ar !== br) return ar - br;
-        return (b.updated || "").localeCompare(a.updated || "") || a.title.localeCompare(b.title);
-      };
-    }
-    // The board's own reading order, flattened. `childItems` has sorted a parent's parts
-    // this way all along — "the order you'd work them", status ladder then manual rank then
-    // title — and this is that comparator one level up, so a list sorted by status reads
-    // each group exactly as the kanban board would read left to right. Manual rank rather
-    // than `updated` as the second key for the same reason: `order` is the puck's declared
-    // place *within* its column, which is what the board uses there.
-    //
-    // Inert under the status grouping, where every puck in a column already shares a
-    // status — and the menu keeps offering it anyway, the way Display keeps offering
-    // groupings the layout cannot draw: a row that disappears under you teaches nothing.
-    // The two automations agree there, which is the pleasant part: `groupSays` hides the
-    // status property under that same grouping, for the same reason.
-    if (state.sort === "status") {
-      return function (a, b) {
-        var sa = statusRank(a.status), sb = statusRank(b.status);
-        if (sa !== sb) return sa - sb;
-        var oa = a.order == null ? Infinity : a.order, ob = b.order == null ? Infinity : b.order;
-        if (oa !== ob) return oa - ob;
-        return a.title.localeCompare(b.title);
-      };
-    }
-    if (state.sort === "target") return byDate("target", 1); // nearest horizon first, undated last
-    if (state.sort === "updated-desc") return byDate("updated", -1);
-    if (state.sort === "updated-asc") return byDate("updated", 1);
-    if (state.sort === "created-desc") return byDate("created", -1);
-    if (state.sort === "created-asc") return byDate("created", 1);
-    if (state.sort === "title") {
-      return function (a, b) { return a.title.localeCompare(b.title); };
-    }
+  // ── the ordering is a chain ──────────────────────────────────────────────────
+  // `sort` is a list of keys — `sort=priority,target,updated-desc` — walked in order until
+  // one of them answers. Manual rank is therefore **a key among the others** rather than a
+  // mode that excludes them, which is the whole complaint: `order:` felt clumsy not because
+  // it is the wrong idea but because it was the *default and the only one*, so choosing any
+  // real field meant throwing the hand-placed positions away.
+  //
+  // Nothing is scrapped by this. `order:` stays a valid convention in every source repo; it
+  // stops being the thing you cannot combine with anything.
+  //
+  // Each key answers about **itself alone** and returns 0 for "these two are equal on me" —
+  // the chain is the tiebreak. That is the one structural change: `byDate` used to close
+  // with `title` itself, and a key that settles ties privately can never be first in a
+  // chain, because the keys behind it would never be reached.
+  // The catalogue is **fields**, and direction is a property of the key rather than part
+  // of its name. It used to be nine entries, which encoded three date fields × two
+  // directions as separate keys and baked the direction into the label of the other four
+  // (`Priority (high→low)`, `Title A–Z`). So `Recently updated` and `Oldest updated` were
+  // two catalogue rows for one question, while `Priority low→high` and `Title Z–A` could
+  // not be asked at all. Seven fields with a direction each says the same things and four
+  // more besides.
+  //
+  // The two direction labels are the *values*, not "ascending"/"descending": those words
+  // are already what the old key names said, and moving them from the name to a control is
+  // the whole change. `asc`/`desc` stay the spelling in the URL, where they mean the
+  // literal order of the underlying value.
+  var SORT_FIELDS = {
+    // `order` is the one field with no direction, and the reason is not symmetry: reversing
+    // it would silently switch **dragging** off, since `manualRank()` asks for the exact key
+    // `order` at the head of the chain. A control whose only visible effect is to disable a
+    // different control is worse than a missing one. And "manual, backwards" is not a second
+    // opinion about the rank — the rank *is* the order you put them in.
+    order: { label: "Manual", def: "asc",
+      rank: function (i) { return i.order == null ? null : i.order; } },
+    status: { label: "Status", def: "asc", asc: "now → done", desc: "done → now",
+      rank: function (i) {
+        // `statusRank` answers Infinity for a status the payload does not name, and that
+        // sentinel must not reach the comparator — see `sortCmp`.
+        var r = statusRank(i.status);
+        return r === Infinity ? null : r;
+      } },
+    priority: { label: "Priority", def: "asc", asc: "high → low", desc: "low → high",
+      rank: function (i) {
+        var r = i.priority ? PRIORITY_RANK[i.priority] : null;
+        return r == null ? null : r;
+      } },
+    target: { label: "Target", def: "asc", asc: "soonest → latest", desc: "latest → soonest",
+      date: "target" },
+    updated: { label: "Updated", def: "desc", asc: "oldest → newest", desc: "newest → oldest",
+      date: "updated" },
+    created: { label: "Created", def: "desc", asc: "oldest → newest", desc: "newest → oldest",
+      date: "created" },
+    title: { label: "Title", def: "asc", asc: "A → Z", desc: "Z → A",
+      text: function (i) { return i.title; } },
+  };
+  var SORT_ORDER = Object.keys(SORT_FIELDS); // the catalogue's order, which the picker keeps
+  // A key is a field, optionally suffixed with its direction. The suffix is written only
+  // when the direction is *not* the field's default, so the shortest spelling is the
+  // ordinary one and today's `order`, `status`, `priority`, `target` and `title` are
+  // unchanged. `updated-desc` and `created-desc` shorten to `updated`/`created`, which is
+  // the same key by another name — they parse identically, so a link that carries the long
+  // form still draws the board it always drew.
+  function sortField(k) { return k.replace(/-(asc|desc)$/, ""); }
+  // Both labels or neither: a field that names its two directions can be turned, one that
+  // does not cannot. The suffix is then not merely unused but *ignored* — `order-desc` reads
+  // back as `order`, so a hand-written link cannot ask for a board the menu has no control
+  // for, nor switch dragging off from the address bar.
+  function reversible(field) { return !!SORT_FIELDS[field].asc; }
+  function sortDir(k) {
+    var f = sortField(k), m = /-(asc|desc)$/.exec(k);
+    return m && reversible(f) ? m[1] : SORT_FIELDS[f].def;
+  }
+  function sortKeyName(field, dir) {
+    return reversible(field) && dir !== SORT_FIELDS[field].def ? field + "-" + dir : field;
+  }
+  // Each key answers about **itself alone** and returns 0 for "these two are equal on me" —
+  // the chain is the tiebreak. `byDate` already took a direction; the ranked and textual
+  // fields get theirs the same way, by a sign on the answer rather than a second entry in
+  // the catalogue.
+  //
+  // **A puck with no value for the field goes last in *both* directions**, which is the one
+  // thing a plain sign cannot express — and `byDate` has said so all along, pushing undated
+  // pucks to the end whichever way the dates run. A missing value is not the far end of the
+  // scale, it is outside the scale: reversing `high → low` must not promote "no priority" to
+  // the top, and `status-desc` must not lead with a status the payload does not name (which
+  // `statusRank` deliberately ranks last). Measured before the guard, with the sentinel rank
+  // carried through the sign: `priority-desc` put the unprioritised puck first, ahead of Low,
+  // under a control whose own label promised "low → high". `rank` therefore answers `null`
+  // for absent rather than a sentinel number, so absence cannot be compared by accident.
+  function sortCmp(k) {
+    var f = SORT_FIELDS[sortField(k)], sign = sortDir(k) === "desc" ? -1 : 1;
+    if (f.date) return byDate(f.date, sign);
+    if (f.text) return function (a, b) { return sign * f.text(a).localeCompare(f.text(b)); };
     return function (a, b) {
-      var ao = a.order == null ? Infinity : a.order;
-      var bo = b.order == null ? Infinity : b.order;
-      if (ao !== bo) return ao - bo;
-      return (b.updated || "").localeCompare(a.updated || "") || a.title.localeCompare(b.title);
+      var ra = f.rank(a), rb = f.rank(b);
+      if (ra == null || rb == null) return ra == null && rb == null ? 0 : (ra == null ? 1 : -1);
+      return ra === rb ? 0 : (ra < rb ? -sign : sign);
+    };
+  }
+  // The board as it shipped, written out. `sort=default` *was* "order first, then updated",
+  // so the migration is to say so — and saying so is what lets you move `order` down the
+  // chain or drop it, which was impossible while it was spelled as one word.
+  var DEFAULT_SORT = "order,updated";
+  // `default` is the only word that expands, and round-tripping is why. Three of the nine
+  // old modes were chains written as one word — `priority` was "priority then updated",
+  // `status` was "status then order" — but those two words are also *field names*, so
+  // expanding them means the chain `priority` can never be written down: the menu removes
+  // `updated`, serializes `priority`, and the next read puts it straight back. A control
+  // that silently undoes itself is worse than a tiebreak that moved, so those two are read
+  // as the fields they name and their old second key becomes `title`, the chain's own
+  // ending. `default` is the only one of the three that is not a field, so it is the only
+  // one that can expand without eating a spelling.
+  //
+  // The alternative was measured and rejected: keep all three expansions and give the one-key
+  // chain an unambiguous spelling (`priority,title`). It works, at the price of a spelling
+  // nobody needs and a second rule about which `✕` may be drawn.
+  //
+  // It was rejected on the premise that the compatibility had no instance, and **that premise
+  // was wrong** — twice over. A doc did name the old meaning, and, the one that mattered, the
+  // released menu wrote these words into `roadmap-display` as whole values. So the
+  // compatibility is real and lives in `upgradeStoredSort` instead: a migration runs once and
+  // then the grammar here is clean, whereas an expansion in this map is forever and takes the
+  // one-key chain's spelling with it. Before concluding that nothing reads a value, ask what
+  // the *running app* writes — searching the repo answered no twice, and was wrong twice.
+  var LEGACY_SORT = { default: DEFAULT_SORT };
+  function parseSort(v) {
+    var raw = String(v == null ? "" : v).trim();
+    if (LEGACY_SORT[raw]) raw = LEGACY_SORT[raw];
+    var out = [], seen = {};
+    raw.split(",").forEach(function (k) {
+      k = k.trim();
+      var f = sortField(k);
+      // A name this board does not know is dropped rather than kept as an inert string —
+      // same as `parseProps`, and for the same reason: a stored chain from a newer board
+      // must not compare unequal to the one actually being drawn. And one key per *field*,
+      // since `updated,updated-asc` is two answers to one question and the second could
+      // never be reached anyway.
+      if (!SORT_FIELDS[f] || seen[f]) return;
+      seen[f] = 1;
+      out.push(sortKeyName(f, sortDir(k)));
+    });
+    return out.length ? out : parseSort(DEFAULT_SORT);
+  }
+  // In the chain's *own* order, not the catalogue's: the order is the meaning here, unlike
+  // `props`, where the set is what matters and a stable spelling is all that is wanted.
+  function serializeSort(keys) { return keys.join(","); }
+  function sortComparator() {
+    var chain = parseSort(state.sort).map(sortCmp);
+    return function (a, b) {
+      for (var i = 0; i < chain.length; i++) {
+        var n = chain[i](a, b);
+        if (n) return n;
+      }
+      // `title` closes every chain, whether or not it is in it. Two pucks equal on every
+      // chosen key still have to land in a stable order, or the list reshuffles itself on
+      // every render for no reason the reader can see.
+      return a.title.localeCompare(b.title);
     };
   }
 
@@ -5954,14 +6203,7 @@
   // answers *which* pucks — the two never overlap. Filter shows what it's doing
   // with chips/a count; Display shows a dot when anything differs from default,
   // because "showing more" must never read as "you have narrowed something".
-  var SORT_LABEL = {
-    default: "Manual", "updated-desc": "Recently updated", priority: "Priority (high→low)",
-    status: "Status (now→done)",
-    target: "Target (soonest)",
-    "updated-asc": "Oldest updated", "created-desc": "Newest created",
-    "created-asc": "Oldest created", title: "Title A–Z",
-  };
-  var DISPLAY_DEFAULTS = { view: "board", sort: "default", group: "status", showDone: false, showEmpty: true };
+  var DISPLAY_DEFAULTS = { view: "board", sort: DEFAULT_SORT, group: "status", showDone: false, showEmpty: true };
   var displayBtn = document.getElementById("displayBtn");
   var displayDot = document.getElementById("displayDot");
   function displayDirty() {
@@ -6026,10 +6268,17 @@
           return { value: k, label: GROUPS[k].label };
         });
       } },
-    { key: "sort", label: "Ordering",
-      current: function () { return state.sort; },
+    // A chain, so the row names the key the eye is following and says how many break its
+    // ties — `Priority (high→low) +2`. Spelling the whole chain out would be the honest
+    // thing on a wide menu and an ellipsised smear on a phone, and the primary key is the
+    // half you glance at this row to check.
+    { key: "sort", label: "Ordering", chain: true,
+      current: function () {
+        var c = parseSort(state.sort);
+        return SORT_FIELDS[sortField(c[0])].label + (c.length > 1 ? " +" + (c.length - 1) : "");
+      },
       options: function () {
-        return SORTS.map(function (s) { return { value: s, label: SORT_LABEL[s] || s }; });
+        return SORT_ORDER.map(function (k) { return { value: k, label: SORT_FIELDS[k].label }; });
       } },
     // The third row is a different shape: not one value out of a list but a subset, so
     // level 2 draws checkboxes instead of a radio list. It reuses the same two levels
@@ -6049,7 +6298,7 @@
   ];
   function displayLabel(f) {
     var cur = f.current(), hit = null;
-    if (f.multi) return cur; // a subset names itself; there is no single option to look up
+    if (f.multi || f.chain) return cur; // a subset and a chain both name themselves
     f.options().forEach(function (o) { if (o.value === cur) hit = o; });
     return hit ? hit.label : cur;
   }
@@ -6060,6 +6309,7 @@
   // grown two ways to reach a sub-list, and only one of them could be reversed.
   function renderDisplayRoot(pop) {
     pop.innerHTML = "";
+    surfaceLevel(pop); // level one: the surface's own name back in the head, no way back
     var seg = segmented(
       [["list", "List", "list"], ["board", "Board", "grid"]],
       state.view,
@@ -6153,13 +6403,12 @@
   // closing the menu — a display choice is rarely the only one you came to make, and
   // the Display menu holds five.
   function renderDisplayValues(pop, f) {
+    // The chain draws its *own* surface, back row included, so it is delegated to before
+    // this one clears anything — see the invariant on `renderSortChain`.
+    if (f.chain) { renderSortChain(pop, f); return; }
+
     pop.innerHTML = "";
-    var back = el("button", "fp-back");
-    back.type = "button";
-    back.appendChild(icon("chev-left", "fp-chev"));
-    back.appendChild(el("span", null, f.label));
-    back.addEventListener("click", function () { renderDisplayRoot(pop); });
-    pop.appendChild(back);
+    surfaceLevel(pop, f.label, function () { renderDisplayRoot(pop); });
 
     if (f.multi) { renderFieldChecks(pop, f); return; }
 
@@ -6173,6 +6422,188 @@
       row.addEventListener("click", function () {
         if (o.value !== cur) setDisplay(f.key, o.value);
         renderDisplayRoot(pop);
+      });
+      pop.appendChild(row);
+    });
+  }
+  // Level 2, the chain shape: one row per key, in order — `[↑] Field  direction  ✕` — then
+  // one row to add and one to reset. **The order is the setting**, which a list of
+  // checkboxes cannot say: a tick can report that `priority` is in the chain but never that
+  // it comes before `target`, and that is the difference between "sort by priority" and
+  // "priority within each horizon".
+  //
+  // It used to be two lists — the chain, then the whole catalogue underneath — and the only
+  // thing telling them apart was a small ordinal and some icons at the far edge. Nine
+  // near-identical rows on a phone, which is why the surface carried a sentence explaining
+  // which were which. **A note that says what the structure should have said is a diagnosis,
+  // not copy**: the catalogue moved behind `＋ Add a key`, one list was left, and the
+  // sentence had nothing to do.
+  //
+  // One row rather than a card per key, though a card is the roomier shape on a phone: the
+  // row is the shape that survives *both* presentations. `openSurface` promises the builder
+  // never learns which shell it got, and a card three rows tall is wrong in an anchored
+  // popover — so a card would have had to break that promise to be drawn well.
+  //
+  // Reordering is `↑` and not a drag. A drag is the obvious gesture and the wrong one here:
+  // on a phone this list lives inside a bottom sheet that is itself draggable — down to
+  // dismiss, up to snap — so a row drag would compete with its own container for the same
+  // finger. It *would* work in the popover, which is not draggable, and that is exactly the
+  // trade refused: one mechanism that is second-best on the desktop costs less than the
+  // first crack in the rule the whole surface layer rests on.
+  //
+  // The chain can never be emptied: `parseSort` answers with the default for an empty
+  // value, so a menu that let you remove the last key would show a chain the board is not
+  // drawing. The last row keeps its `✕` off rather than refusing the press — a control that
+  // only fails when you press it is not gated, it is decorated.
+  //
+  // **A renderer anything can jump back into owns its surface.** This one clears and draws
+  // its own way back, rather than trusting a caller to have done it — which is not style but
+  // the fix for a bug that shipped twice. The first time, `apply()` called this function
+  // directly and appended a second copy of the chain under the first: three clicks, seven
+  // rows. That was patched by routing `apply()` through `renderDisplayValues`, which clears —
+  // and the patch held only while this function had exactly one caller. Adding level 3 gave
+  // it three more (the picker's back row, and its two ways of choosing a field), and the bug
+  // came back in the shape reported from a phone: pressing `‹ Add a key` drew the chain
+  // *below* the picker, twice, three times. A convention that has to be remembered at every
+  // call site is not a convention.
+  function renderSortChain(pop, f) {
+    pop.innerHTML = "";
+    surfaceLevel(pop, f.label, function () { renderDisplayRoot(pop); });
+
+    var chain = parseSort(state.sort);
+    function apply(next) {
+      setDisplay("sort", serializeSort(next));
+      renderSortChain(pop, f); // stay on the list: building a chain is many clicks, not one
+    }
+    chain.forEach(function (k, i) {
+      var field = sortField(k), dir = sortDir(k), spec = SORT_FIELDS[field];
+      var row = el("div", "dp-sort");
+
+      // The field, swappable in place. Before this the only way to change the *first* key
+      // was to remove it — leaving a chain of one fewer — and add it again, where it landed
+      // last. Rewriting it here is what makes `↑` a rarity rather than the main path.
+      var pick = el("button", "dp-sort-field");
+      pick.type = "button";
+      pick.title = "Change " + spec.label;
+      pick.appendChild(el("span", null, spec.label));
+      pick.appendChild(icon("chev-right", "dp-sort-chev"));
+      pick.addEventListener("click", function () { renderSortPick(pop, f, i); });
+      row.appendChild(pick);
+
+      // Direction: a toggle, not a picker. There are exactly two, so a chevron would
+      // promise a list with two rows in it and cost a second tap to say the same thing.
+      // The label is the *values* — `high → low`, `newest → oldest` — because that is what
+      // the old key names said before the direction became a control.
+      //
+      // `Manual` draws none, and the ragged row that leaves is the honest shape: there is no
+      // question to answer there, and a disabled control or a dead label would both claim
+      // otherwise.
+      if (reversible(field)) {
+        var flip = el("button", "dp-sort-dir");
+        flip.type = "button";
+        flip.title = "Reverse " + spec.label;
+        flip.appendChild(el("span", null, spec[dir]));
+        flip.addEventListener("click", function () {
+          var next = chain.slice();
+          next[i] = sortKeyName(field, dir === "asc" ? "desc" : "asc");
+          apply(next);
+        });
+        row.appendChild(flip);
+      }
+
+      // Both controls sit at the *end* of the row, which is what lets every name in the
+      // surface start on one line. `↑` used to lead the row, from when there was an ordinal
+      // beside it to be near; the ordinals went when the menu became one list, and the arrow
+      // was left indenting the field name 46px past every other row in the sheet — reported
+      // from a phone, with the margins drawn on. The first row has no `↑` and gets a spacer
+      // instead of a disabled button: a control that answers nothing is worse than no
+      // control, but `✕` still has to land in one column. The spacer carries its *own* class
+      // rather than the control's — it shared `.dp-sort-act` first, which made "how many
+      // controls does this row have" a question with the wrong answer.
+      if (i > 0) {
+        var up = el("button", "dp-sort-act");
+        up.type = "button";
+        up.title = "Move " + spec.label + " up";
+        up.setAttribute("aria-label", up.title);
+        up.appendChild(icon("arrow-up"));
+        up.addEventListener("click", function () {
+          var next = chain.slice();
+          next.splice(i - 1, 0, next.splice(i, 1)[0]);
+          apply(next);
+        });
+        row.appendChild(up);
+      } else {
+        row.appendChild(el("span", "dp-sort-gap"));
+      }
+
+      if (chain.length > 1) {
+        var rm = el("button", "dp-sort-act");
+        rm.type = "button";
+        rm.title = "Remove " + spec.label;
+        rm.setAttribute("aria-label", rm.title);
+        rm.appendChild(icon("x"));
+        rm.addEventListener("click", function () {
+          apply(chain.filter(function (o) { return o !== k; }));
+        });
+        row.appendChild(rm);
+      }
+      pop.appendChild(row);
+    });
+
+    if (chain.length < SORT_ORDER.length) {
+      var add = el("button", "row dp-sort-add");
+      add.type = "button";
+      add.appendChild(icon("plus"));
+      add.appendChild(el("span", null, "Add a key"));
+      add.addEventListener("click", function () { renderSortPick(pop, f, null); });
+      pop.appendChild(add);
+    }
+    // A narrow reset, and it needs to be narrow: Display's own "Reset to default" puts back
+    // every one of the seven display keys, so there was no way to drop an ordering without
+    // also dropping the grouping, the layout and the properties you had just set.
+    if (serializeSort(chain) !== DEFAULT_SORT) {
+      var res = el("button", "row dp-sort-add");
+      res.type = "button";
+      res.appendChild(icon("trash"));
+      res.appendChild(el("span", null, "Reset ordering"));
+      res.addEventListener("click", function () { apply(parseSort(DEFAULT_SORT)); });
+      pop.appendChild(res);
+    }
+  }
+  // Level 3: which field. In place in the same surface with a way back, never a second
+  // overlay — on a phone a new sheet takes this one's place and the way back with it, which
+  // is the same reason `props` draws checkboxes here instead of opening a picker.
+  //
+  // `idx` is the row being rewritten, or `null` to append. A field already in the chain is
+  // not offered, since a chain holding one field twice has a key that can never be reached;
+  // the row being rewritten is the exception, where it stands as the current answer.
+  function renderSortPick(pop, f, idx) {
+    pop.innerHTML = "";
+    var chain = parseSort(state.sort);
+    surfaceLevel(pop, idx == null ? "Add a key" : "Change key", function () {
+      renderSortChain(pop, f);
+    });
+
+    var fields = chain.map(sortField);
+    SORT_ORDER.forEach(function (field) {
+      var at = fields.indexOf(field);
+      var mine = idx != null && at === idx;
+      if (at !== -1 && !mine) return;
+      var row = el("button", "row" + (mine ? " on" : ""));
+      row.type = "button";
+      row.setAttribute("data-value", field);
+      row.appendChild(el("span", null, SORT_FIELDS[field].label));
+      if (mine) row.appendChild(icon("check", "pick-check"));
+      row.addEventListener("click", function () {
+        // Re-picking the field already there is not a change, and must not read as one: a
+        // direction you had flipped would be reset by a tap that looked like a no-op.
+        if (mine) { renderSortChain(pop, f); return; }
+        var next = chain.slice(), key = sortKeyName(field, SORT_FIELDS[field].def);
+        // A swapped-in field takes its own default direction rather than the old field's:
+        // `newest → oldest` is not a thing `priority` can be.
+        if (idx == null) next.push(key); else next[idx] = key;
+        setDisplay("sort", serializeSort(next));
+        renderSortChain(pop, f);
       });
       pop.appendChild(row);
     });
@@ -6976,6 +7407,7 @@
   // popover never grows a third column on a phone.
   function renderFieldList(pop) {
     pop.innerHTML = "";
+    surfaceLevel(pop); // level one: the surface's own name back in the head, no way back
     pop.appendChild(el("div", "fp-label", "Add filter"));
     FILTER_FIELDS.forEach(function (f) {
       if (!reachableValues(f).length) return; // nothing here could change this view
@@ -6991,12 +7423,7 @@
   }
   function renderValueList(pop, f) {
     pop.innerHTML = "";
-    var back = el("button", "fp-back");
-    back.type = "button";
-    back.appendChild(icon("chev-left", "fp-chev"));
-    back.appendChild(el("span", null, f.label));
-    back.addEventListener("click", function () { renderFieldList(pop); });
-    pop.appendChild(back);
+    surfaceLevel(pop, f.label, function () { renderFieldList(pop); });
 
     var all = reachableValues(f);
     var box = el("div", "fp-values");
