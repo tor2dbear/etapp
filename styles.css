@@ -1753,7 +1753,35 @@ body.preload * { transition: none !important; }
    `.filter-count` stays out of this and should: it counts *filters*, not cards, and it
    is a solid pill rather than a mark beside a label. */
 .view-count { font-family: var(--mono); font-size: var(--fs-sm); color: var(--ink-3); font-variant-numeric: tabular-nums; }
-.vopts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+/* `min-width: 0` is the load-bearing half: a flex item's automatic minimum is its
+   *content*, so without it `.vacts`' own shrinking has nothing to shrink inside — the
+   ellipsis rule below did nothing and the Update button ran 250px past a 390px window,
+   clipped by `.app` and genuinely unreachable. Capping the text is two rules, one per
+   level, and only the pair works. */
+.vopts { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Pushed to the far end of the row it shares with Filter and Display. On a wide board
+   `.vopts` is already shrink-to-fit at the right, so this decides nothing there; in the
+   vhead, where `.vopts` spans (`margin-left: 0` below), it is what puts the actions
+   opposite the two openers instead of crowding them. */
+.vacts { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.vacts:empty { display: none; }
+/* A saved view's name is unbounded — neither the save nor the rename path caps it — and
+   `Update “<name>”` carries it. Left to wrap, a long one turned a toolbar button into a
+   six-line balloon 130px tall that pushed the row out of shape (measured at 390px with a
+   52-character name). It ellipsises instead: the *visible* text is cut, while the button's
+   own text node keeps the whole name, so a screen reader still announces which view it
+   updates. `min-width: 0` on both the container and the buttons is what lets a flex item be
+   narrower than its content at all. */
+/* **Only the button carrying the unbounded name may shrink**, and `min-width: 0` is the
+   whole mechanism: a flex item's automatic minimum is its content, so every sibling without
+   it already refuses to lose a character. The first version also wrote `flex: none` on the
+   parts — the shape the list heading landed on — and sabotage showed it changed nothing
+   here, so it is gone. `Reset` keeps its word because nothing told it not to. */
+.vacts .fchip-save { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Filter and Display keep their size; the squeeze goes to the actions, which are the part
+   that can lose characters without losing meaning. Direct children only — Save view's own
+   `.filter-wrap` (the popover's anchor) lives inside `.vacts`. */
+.vopts > .filter-wrap { flex: none; }
 .newbtn { gap: 5px; background: var(--panel-2); }
 .newbtn:hover { border-color: var(--ink-3); }
 /* filter popover: no empty band when closed (padding/border live on the chips) */
@@ -2131,6 +2159,15 @@ body.preload * { transition: none !important; }
 .fp-vlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-row .fp-n { color: var(--accent); font-family: var(--mono); font-size: var(--fs-xs); }
 .fp-toggle { display: flex; align-items: center; gap: 10px; font-size: var(--fs-md); color: var(--ink); cursor: pointer; }
+/* `flex-start` only where there are two lines — a one-line row centres against its box the
+   way every other control in this menu does, and switching all of them to top-alignment to
+   serve the two-line case would move a row nobody asked about. */
+.fp-toggle:has(.fp-toggle-hint) { align-items: flex-start; }
+.fp-toggle:has(.fp-toggle-hint) input { margin-top: 1px; }
+.fp-toggle-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* The definition, not a second name: one step down the type scale and one step out of the
+   ink, so the eye reads the row as a control with a footnote rather than two controls. */
+.fp-toggle-hint { font-size: var(--fs-sm); color: var(--ink-3); }
 /* A checkbox and not a switch, on purpose. A switch says "turn this feature on"; a
    checkbox says "include this in the set" — and that is exactly what these two do,
    in a menu whose other controls also *choose* (a segmented control, two selects).
@@ -2290,7 +2327,11 @@ body.preload * { transition: none !important; }
 /* The title lives in the topbar on every width now, so the vhead carries only the
    view-options (filter / sort / layout) — the "body" toolbar. */
 .vhead .view-switch { display: none; }
-.vhead .vopts { margin-left: 0; }
+/* Spans, so `.vacts`' own auto-margin has somewhere to push to. Shrink-to-fit, the
+   actions sat hard against Display and read as a third opener rather than as the thing
+   you do *to* what the two of them changed. The h2 beside it is `display: none` here, so
+   growing costs nothing else on the row. */
+.vhead .vopts { margin-left: 0; flex: 1; }
 
 /* ── uniform control height across the topbar + view-header ─────────────────── */
 .topbar .ghost,

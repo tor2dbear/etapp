@@ -115,6 +115,12 @@
                 <span id="displayDot" class="display-dot" hidden aria-hidden="true"></span>
               </button>
             </div>
+            <!-- The view's own actions — Save / Reset / Update. They used to sit in the
+                 chip row, on the reasoning that you finish building a filter there; but a
+                 view can be nothing but a display now, and then that row held one
+                 right-aligned button and nothing else. They belong beside the controls
+                 that made the change. Filled by `renderChips`. -->
+            <div class="vacts" id="viewActs"></div>
           </div>
         </header>
 

@@ -119,9 +119,16 @@
     showDone: false,
     focus: "all", // "all" | "ready" (unblocked now/next) | "inbox" (triage) | "attention" (flagged)
     view: "board", // "board" (kanban columns) | "list" (one column, grouped)
-    // The ordering, as a chain of keys — see SORT_FIELDS. Always canonical: `applyParams`
+    // The ordering, as a chain of keys — see SORT_FIELDS. Canonical when set: `applyParams`
     // runs every value through `parseSort`, so a legacy one-word mode never reaches here.
-    sort: "order,updated-desc",
+    // `null` means *no choice made*, which is the same distinction `props` draws two keys
+    // down, and for the same reason: a grouping may propose an ordering (`sortChain`), and
+    // an automation that applies in the absence of a choice needs an absence to read. It
+    // was spelled `DEFAULT_SORT` before, which conflated the two — so under a grouping with
+    // a proposal the chain `order,updated` could not be asked for at all. Measured on
+    // `group=none`: building `[Manual]` and adding `Updated` gave back `[Status, Manual]`
+    // and dropped `sort` from the URL, and `?sort=order,updated` drew `status,order`.
+    sort: null,
     group: "status", // which field becomes the columns — see GROUPS
     showEmpty: true, // board only: keep a column that has no pucks (it's a drop target)
     // List-only: which groups are folded shut. A folded group is a *display*
@@ -842,26 +849,42 @@
     // `parseSort`, so a stored `sort: "default"` — the spelling every saved view and every
     // shared link used before the chain — drew `order,updated-desc` and compared `default`,
     // and read as *(edited)* the moment it opened. One normaliser, both sides of the
-    // comparison. Dropped when it is the default, since `viewParamObject` only emits a
-    // non-default and the two have to agree about which strings those are.
+    // comparison.
+    //
+    // Dropped when it is what the board would draw anyway — which is the grouping's own
+    // proposal and not the constant. That is the whole correction: measured against
+    // `DEFAULT_SORT`, `order,updated` was deleted under `group=none` too, where it is a
+    // different board from the proposal, so the chain could not be asked for at all. The
+    // drop itself stays, since `viewParamObject` still emits only what the board would not
+    // have drawn by itself and the two sides have to agree about which strings those are.
+    // Below the group lines, because it is the *settled* grouping that proposes.
     if (o.sort) {
-      o.sort = serializeSort(parseSort(o.sort));
-      if (o.sort === DEFAULT_SORT) delete o.sort;
+      var okeys = parseSortKeys(o.sort);
+      if (okeys.length) o.sort = serializeSort(okeys); else delete o.sort;
     }
     var focus = o.view || "all";
     var layout = o.layout || DISPLAY_DEFAULTS.view;
     var cols = columnsForFocus(focus, o.done === "1");
     var eff = function (k) { return k !== "status" || cols.length > 1 ? k : "repo"; };
-    // A hierarchy grouping cannot be drawn as columns, so `group=parent&layout=board` is
-    // not a view: the layout wins and the grouping is dropped, which is the same shape
-    // as `empty` and `collapsed` below. Dropped rather than kept, so the parameters say
-    // what is actually drawn — a stored view that keeps a setting the board ignores is
-    // how an untouched view came to read as *(edited)*.
-    if (o.group === "parent" && layout !== "list") delete o.group;
+    // A grouping that cannot be drawn as columns is not a view together with the board
+    // layout: the layout wins and the grouping is dropped, the same shape as `empty` and
+    // `collapsed` below. Two of them (`LIST_ONLY`) — `parent` is a hierarchy, `none` is
+    // the absence of columns, which is the same statement from the other end. Dropped
+    // rather than kept, so the parameters say what is actually drawn — a stored view that
+    // keeps a setting the board ignores is how an untouched view came to read as
+    // *(edited)*.
+    if (LIST_ONLY[o.group] && layout !== "list") delete o.group;
     if (o.group && eff(o.group) === eff(DISPLAY_DEFAULTS.group)) delete o.group;
     if (o.done && !ARCHIVABLE[focus]) delete o.done;
     if (o.empty && layout !== "board") delete o.empty;
     if (o.collapsed && layout !== "list") delete o.collapsed;
+    // …and a grouping with no heading has no fold control either. `collapsed` is keyed by
+    // the grouping's own values, so under a headless one it names buckets that are never
+    // drawn: measured, `?layout=list&group=none&collapsed=<NO_VALUE>` kept the key in the
+    // URL and lit the Display dot while all seven rows stood open — a parameter claiming a
+    // fold nobody can see, undo, or have made. Same sentence as the line above it.
+    if (o.collapsed && headlessGroup(o.group)) delete o.collapsed;
+    if (o.sort === proposedSort(o.group || DISPLAY_DEFAULTS.group)) delete o.sort;
     return o;
   }
   function viewParamObject() {
@@ -873,7 +896,10 @@
     // reproducible, and the fallback is derived from wherever it lands.
     if (state.group !== DISPLAY_DEFAULTS.group) o.group = state.group;
     if (state.view !== DISPLAY_DEFAULTS.view) o.layout = state.view;
-    if (state.sort !== DISPLAY_DEFAULTS.sort) o.sort = state.sort;
+    // Not `!== DISPLAY_DEFAULTS.sort`: a chain equal to what this grouping proposes is a
+    // choice the board would have made for you, and writing it down would freeze it — the
+    // proposal is meant to follow the grouping, not to be captured by the first link.
+    if (sortChosen()) o.sort = state.sort;
     if (state.showDone) o.done = "1";
     if (!state.showEmpty) o.empty = "0";
     // Sorted, not in click order: the same set of folded groups has to serialize to
@@ -905,6 +931,23 @@
     var o = viewParamObject();
     delete o.view;
     return o;
+  }
+  // Whether this board is worth *offering* to name — `ownParams` minus the layout. A board
+  // that is the default arrangement, read as a list, is not a view of the roadmap; it is a
+  // preference about your screen, which is the same reason the Display dot stopped counting
+  // it. Reported right after that change: `?layout=list` left the chip row holding nothing
+  // but `Save view`, on a board the dot had just called default — two surfaces answering one
+  // question differently, which is the shape this file keeps paying for.
+  //
+  // The *refusal* in `saveCurrentView` still asks `ownParams`, and the divergence is the
+  // point rather than an oversight: the title menu and ⌘K are deliberate acts — you went
+  // looking for a way to name this — while a button that puts itself in front of you is an
+  // offer, and an offer to name the default board is noise. So "Ready, as a list" stays
+  // savable; it simply is not proposed.
+  function worthNaming() {
+    var o = ownParams();
+    delete o.layout;
+    return Object.keys(o).length > 0;
   }
   // The view's keys, in one place. Three readers used to keep their own copy of this
   // list — the URL writer, and the saved-view reader and comparer — so adding
@@ -1178,10 +1221,18 @@
     // nothing to say about keys it does not carry.
     if (got.props != null) state.props = parseProps(got.props);
     if (GROUPS[got.group]) state.group = got.group;
+    // `setDisplay` clears the folds when the grouping changes, for the reason written
+    // there; a link arriving with both had no equivalent. A headless grouping is the case
+    // where it matters most, because there is no control to undo the fold with.
+    if (headlessGroup(state.group)) state.collapsed.clear();
     if (got.layout === "list" || got.layout === "board") state.view = got.layout;
     // Through the parser, so `state.sort` is always a canonical chain — a legacy one-word
     // mode expands here and never has to be recognised again downstream.
-    if (got.sort) state.sort = serializeSort(parseSort(got.sort));
+    if (got.sort) {
+      var gkeys = parseSortKeys(got.sort);
+      state.sort = gkeys.length ? serializeSort(gkeys) : null;
+    }
+    normalizeSort();
     if (got.view) got.view = canonicalView(got.view);
     if (VIEWS[got.view]) state.focus = got.view;
     if (!got.q) return;
@@ -1678,7 +1729,7 @@
   function autoDateField() {
     if (state.group === "target") return "target";
     var hit = null;
-    parseSort(state.sort).forEach(function (k) {
+    sortChain().forEach(function (k) {
       var d = SORT_FIELDS[sortField(k)].date;
       if (!hit && d) hit = d;
     });
@@ -4261,6 +4312,32 @@
     });
   }
   var GROUPS = {
+    // No grouping at all: one bucket, no heading. **First in the table, which is what the
+    // menus read** — both the Display list and ⌘K walk `Object.keys(GROUPS)`. "None" is the
+    // one entry that is not a field to bucket by but the absence of one, so it belongs at
+    // the top of that list rather than sorted in among them.
+    //
+    // It carries **no `field`**, and that is
+    // the whole integration — `columnTerm`, `termAboutGroup` and `groupConstrained` each
+    // open with `if (!g.field) return …`, so a fieldless group is a shape this file
+    // already foresaw. Every optional member is guarded too (`cls`, `tint`, `headExtra`,
+    // `write`), so leaving them out is not a special case either.
+    none: {
+      label: "None",
+      headless: true, // the heading is drawn only when the archive has something to say
+      keyOf: function () { return NO_VALUE; },
+      keys: function (items) { return items.length ? [NO_VALUE] : []; },
+      labelOf: function () { return "All pucks"; },
+      // The ordering a grouping *proposes*, and `none` is the only one with an opinion —
+      // because it is the only one that takes the columns away. `order:` is the puck's
+      // declared place **within its column**, so with the columns gone the default chain
+      // interleaves a `now` puck ranked 20 between two `done` ones ranked 10 and 30, by a
+      // number that never meant anything across that boundary. `status,order` is the
+      // board's own reading order flattened — left to right, top to bottom — which is
+      // exactly what a board with no columns is. A proposal, not a write: it applies only
+      // while the chain is untouched (see `sortChain`).
+      sort: "status,order",
+    },
     status: {
       label: "Status",
       field: "status",
@@ -4362,6 +4439,11 @@
       write: function (item, k) { changePriority(item, k === NO_VALUE ? null : k); },
     },
   };
+  // The groupings that need the list. `parent` is a hierarchy and cannot be columns;
+  // `none` is the absence of columns, which is the same thing said the other way. One
+  // table rather than two `=== "parent"` tests, because the second one is exactly how the
+  // first came to be forgotten in `effectiveParams`.
+  var LIST_ONLY = { parent: 1, none: 1 };
   // Grouping by a field the view has already fixed makes one group named after the
   // view — "INBOX 11" under a header that says "Inbox 11". Derived from the columns
   // the view can show rather than from the view's name, so a future single-status
@@ -4385,9 +4467,20 @@
   // So the rule is: **flat facets group the board, the one hierarchy groups the list**.
   // The menus keep offering Parent — `setDisplay` switches the layout with it, visibly —
   // because a row that vanishes depending on the layout teaches nothing.
-  function groupOffered(k) { return k !== "status" || columnsForFocus().length > 1; }
+  //
+  // `none` is the exception to that last sentence, and the difference is what the row
+  // *names*. `Parent` names a thing to bucket by; the board cannot draw it as columns, so
+  // picking it there is a real request the layout switch honours. `None` names the absence
+  // of the board's own organising principle — a kanban board with no grouping is not a
+  // board with a setting changed, it is a list. So the row is not a grouping you can ask
+  // the board for, and offering it would make the layout switch the *whole* effect of
+  // pressing it. It comes back the moment you are in the list, where it means something.
+  function groupOffered(k) {
+    if (k === "none") return state.view === "list";
+    return k !== "status" || columnsForFocus().length > 1;
+  }
   function groupUsable(k, layout) {
-    if (k === "parent") return (layout || state.view) === "list";
+    if (LIST_ONLY[k]) return (layout || state.view) === "list";
     return groupOffered(k);
   }
   function effectiveGroup() {
@@ -4398,6 +4491,10 @@
     return groupUsable("status") ? "status" : "repo";
   }
   function activeGroup() { return GROUPS[effectiveGroup()] || GROUPS.status; }
+  // A grouping that draws no heading draws no fold control, so a fold under it is a
+  // preference about nothing. Asked by `effectiveParams` about a foreign params object and
+  // by `applyParams` about the live state — two domains, one question.
+  function headlessGroup(k) { return !!(GROUPS[k] && GROUPS[k].headless); }
   // Whether a hand-placed position is what the eye is reading — which, now that the
   // ordering is a chain, is a question about *rank* and not about mode: `order` first means
   // the list is in the order you put it in, and dragging moves you within it. Further down
@@ -4407,7 +4504,7 @@
   // drop would have to write a rank that means the opposite of where the finger let go, so
   // it is not manual ordering any more. The canonical spelling makes that free: a reversed
   // key is `order-desc` and simply is not this string.
-  function manualRank() { return parseSort(state.sort)[0] === "order"; }
+  function manualRank() { return sortChain()[0] === "order"; }
 
   // Bucket the visible pucks by the active grouping. Returns [{ key, label, items }]
   // in the group's own order — the one thing both renderers consume.
@@ -4848,10 +4945,13 @@
   // pressing it lifted the archive into a section that stayed closed. A control labelled
   // "Show 3 archived pucks in this column" that visibly shows nothing. Unfolding is part
   // of the repair, not a second click for the reader to find.
-  function archivedMark(n, key) {
+  // `where` names the place the pucks are missing from, and it exists because one
+  // grouping has no columns: under `group=none` the mark stands over the whole list, and
+  // "in this column" would name a thing that is not drawn anywhere on the page.
+  function archivedMark(n, key, where) {
     var b = el("button", "col-archived");
     b.type = "button";
-    b.title = "Show " + n + " archived " + (n === 1 ? "puck" : "pucks") + " in this column";
+    b.title = "Show " + n + " archived " + (n === 1 ? "puck" : "pucks") + " in " + (where || "this column");
     b.setAttribute("aria-label", b.title);
     b.appendChild(el("span", "count", String(n) + " archived"));
     b.appendChild(icon("eye"));
@@ -5208,6 +5308,34 @@
       if (!grp.items.length && !grp.archivedOnly && !grp.emptyParent) return;
       var section = el("section", "list-group" + (tree ? " is-tree" : "") + (g.cls ? " " + g.cls(grp.key) : " col-plain"));
       if (g.tint && g.tint(grp.key)) section.style.setProperty("--tint", g.tint(grp.key));
+      // A grouping with no values has nothing to name, so it draws no heading at all —
+      // the rows *are* the answer, and a lone `All pucks` above them would be a label
+      // that repeats the page. The archive is the one thing that still has to speak: its
+      // rule is to say what it is holding back **in the head of the column short of it**,
+      // and a group with no head is exactly the silence that rule was written to end. So
+      // the head is drawn only when there is something to say, and carries only the mark
+      // — no swatch (there is no column colour), no name, no fold control (there is no
+      // second group to fold this one away from). Same shape as the archive-only stub one
+      // branch down, minus the two parts that name a group.
+      if (g.headless) {
+        var bare = grp.archivedOnly
+          ? archived.count[grp.key]
+          : (archived ? (archived.count[grp.key] || 0) - grp.items.length : 0);
+        if (bare > 0) {
+          // `lh-bare` names the shape rather than carrying style of its own — the same way
+          // `dp-row`/`dp-label` stayed on the markup when the layout switch became a
+          // `.segmented`. It is the one heading with no `h2` in it, and reaching that from
+          // CSS otherwise costs a `:not(:has(h2))` that says nothing about why.
+          var bhead = el("div", "list-head lh-bare");
+          var binner = el("div", "lh-inner");
+          binner.appendChild(archivedMark(bare, grp.key, "this list"));
+          bhead.appendChild(binner);
+          section.appendChild(bhead);
+        }
+        grp.items.forEach(function (it) { section.appendChild(listRow(it)); });
+        board.appendChild(section);
+        return;
+      }
       var shut = state.collapsed.has(grp.key);
       if (shut) section.classList.add("shut");
       // The heading is two boxes, and the inner one is why: a sticky box cannot be
@@ -5519,7 +5647,11 @@
   // one-key chain's spelling with it. Before concluding that nothing reads a value, ask what
   // the *running app* writes — searching the repo answered no twice, and was wrong twice.
   var LEGACY_SORT = { default: DEFAULT_SORT };
-  function parseSort(v) {
+  // The keys a value actually names — **possibly none**, which is the whole reason this is
+  // split out from `parseSort`. A reader that always hands back a chain cannot tell "this
+  // said nothing I understand" from "this said the default", and the two are different
+  // answers now that the absence of a choice is its own state.
+  function parseSortKeys(v) {
     var raw = String(v == null ? "" : v).trim();
     if (LEGACY_SORT[raw]) raw = LEGACY_SORT[raw];
     var out = [], seen = {};
@@ -5535,13 +5667,84 @@
       seen[f] = 1;
       out.push(sortKeyName(f, sortDir(k)));
     });
-    return out.length ? out : parseSort(DEFAULT_SORT);
+    return out;
+  }
+  // The chain to *draw*, which always exists: the comparator has to be handed something.
+  // An unreadable value therefore reads as the default here — and the callers that decide
+  // whether a **choice** was made ask `parseSortKeys` instead, or an unknown key would be
+  // promoted to one. Caught by a reviewer, and the rule was already written one key over:
+  // "a name the board does not know falls back to *no* choice rather than the empty one".
+  // Measured before the split: `?group=none&sort=futureField` drew `order,updated` — manual
+  // rank across status boundaries, the exact ordering the proposal exists to prevent — and
+  // rewrote the URL to claim it, while the same link with no `sort` at all drew the
+  // proposal.
+  function parseSort(v) {
+    var out = parseSortKeys(v);
+    return out.length ? out : parseSortKeys(DEFAULT_SORT);
   }
   // In the chain's *own* order, not the catalogue's: the order is the meaning here, unlike
   // `props`, where the set is what matters and a stable spelling is all that is wanted.
   function serializeSort(keys) { return keys.join(","); }
+  // The chain the board is actually drawing — the chosen one, except where the grouping
+  // proposes its own and nothing has been chosen. Same rule as `autoDateField` one storey
+  // down: **automation applies in the absence of a choice, never over one.** The absence is
+  // `state.sort == null`, its own value rather than a string that could also be chosen —
+  // `props` draws the same distinction, and skipping it here made `order,updated` unaskable
+  // under any grouping with a proposal.
+  //
+  // One function rather than a branch per consumer, because the *menu* reads it too: a
+  // menu showing a chain the board is not drawing is the failure the last key's missing
+  // `✕` exists to prevent, and a proposal the chooser could not see would be that same
+  // failure one storey up. Turn any knob on it and the proposal becomes a choice — the
+  // same bargain `rememberDisplay` strikes with a link you only looked at.
+  // `k` är valfritt: `effectiveParams` normaliserar ett *främmande* params-objekt — en
+  // sparad vy vars gruppering inte är brädans — och måste fråga om den grupperingen, inte
+  // om den man råkar stå i. Utan argumentet är det den man står i.
+  function proposedSort(k) {
+    var g = GROUPS[k || effectiveGroup()];
+    return (g && g.sort) || DEFAULT_SORT;
+  }
+  function sortChain() {
+    return parseSort(state.sort == null ? proposedSort() : state.sort);
+  }
+  // Whether the ordering differs from what the board would draw with no choice at all.
+  // **Three surfaces ask it** — the URL writer, the Display dot and `Reset ordering` — and
+  // one of them asking a slightly different question is exactly how the dot came to stay
+  // lit on a board whose URL and whose own submenu both said it was at its default: flip a
+  // direction and flip it back, and `state.sort` holds the string `order,updated` while the
+  // key's default is `null`, so an identity test against `DISPLAY_DEFAULTS` answered yes
+  // forever. Measured on the default board: URL `""`, `Reset ordering` gone, dot on.
+  //
+  // It asks about the *drawn* chain rather than the stored string, which is the same shape
+  // as `propShown` one section down — and deliberately **not** by normalizing a chosen
+  // chain back to `null` at write time. That would be one writer too, and it would throw
+  // the choice away: an explicit `order,updated` picked under `group=status` has to survive
+  // a switch to `group=none`, where the proposal differs. Automation applies in the absence
+  // of a choice, never over one — normalizing would erase the absence's opposite.
+  function sortChosen() { return serializeSort(sortChain()) !== proposedSort(); }
+  // A chain equal to what the grouping proposes is not a distinguishable state. Nothing on
+  // screen separates it from having chosen nothing, the link cannot carry it (the URL is
+  // written from `sortChosen()`, and the board's older rule that the default chain is never
+  // written down has three checks behind it), and a saved view normalizes it away. Kept as
+  // a choice anyway, it survived in memory but not through a reload — so the *same link*
+  // and the *same click* gave two boards: `?group=none&sort=status,order` then Grouping →
+  // Status gave `sort=status,order` live and `order,updated` after F5.
+  //
+  // That is the exact failure `state`'s own comment at the top of this file was written
+  // about — "the same URL drew two different chromes depending on whether you clicked or
+  // reloaded" — and the cure there was the same: stop keeping the state that cannot be
+  // told apart. So a proposal-equal chain collapses to "no choice" the moment it is set,
+  // not one reload later.
+  //
+  // It costs the reading that an explicit `order,updated` picked under `group=status`
+  // travels to `group=none` as itself. That reading was defended here and it was wrong:
+  // it only ever held until a refresh, which is not a behaviour but a race with the
+  // browser.
+  function normalizeSort() {
+    if (state.sort != null && state.sort === proposedSort()) state.sort = null;
+  }
   function sortComparator() {
-    var chain = parseSort(state.sort).map(sortCmp);
+    var chain = sortChain().map(sortCmp);
     return function (a, b) {
       for (var i = 0; i < chain.length; i++) {
         var n = chain[i](a, b);
@@ -6203,11 +6406,29 @@
   // answers *which* pucks — the two never overlap. Filter shows what it's doing
   // with chips/a count; Display shows a dot when anything differs from default,
   // because "showing more" must never read as "you have narrowed something".
-  var DISPLAY_DEFAULTS = { view: "board", sort: DEFAULT_SORT, group: "status", showDone: false, showEmpty: true };
+  var DISPLAY_DEFAULTS = { view: "board", sort: null, group: "status", showDone: false, showEmpty: true };
   var displayBtn = document.getElementById("displayBtn");
   var displayDot = document.getElementById("displayDot");
   function displayDirty() {
-    for (var k in DISPLAY_DEFAULTS) if (state[k] !== DISPLAY_DEFAULTS[k]) return true;
+    for (var k in DISPLAY_DEFAULTS) {
+      // `sort` is skipped for the same reason `props` is not in the table at all: its
+      // default is `null` and this loop compares by identity, so every chosen chain reads
+      // as changed — including one deliberately returned to what the board draws anyway.
+      // `sortChosen()` is the question the URL writer and the ordering menu already ask.
+      //
+      // `view` — the layout — is skipped because it is not an *arrangement* of this board
+      // but a choice about how you read it, and the menu already says so with its shape:
+      // a segmented control at the top, above and apart from the field rows. This file
+      // conceded as much when the display became per-view ("the one that reads as a
+      // preference about the device"), and kept it in only so the built-in views would
+      // not differ from the saved ones by exactly one key. The dot lighting for
+      // board → list was that concession showing on screen. It stays in the URL, in a
+      // saved view and in the view's memory — only these two controls stop calling it a
+      // change. Skipping it here **requires** the reset below to leave it alone, per the
+      // rule stated two lines down.
+      if (k !== "sort" && k !== "view" && state[k] !== DISPLAY_DEFAULTS[k]) return true;
+    }
+    if (sortChosen()) return true;
     // Not in DISPLAY_DEFAULTS because its default is `null` and the loop above compares by
     // identity — every Set would read as changed, including one holding every property.
     if (state.props) return true;
@@ -6229,6 +6450,10 @@
     // never took effect. The write below carries it, so the switch is as durable as if
     // you had pressed List yourself.
     if (key === "group" && !groupUsable(value)) state.view = "list";
+    // After the layout, because `effectiveGroup()` reads it — and for a `group` change too,
+    // not only a `sort` one: moving the grouping moves the proposal under a chain that did
+    // not change.
+    normalizeSort();
     // One write, of the whole board, into the view you are standing in — see
     // `rememberDisplay`. It replaces a `saveDisplay(key, value)` per setting, and the
     // line above is why that shape had to go: picking the hierarchy moves the *layout*
@@ -6274,7 +6499,7 @@
     // half you glance at this row to check.
     { key: "sort", label: "Ordering", chain: true,
       current: function () {
-        var c = parseSort(state.sort);
+        var c = sortChain();
         return SORT_FIELDS[sortField(c[0])].label + (c.length > 1 ? " +" + (c.length - 1) : "");
       },
       options: function () {
@@ -6315,7 +6540,29 @@
       state.view,
       function (v) {
         setDisplay("view", v);
-        paintWholesale(); // the empty-columns row is board-only
+        // The **whole** level, not just the wholesale block. That targeted repaint was
+        // right while the layout only governed the empty-columns row; it stopped being
+        // right when `groupOffered` started reading `state.view`, and the staleness landed
+        // one storey above where a reviewer looked for it. The submenu is fine — level 2
+        // calls `f.options()` on entry, so it reads the layout you are standing in — but
+        // *this* level's rows are drawn once, and their value is `displayLabel(f)`.
+        // Measured: standing in the list under `group=none` and pressing Board left the
+        // row reading `Grouping · None` over a board drawing Now / Next / Later. A menu
+        // claiming a grouping the board is not drawing is the same failure the ordering
+        // menu's missing `✕` exists to prevent, one key over.
+        //
+        // Rebuilding costs the pressed segment its focus, so it is put back — the button
+        // is gone by then, and the new one for the same value takes its place.
+        var wasSeg = document.activeElement && document.activeElement.closest
+          && document.activeElement.closest(".dp-seg");
+        renderDisplayRoot(pop);
+        if (wasSeg) {
+          // By `aria-pressed`, which is what `segmented()` actually emits — the first
+          // attempt reached for a `data-value` the helper does not set, so the branch
+          // matched nothing and quietly did not restore anything.
+          var again = pop.querySelector('.dp-seg [aria-pressed="true"]');
+          if (again && again.focus) again.focus();
+        }
       });
     seg.classList.add("dp-seg");
     [].forEach.call(seg.children, function (c) { c.classList.add("dp-segbtn"); });
@@ -6355,7 +6602,23 @@
     function paintWholesale() {
       wholeHost.innerHTML = "";
       var rows = [];
-      if (ARCHIVABLE[state.focus]) rows.push(["showDone", "Show done & cancelled", null]);
+      // The toggle is where "archived" is *defined*, because it is the only place that
+      // can be. There is no `archived` status — `TERMINAL` is `done` or `cancelled` — so
+      // the marks scattered across the board ("137 archived 👁") name a category the data
+      // does not have, and a reader who has never opened this menu has nothing to check it
+      // against. One definition, in the control that acts on it, is what lets every mark
+      // stay short and still be answerable.
+      //
+      // It sits on a **line of its own**, not inside the label and not in a tooltip. A
+      // parenthesis in the name read as the interface explaining a word it had just
+      // chosen; a `title` reached nobody who needed it, which a reviewer caught and is the
+      // sharper objection — hover is not a thing on a phone, and the bottom sheet *is* the
+      // phone. The definition would have been missing in the one place the marks are
+      // hardest to look up from. Length never decided any of this — putting the statuses on
+      // the marks themselves fits too (148px against 92px, 41px still spare in the tightest
+      // column head at 390px) — so what is left is that a name and its definition are two
+      // things, and the row can hold both without the first swallowing the second.
+      if (ARCHIVABLE[state.focus]) rows.push(["showDone", "Show archived", "Done and cancelled pucks."]);
       if (state.view === "board") {
         rows.push(["showEmpty", "Show empty columns", "An empty column is still a drop target."]);
       }
@@ -6363,11 +6626,33 @@
       wholeHost.appendChild(el("div", "dp-rule"));
       rows.forEach(function (w) {
         var row = el("label", "fp-toggle");
+        // The state key on the markup, as a hook — the same reason `dp-row`/`dp-label`
+        // carry theirs. Without it the only handle on this row is its own label text, so
+        // rewording the copy broke a check about the *sidebar's counts*, which is a test
+        // reaching for the wrong thing rather than a rule changing.
+        row.dataset.key = w[0];
         var cb = document.createElement("input");
         cb.type = "checkbox"; cb.checked = state[w[0]];
         cb.addEventListener("change", function () { setDisplay(w[0], cb.checked); });
-        row.appendChild(cb); row.appendChild(el("span", null, w[1]));
-        if (w[2]) row.title = w[2];
+        row.appendChild(cb);
+        var txt = el("span", "fp-toggle-txt");
+        var name = el("span", "fp-toggle-name", w[1]);
+        name.id = "tgl-n-" + w[0];
+        txt.appendChild(name);
+        // **Named by the name, described by the hint** — and wired explicitly, because a
+        // label that wraps its control hands over *all* of its text. Left implicit, the
+        // accessible name would have become "Show archived Done and cancelled pucks.",
+        // which is the parenthesis back again with a screen reader reading it aloud every
+        // time. `aria-labelledby` narrows the name to the name; `aria-describedby` is what
+        // makes the second line a description rather than more of the first.
+        cb.setAttribute("aria-labelledby", name.id);
+        if (w[2]) {
+          var hint = el("span", "fp-toggle-hint", w[2]);
+          hint.id = "tgl-h-" + w[0];
+          cb.setAttribute("aria-describedby", hint.id);
+          txt.appendChild(hint);
+        }
+        row.appendChild(txt);
         wholeHost.appendChild(row);
       });
     }
@@ -6383,7 +6668,15 @@
     reset.appendChild(icon("reset"));
     reset.appendChild(el("span", null, "Reset to default"));
     reset.addEventListener("click", function () {
+      // The layout is not what this button resets — see `displayDirty`. The two are one
+      // decision, not two: reset it while the dot ignores it and the press would change
+      // something the dot had just called default, which is the invariant the folds are
+      // held to one function up. `clearDisplay` still puts it back, because applying a
+      // *saved view* goes through the same function and a view with no `layout` means the
+      // default one; so it is restored here rather than exempted there.
+      var layout = state.view;
       clearDisplay();
+      state.view = layout;
       // Which also *forgets* this view: `rememberDisplay` deletes an entry that has
       // nothing non-default left in it, so a reset view opens at the defaults next time
       // rather than at a stored copy of them. Reset is per view, like everything else
@@ -6470,7 +6763,7 @@
     pop.innerHTML = "";
     surfaceLevel(pop, f.label, function () { renderDisplayRoot(pop); });
 
-    var chain = parseSort(state.sort);
+    var chain = sortChain();
     function apply(next) {
       setDisplay("sort", serializeSort(next));
       renderSortChain(pop, f); // stay on the list: building a chain is many clicks, not one
@@ -6561,12 +6854,21 @@
     // A narrow reset, and it needs to be narrow: Display's own "Reset to default" puts back
     // every one of the seven display keys, so there was no way to drop an ordering without
     // also dropping the grouping, the layout and the properties you had just set.
-    if (serializeSort(chain) !== DEFAULT_SORT) {
+    // Drawn when the chain differs from what the board would draw with no choice at all —
+    // the grouping's proposal, not `DEFAULT_SORT`. Against the constant it offered a Reset
+    // on an untouched board whose press landed back on the very same rows; against
+    // `state.sort != null` it offers one for a chain deliberately re-picked to equal the
+    // proposal, which is the same empty promise one step further in. It resets to *no
+    // choice* rather than to a chain, because storing the proposal is what would end it.
+    if (sortChosen()) {
       var res = el("button", "row dp-sort-add");
       res.type = "button";
       res.appendChild(icon("trash"));
       res.appendChild(el("span", null, "Reset ordering"));
-      res.addEventListener("click", function () { apply(parseSort(DEFAULT_SORT)); });
+      res.addEventListener("click", function () {
+        setDisplay("sort", null);
+        renderSortChain(pop, f);
+      });
       pop.appendChild(res);
     }
   }
@@ -6579,7 +6881,7 @@
   // the row being rewritten is the exception, where it stands as the current answer.
   function renderSortPick(pop, f, idx) {
     pop.innerHTML = "";
-    var chain = parseSort(state.sort);
+    var chain = sortChain();
     surfaceLevel(pop, idx == null ? "Add a key" : "Change key", function () {
       renderSortChain(pop, f);
     });
@@ -7971,6 +8273,7 @@
   // display, so the Filter button needs no count and "showing more" can never read
   // as "you have narrowed something".
   var chipRow = document.getElementById("chipRow");
+  var viewActs = document.getElementById("viewActs");
   // Is this term nothing but "hide these columns", and are those columns in the tray?
   // Only the two shapes the column ⋯ writes, and only in the polarity that hides:
   // `columnTerm` calls that `hideNeg`, and it differs between a real value (the
@@ -8085,12 +8388,24 @@
       chip.appendChild(x);
       chipRow.appendChild(chip);
     });
-    // The row's actions, right-aligned. Saving lived only behind the title, which is
-    // the right *home* for it — the saved view appears there — but it is not where you
-    // are standing when you finish building a filter. You are standing here, looking at
-    // the predicates you just assembled, and this is the one row that exists only
-    // because they do. So the door goes where the work is; the title keeps the list.
-    // (Linear puts its Clear and Save in exactly this band.)
+    // The view's actions sit on the Filter/Display row, not here — and that is a move,
+    // with the old reasoning worth keeping because it was right about half of it. Saving
+    // lived only behind the title, which is the right *home* for it (the saved view appears
+    // there), but not where you are standing when you finish building a filter; so the door
+    // went where the work is. What changed underneath that: a view can now be nothing but a
+    // display, so "the work" is no longer always the chips — and on a board whose only
+    // change was a grouping, this row was a 49px band on a 390px phone holding one
+    // right-aligned button and nothing else.
+    //
+    // The clinching argument is written two paragraphs down, in this row's own hiding
+    // rule: it could not hide when it had no chips, because it was also carrying Reset and
+    // Update for a view whose changes are all display. That was a compromise the row was
+    // forced into, and moving the actions out is what releases it — `chipRow.hidden` is now
+    // simply "no chips".
+    //
+    // `Clear all` stays, because it is not a view action: it is the chips' own bulk ✕, and
+    // putting a destructive filter command next to Save and Update is a worse neighbourhood
+    // than the one it leaves.
     //
     // Which door depends on where the board stands relative to the saved views, and
     // the two producers answer that between them:
@@ -8102,14 +8417,15 @@
     //                           parameters, which is what makes it a different button
     //                           from Clear all — that one empties the board.
     //   no view               → Clear all · Save view, as before.
-    var acts = el("div", "fchip-acts");
+    if (viewActs) viewActs.innerHTML = "";
+    var acts = el("div", "fchip-acts"); // this row's own half: `Clear all`
     var inView = activeSavedView(), edited = editedSavedView();
     function act(cls, label, title, run) {
       var b = el("button", cls, label);
       b.type = "button";
       if (title) b.title = title;
       b.addEventListener("click", run);
-      acts.appendChild(b);
+      (viewActs || acts).appendChild(b);
       return b;
     }
     if (edited) {
@@ -8122,19 +8438,21 @@
         "Save these changes into the view", function () { updateSavedView(edited); });
     } else if (!inView) {
       if (chips.length > 1) {
-        act("fchip-clear", "Clear all", null, function () {
+        var clear = el("button", "fchip-clear", "Clear all");
+        clear.type = "button";
+        clear.addEventListener("click", function () {
           setQueryTerms([]); // one store, so "put everything back" is one line
           refreshNav();
         });
+        acts.appendChild(clear);
       }
-      // Gated on there being anything to save, not on there being chips: a view can be
-      // nothing but a grouping (`Testvy` is exactly that), and `saveCurrentView` already
-      // refuses with a toast. Reading the same question the write path asks is what
-      // keeps the button off the default board — and, since that question became
-      // `ownParams`, off an untouched built-in view too. Standing in Ready having
-      // changed nothing, this row now has neither chips nor actions and hides itself,
-      // which is the same silence a saved view gets in the branch above.
-      if (ghToken() && Object.keys(ownParams()).length) {
+      // Gated on there being anything worth naming, not on there being chips: a view can
+      // be nothing but a grouping (`Testvy` is exactly that), and `saveCurrentView` still
+      // refuses with a toast for the cases this never proposes. `worthNaming` is where the
+      // difference between an offer and a permission is written down — it keeps the button
+      // off the default board, off an untouched built-in view, and off a board whose only
+      // difference is the layout.
+      if (ghToken() && worthNaming()) {
         var wrap = el("div", "filter-wrap"); // the positioned parent the popover anchors in
         var save = el("button", "fchip-save", "Save view");
         save.type = "button";
@@ -8146,17 +8464,16 @@
           saveCurrentView(wrap, "menu-right");
         });
         wrap.appendChild(save);
-        acts.appendChild(wrap);
+        (viewActs || acts).appendChild(wrap);
       }
     }
     if (acts.childNodes.length) chipRow.appendChild(acts);
-    // The row exists for either half of itself. Hiding it whenever there were no chips
-    // meant a view that only changes grouping, sorting or layout — or one whose query is
-    // all repo/agent terms, which `chipsData` deliberately leaves to the sidebar — could
-    // be edited with no way to Reset or Update it. That is precisely the view whose only
-    // other write path is retyping its name exactly, so it is the last place the actions
-    // should go missing.
-    chipRow.hidden = !chips.length && !acts.childNodes.length;
+    // Simply "no chips" now. It used to have to stay open without them, because it was
+    // also carrying Reset and Update for a view whose every change is a display one — the
+    // view whose only other write path is retyping its name exactly, so the last place
+    // those may go missing. With the actions on the row above, the row can mean what it is
+    // named after again.
+    chipRow.hidden = !chips.length;
   }
 
   if (filterBtn) filterBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleFilterMenu(); });
