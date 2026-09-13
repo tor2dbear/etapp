@@ -92,7 +92,12 @@
     var b = el("span", "agent-badge");
     b.title = "Routed to " + name;
     b.appendChild(icon("agent", "agent-glyph"));
-    b.appendChild(document.createTextNode(name));
+    // The name in a box of its own, because the badge is an `inline-flex` and
+    // `text-overflow` needs a block container — a bare text node there clips mid-letter
+    // instead of ellipsising. The badge is the second field in a card's metadata row with
+    // arbitrary text in it (the repo name is the first), and an agent handle has no length
+    // limit at all, so it is the one that can push the row past the card on its own.
+    b.appendChild(el("span", "agent-name", name));
     return b;
   }
   var state = {
@@ -1911,9 +1916,17 @@
     var seq = kids.map(function (c) { return byId[c.getAttribute("data-id")]; }).filter(Boolean);
     return { before: kids[idx] || null, prev: seq[idx - 1] || null, next: seq[idx] || null };
   }
+  // The end of the list is the last *card*, not the last child. `.col-add` moved inside
+  // the scroller when `.cards` became the column's scrollport, so appending drew the line
+  // below the `+` — measured with three cards: the line at y=487 against a last card
+  // ending at 433, with the button's 443–474 in between. 54px below where the drop would
+  // actually write, which is the one thing a drop line exists to say. `dropPointAt` reads
+  // `.card` and hands back `null` for "after them all"; this is the same sentence, and it
+  // has to be said twice because the container holds more than cards now.
   function showDropLine(container, before) {
     var line = container.querySelector(".drop-line") || el("div", "drop-line");
-    if (before) container.insertBefore(line, before);
+    var at = before || container.querySelector(":scope > .col-add");
+    if (at) container.insertBefore(line, at);
     else container.appendChild(line);
   }
 
@@ -1992,15 +2005,44 @@
   }
 
   // ── detail: a side pane on desktop, a modal overlay on mobile ──
-  var detailPane, detailContent, workEl, selectedId = null, currentDetailItem = null, boardAt = null;
+  var detailPane, detailContent, workEl, boardEl, portEl, selectedId = null, currentDetailItem = null, boardAt = null;
   function isWide() { return window.matchMedia("(min-width: 900px)").matches; }
   function paneRefs() {
     if (!detailPane) {
       detailPane = document.getElementById("detailPane");
       detailContent = document.getElementById("detailContent");
       workEl = document.getElementById("work");
+      boardEl = document.getElementById("board");
+      // `.port` wraps the board *and* the footer, and that is what makes the kanban port
+      // a port a footer can scroll out of. The board is asked for the layout class; the
+      // port is what scrolls.
+      portEl = document.getElementById("port");
+      // `armAxisLock` takes `.work` and not the port, deliberately: the axis lock is the
+      // list's, scoped by the same `:has(> .port > .board.as-list)` the stylesheet uses, and in
+      // the list `.work` *is* the port. `armChromeWheel` takes it for a different reason —
+      // it is the box the chrome sits above, not the box that scrolls; what it forwards
+      // to it asks `scrollPort()` per event.
       if (workEl) { armAxisLock(workEl); armChromeWheel(workEl); }
+    if (boardEl) { armColumnWheel(boardEl); armStopWatch(boardEl); }
     }
+  }
+
+  // A stop answers a question about *size*, and size changes without a render: a window
+  // resized, a tablet rotated, the sidebar opened or closed. The comment beside
+  // `markColumnStops` used to call that gap rare and accept a stale answer — the
+  // measurement says otherwise (a window from 900 to 300 tall left two columns with 22 and
+  // 53 of range and no stop at all), and with the port's own stop now conditional too there
+  // were two answers going stale rather than one. Codex found it (#54).
+  //
+  // One observer, on `#board`, rather than one per column: the board is the box both the
+  // window and the sidebar move, and its children's heights follow it. `markStops` writes
+  // nothing but `tabindex`, so it cannot change layout and the observer cannot loop. It
+  // fires once on `observe` too, which is simply the first correct answer.
+  var stopWatchArmed = false;
+  function armStopWatch(board) {
+    if (stopWatchArmed || !board || !window.ResizeObserver) return;
+    stopWatchArmed = true;
+    new ResizeObserver(function () { markStops(board); }).observe(board);
   }
 
   // ── one axis per drag ───────────────────────────────────────────────────────
@@ -2186,6 +2228,47 @@
   // a long query wraps it — so the walk asks each box on the way up whether it has room
   // in the direction being asked for, and only forwards what nobody wanted.
   var wheelArmed = false;
+  // A wheel over a column's head or its top gutter belongs to that column. Those are the
+  // board's own dead zone, and they are new: `.cards` is the only box that scrolls
+  // vertically now, the head is its *sibling*, and `.port` above them is `overflow-y:
+  // hidden` — so a gesture starting on the head reached nothing. Measured at 1000×600:
+  // 300 notches over the head moved 0, over the cards 300. Codex found it (#54).
+  //
+  // It is the same rule as `armChromeWheel` one function down — the chrome above a
+  // scrollport is not a dead zone — one level in, and the same shape of answer: delegate
+  // from the box that contains them all, and give anything that scrolls itself first
+  // refusal. Armed on `#board`, which `renderBoard` empties but never replaces.
+  var colWheelArmed = false;
+  function armColumnWheel(board) {
+    if (colWheelArmed || !board) return;
+    colWheelArmed = true;
+    board.addEventListener("wheel", function (e) {
+      if (e.ctrlKey || !e.deltaY) return;              // zoom, or nothing to forward
+      var col = e.target.closest && e.target.closest(".column");
+      if (!col) return;
+      var cards = col.querySelector(":scope > .cards");
+      if (!cards || cards.contains(e.target)) return;  // the browser already has it
+      if (cards.scrollHeight <= cards.clientHeight + 1) return;  // nothing to move
+      // Only the room in the direction asked for. The listener is passive now, so a column
+      // at its end no longer *swallows* anything — it just writes a `scrollTop` that clamps
+      // to where it already was. The guard is kept because it still says the true thing:
+      // this column has no answer to that gesture. Same rule `armAxisLock` states about
+      // claiming an axis at an edge, minus the claim.
+      var room = e.deltaY < 0 ? cards.scrollTop > 0 : cards.scrollTop < cards.scrollHeight - cards.clientHeight - 1;
+      if (!room) return;
+      // Passive, and that is the whole per-axis rule here: `preventDefault` cancels a wheel
+      // event *whole*, so cancelling to claim the vertical half threw the sideways half away
+      // with it — measured over a column head with 490px of port to the right, a diagonal
+      // (120, 12) moved the column 12 and the port 0, against 120 when the same gesture
+      // landed on a head whose column had nothing to scroll and the handler returned early.
+      // A claim on one axis may not cost the other; the rule is `armChromeWheel`'s, and so
+      // is the answer. Nothing double-scrolls, because the port is `overflow-y: hidden` and
+      // the page below it does not scroll at all: measured, the uncancelled `deltaY` reaches
+      // no scroller anywhere (`.work` 0, document 0), so this line is still the only writer.
+      cards.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? cards.clientHeight : 1);
+    }, { passive: true });
+  }
+
   function armChromeWheel(port) {
     if (wheelArmed) return;
     var col = port.parentElement;
@@ -2195,7 +2278,28 @@
       // Ctrl+wheel is the browser's zoom gesture — a trackpad pinch arrives as exactly
       // that — so forwarding its delta would scroll the board out from under someone who
       // is only trying to make it bigger.
-      if (port.contains(e.target) || scrollLocks || e.ctrlKey) return;
+      // The guard asks the box that *scrolls*, not the box the chrome sits above, and the
+      // two stopped being the same thing when kanban got a scrollport of its own. Codex,
+      // #54 — the same shape as the scroll lock one function up, and the same cure.
+      //
+      // **The case it was reported for is gone, and the rule is kept anyway.** It was the
+      // footer: while the board was the port, `.work` held it *outside* that port and 65px
+      // of it stood permanently in view, so asking `.work` answered "inside the port, leave
+      // it to the browser" about a box that no longer scrolled — 0px against 300 over the
+      // topbar. The footer moved inside `.port` a commit later, and with it that strip. No
+      // dead zone is reachable today, so nothing fails if this line asks the wrong box;
+      // what remains is that asking the wrong box is wrong, and the next box to sit between
+      // `.work` and the port would revive the bug rather than introduce it.
+      var to = scrollPort() || port;
+      if (to.contains(e.target) || scrollLocks || e.ctrlKey) return;
+      // In kanban the destination now scrolls sideways only, and a wheel over the chrome
+      // has no vertical answer at all — not because the forwarding broke but because the
+      // thing it forwarded to stopped existing. The board has no board-level vertical
+      // scroll any more; each column has its own, and the pointer is over the topbar,
+      // which is above none of them. Picking one (the leftmost, the widest) would be
+      // inventing a destination. `to.scrollTop` below is a no-op there and the wheel is
+      // simply not taken — which is the honest result, and the reason "the chrome above
+      // the port is not a dead zone" is now a rule about the list.
       // First refusal is per axis, and it is a *claim on that axis alone* rather than on
       // the gesture. The chip row scrolls vertically and cannot take a `deltaX` at all,
       // so two things went wrong in turn: asking `deltaY < 0` about a purely sideways
@@ -2219,11 +2323,17 @@
           (e.deltaX < 0 ? n.scrollLeft > 0 : n.scrollLeft < n.scrollWidth - n.clientWidth - 1)) takeX = false;
       }
       if (!takeY && !takeX) return;
+      // `to` is resolved at the top of the handler rather than captured when this was
+      // armed: arming happens once, at the first `paneRefs()`, and the layout changes many
+      // times after it — a captured port would forward every wheel to `.work` on a board
+      // that stopped scrolling, and the dead zone this exists to close would open again in
+      // the kanban layout only.
+      //
       // Lines and pages are real delta modes — Firefox sends lines for a mouse wheel —
       // and forwarding them as pixels would move the board by three.
-      var k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? port.clientHeight : 1;
-      if (takeY) port.scrollTop += e.deltaY * k;
-      if (takeX) port.scrollLeft += e.deltaX * k;
+      var k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? to.clientHeight : 1;
+      if (takeY) to.scrollTop += e.deltaY * k;
+      if (takeX) to.scrollLeft += e.deltaX * k;
     }, { passive: true });
   }
 
@@ -2284,28 +2394,193 @@
   // nothing: the body no longer scrolls, and the board behind the sheet would move
   // freely. `overflow: hidden` on the port is enough here precisely because it is not
   // the document scroller, which is the case iOS mishandles.
-  var scrollLocks = 0, lockedY = 0, lockedX = 0;
-  function scrollPort() { paneRefs(); return workEl; }
+  // The box that is *currently* locked, remembered rather than resolved twice. Before the
+  // kanban got a port of its own the question had one answer for the life of a sheet, so
+  // asking again on the way out was free; it is not any more. See `unlockScroll`.
+  //
+  // **Sabotage cannot fell this one, and that is worth stating rather than hiding.** With
+  // `relockScroll` below in place the two answers always agree by the time anything
+  // unlocks — every path that moves the port under a held lock runs through `renderBoard`,
+  // and the lock is taken in exactly one place (a surface's scrim) and released in one.
+  // It stays because it is what makes `unlockScroll` independent of that guarantee: two
+  // functions that must agree about a mutable answer is the shape this file keeps
+  // removing, not one to add.
+  var scrollLocks = 0, lockedY = 0, lockedX = 0, lockedEl = null;
+  // ── which box actually scrolls ──────────────────────────────────────────────
+  // One question, asked in one place. It was asked in four — the wheel forwarder, the
+  // scroll lock, the puck page's saved place and the tab stop — and every one of them
+  // answered `.work`, which was true right up until kanban got a scrollport of
+  // its own. Four copies of a fact is how they come to disagree; this is the same move
+  // as `liftArchive()` and `sortChain()`.
+  //
+  // Two answers, and the layout decides between them:
+  //
+  // - **In kanban it is `.port`, the box around the board — and it scrolls sideways only.**
+  //   The board used to carry `overflow-x: auto` with no height to scroll within, so
+  //   `.col-head`'s `position: sticky` pinned against nothing and the sideways scrollbar sat
+  //   at the bottom of 4700px of cards instead of at the bottom of the window. The obvious
+  //   repair is to give the board a height — and that was built, and it put the footer at
+  //   the bottom of the window forever, because a footer cannot go *inside* a box laid out
+  //   `grid-auto-flow: column`. So the scroller became one box out, and the board went back
+  //   to overflowing visibly: exactly what `.board.as-list` has always done.
+  //
+  //   **Two things have changed since and neither is visible from here.** The footer left
+  //   for the sidebar, so the port holds only the board — the box stays because a sticky
+  //   column head must not resolve against the board, which is a separate reason from the
+  //   one it was built for. And the vertical axis moved into the columns: `.cards` is what
+  //   scrolls downwards now, so what this function answers is *the box that scrolls
+  //   sideways*. Anything asking it about a vertical place is asking the wrong box; see
+  //   `colPlaces`.
+  // - **The list is not.** `.board.as-list` is no scroller — that is what buys the group
+  //   heading its vertical pin — so there `.work` is the port, unchanged.
+  //
+  // And a puck page is neither, which is why the class is asked first: `#board` is
+  // `display: none` there but keeps its layout class, so a puck opened from the board
+  // would otherwise hand back a hidden box with no scroll range at all. The puck's own
+  // content is `.work`'s, always.
+  function scrollPort() {
+    paneRefs();
+    if (!workEl) return null;
+    if (document.body.classList.contains("viewing-puck")) return workEl;
+    return portEl && boardEl && !boardEl.classList.contains("as-list") ? portEl : workEl;
+  }
+  // The port is a tab stop and a labelled region, because the page stopped being one —
+  // Page Down and Space from the topbar need something to move, and Chrome puts
+  // scrollers in the tab order by itself where Safari does not. So the marks follow the
+  // port rather than sitting on `.work` in the markup: a box that no longer scrolls is
+  // not a stop, and a region with no name is worse than no region.
+  // Who the port *is* — its name and its role. Not its tab stop: this runs from
+  // `renderBoard` before the board is filled, where every box measures 0, and a stop is a
+  // question about size. `markStops` owns `tabindex` for both boxes and is called where
+  // measuring is allowed.
+  function markPort() {
+    var port = scrollPort();
+    if (!port) return;
+    [workEl, portEl].forEach(function (n) {
+      if (!n || n === port) return;
+      n.removeAttribute("role");
+      n.removeAttribute("aria-label");
+    });
+    // Both ports are plain `div`s, so both want the role. It is `#board` that must never
+    // have it — a `<main>` is already a landmark and `region` would replace it with a
+    // weaker one — and the board stopped being a port when `.port` took the job.
+    // A named region whether or not it is a stop: landmarks are navigated by name rather
+    // than by Tab, so the name costs no keystrokes and the stop is the thing that must be
+    // earned. Same sentence `renderColumns` already says about a column.
+    port.setAttribute("role", "region");
+    port.setAttribute("aria-label", document.body.classList.contains("viewing-puck") ? "Puck" : "Board");
+  }
+  // Which columns are keyboard stops, and it has two callers on purpose. Chrome puts
+  // *overflowing* boxes in the tab order by itself and Safari puts none there; matching
+  // the first is the whole point, so an empty or short column is not a stop. What it
+  // cannot follow is a resize that changes the answer without a redraw: rare, and a stale
+  // stop is a far smaller cost than seven inert ones on every filtered board.
+  //
+  // The second caller is `closeDetail`, and it is the third face of one rule: **a hidden
+  // scroller cannot be measured and cannot be written to.** A board redrawn behind an open
+  // puck (`loadWritableRepos` landing, an edit) measures a `display: none` subtree where
+  // every box answers 0, so the pass at the end of `renderColumns` runs and decides *no
+  // column is a stop* — measured, a 15-card column `tabindex="0"` before, gone after, and
+  // still gone once the puck closed and it was scrolling again. Codex found it (#54). The
+  // place had both its repairs already (the snapshot on the way in, the restore on the way
+  // out); the stop had none, and the comment beside that pass said the opposite — "the
+  // pass still runs, because it also decides the tab stops" — which is true of the call
+  // and false of the answer.
+  // Every `tabindex` the board and its ports carry, decided in one pass, because they all
+  // answer the same question — *does this box have anything to scroll?* — and a box that
+  // does not is a target where arrows, Page Down and Space do nothing.
+  //
+  // The port was the one exception, and it was written as an unconditional stop back when
+  // it was the only scroller on the board. A kanban view that fits — Inbox, a board
+  // filtered to one column — has no range at all: measured at 1400×900, `#port` carrying
+  // `tabindex="0"` with 0 of travel on both axes, and no column a stop either, so the
+  // keyboard stopped somewhere nothing moves. Codex found it (#54). Either axis counts:
+  // the list's `.work` is two-axis, and a list that only overflows sideways is still a box
+  // Page Down has an answer for.
+  function markStops(board) {
+    [workEl, portEl].forEach(function (n) {
+      if (!n) return;
+      var isPort = n === scrollPort();
+      if (isPort && (n.scrollHeight > n.clientHeight + 1 || n.scrollWidth > n.clientWidth + 1)) n.tabIndex = 0;
+      else n.removeAttribute("tabindex");
+    });
+    markColumnStops(board);
+  }
+  function markColumnStops(board) {
+    if (!board) return;
+    // Columns only — the tray is deliberately not a stop, and the reason is its rows rather
+    // than its key. A column's cards are `div`s with a click handler and nothing focusable
+    // inside, so the scroller is the *only* keyboard route to what is down there; the tray's
+    // rows are `<button>`s, so Tab already reaches every eye and the browser scrolls each one
+    // into view. Chrome draws the same line by itself: measured in the tab order, a column's
+    // `.cards` (0 focusable children) is in it and the tray's (11) is not. Marking the tray
+    // would be a new stop rather than the Safari parity this exists for. It still carries
+    // `data-col` — the offset snapshots want it, and that is a different question.
+    Array.prototype.forEach.call(board.querySelectorAll(".column:not(.hidden-cols) > .cards[data-col]"), function (k) {
+      if (k.scrollHeight > k.clientHeight + 1) k.tabIndex = 0;
+      else k.removeAttribute("tabindex");
+    });
+  }
   function lockScroll() {
     if (scrollLocks++) return;
     var port = scrollPort();
     if (!port) return;
     // `overflow: hidden` holds the *user's* scrolling, not ours.
     stopGlide();
+    lockedEl = port;
     lockedY = port.scrollTop;
     lockedX = port.scrollLeft;
     port.style.overflow = "hidden";
+    // And the columns, which is where the board's vertical scroll went. Hiding the port's
+    // overflow stopped holding the thing that moves the moment each column became its own
+    // scroller — measured with the Display sheet open on a phone: the port was `hidden`
+    // and a column still went 0 → 250 behind it.
+    //
+    // A class rather than a list of elements, and that is the load-bearing choice. The
+    // sheet that locks is the one that re-renders the board (Display changes what is
+    // drawn), so a stored set of `.cards` nodes would be detached the moment it mattered —
+    // the exact failure `relockScroll` exists to paper over for the port. A selector has
+    // no stale reference to keep: whatever the board draws next is already locked.
+    document.body.classList.add("board-locked");
   }
+  // **Unlock the box that was locked, not the one the question answers now.** The layout
+  // segment sits at the top of that very sheet, so switching to List with it open moved
+  // the port out from under the lock: `unlockScroll` cleared `.work` and left `#board`
+  // with an inline `overflow: hidden` nobody would take off again. Measured with a wheel
+  // over the board in that state — 0px against 300 — so the reader could not scroll the
+  // board at all, while our own `scrollTop` writes went on working and hid it from every
+  // programmatic check. Codex, #54.
   function unlockScroll() {
     scrollLocks = Math.max(0, scrollLocks - 1);
     if (scrollLocks) return;
-    var port = scrollPort();
+    var port = lockedEl;
+    lockedEl = null;
     if (!port) return;
     port.style.overflow = "";
+    document.body.classList.remove("board-locked");
     // Hiding the overflow drops the scroll offset, so it is put back — the sheet closes
-    // onto the row you opened it from, not onto the top of the list.
+    // onto the row you opened it from, not onto the top of the list. The columns need no
+    // equivalent: `overflow: hidden` on a box that keeps its content keeps its offset too,
+    // and unlike the port nothing re-points at them mid-lock.
     port.scrollTop = lockedY;
     port.scrollLeft = lockedX;
+  }
+  // And the lock follows the port, or the other half of that gesture is a board nobody is
+  // holding: the sheet stays up over a list whose port was never locked. That half cannot
+  // be measured from a test the way the first one can — `overflow: hidden` has never
+  // stopped our own `scrollTop` writes, which is the only scrolling a synthetic check can
+  // do — so what is asserted is the transfer itself: the old box released, the new one
+  // hidden. The old one gets nothing put back, because its offsets belong to a layout that
+  // is no longer drawn; the new one is locked wherever it now stands.
+  function relockScroll() {
+    if (!scrollLocks) return;
+    var port = scrollPort();
+    if (!port || port === lockedEl) return;
+    if (lockedEl) lockedEl.style.overflow = "";
+    lockedEl = port;
+    lockedY = port.scrollTop;
+    lockedX = port.scrollLeft;
+    port.style.overflow = "hidden";
   }
 
   // The scrim stops the pointer, not the keyboard. A sheet is modal, so the app
@@ -4122,14 +4397,35 @@
     // offsets clamp to 0 and coming back would land on the top-left of the list —
     // measured 150/250 → 0/0. Captured only on the way *in* from the board: puck →
     // puck keeps the first one, which is the place Back actually returns to.
-    if (workEl && !document.body.classList.contains("viewing-puck")) {
-      boardAt = { x: workEl.scrollLeft, y: workEl.scrollTop };
+    // Asked before the class goes on, so the answer is still the board's port — which in
+    // the kanban layout is `#board` and not `.work`.
+    var from = document.body.classList.contains("viewing-puck") ? null : scrollPort();
+    if (from) {
+      // `el`: *which box* the offsets were read from, not merely how much. The layout can
+      // change while the puck is open — ⌘K still offers `Layout: list/board`, and
+      // `setDisplay` does not close the puck — so `scrollPort()` can answer with a different
+      // box on the way out than it did on the way in, and the kanban port's `scrollLeft`
+      // would be written straight into the list's `.work`. Measured at 700px: the port
+      // read at 200, switched to the list behind the puck, and closing left `.work` at
+      // **178** — its whole horizontal range, a list opened fully shifted sideways. Codex
+      // found it (#54). Same shape and same cure as `lockedEl` in `lockScroll`, which this
+      // file already chose for the identical problem: remember the box, not the question.
+      boardAt = { el: from, x: from.scrollLeft, y: from.scrollTop, group: boardEl && boardEl.dataset.group, cols: {} };
+      // The columns' places too, and *here* rather than at the next render: a hidden
+      // scroller reports `scrollTop` as 0 (Chromium remembers it and gives it back when the
+      // box is shown, but only for a box that survives). A redraw behind an open puck —
+      // `loadWritableRepos` resolving — reads 0 from every column, replaces the nodes, and
+      // the place is gone with nothing to put back. Measured: 180 → 0. Codex, #54.
+      if (boardEl) Array.prototype.forEach.call(boardEl.querySelectorAll(".cards[data-col]"), function (k) {
+        if (k.scrollTop) boardAt.cols[k.dataset.col] = k.scrollTop;
+      });
     }
     detailPane.hidden = false;
     document.body.classList.add("viewing-puck");
     // The scrollport is a labelled region (it is the only thing that scrolls, so it is
-    // also a tab stop), and what it holds has just changed from the board to one puck.
-    if (workEl) workEl.setAttribute("aria-label", "Puck");
+    // also a tab stop), and what it holds has just changed from the board to one puck —
+    // which in the kanban layout also changes *which box* it is.
+    markPort();
     // The mobile topbar becomes the puck's context (Linear-style): Pucks › Title,
     // where "Pucks" is the back action and the title truncates.
     var tc = document.getElementById("topCrumb");
@@ -4182,8 +4478,20 @@
     // it on the way in, but the reader may have scrolled the page itself since. Dropping
     // the saved place without dropping the live one just moves the problem: measured, a
     // view picked after reading 300px into a puck opened 186px down its own list.
-    var port = scrollPort();
-    if (port) { port.scrollTop = 0; port.scrollLeft = 0; }
+    // Both boxes, not just the port: `closeDetail` has already run, so the answer is the
+    // board's port — while the offset the *puck* was read at is still standing in `.work`.
+    // In the list they are the same box and the second write is a no-op.
+    [scrollPort(), workEl].forEach(function (n) { if (n) { n.scrollTop = 0; n.scrollLeft = 0; } });
+    // And the columns, which is where the same problem moved when they became the board's
+    // vertical scrollports. The redraw that follows this navigation would otherwise put the
+    // *old* board's places back by key — `now` is `now` in the next view too — and the
+    // four-row view measured above would open partway down again, one box further in.
+    // Caught by this rule's own check rather than by a report, which is the whole reason
+    // the check for it was written the same hour.
+    colPlaces = {};
+    Array.prototype.forEach.call(document.querySelectorAll(".cards[data-col]"), function (k) {
+      k.scrollTop = 0;
+    });
     if (location.hash) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {} }
   }
   function closeDetail() {
@@ -4199,16 +4507,73 @@
     // the puck it belonged to and can still commit to it.
     closeSurfaces();
     document.body.classList.remove("viewing-puck");
-    if (workEl) workEl.setAttribute("aria-label", "Board");
+    markPort();
     if (detailPane) detailPane.hidden = true;
     highlightSelected();
     // The board is back and has its scroll range again, so the place it was left in can
-    // be. After `highlightSelected`, which is the last thing that touches the rows.
-    if (workEl && boardAt) {
-      workEl.scrollTop = boardAt.y;
-      workEl.scrollLeft = boardAt.x;
+    // be. After `highlightSelected`, which is the last thing that touches the rows — and
+    // after the class comes off, or the port asked for would still be the puck's.
+    var back = boardAt && scrollPort();
+    if (back) {
+      // **Two questions, and the place goes back only when both answer yes** — because
+      // neither implies the other, and each was reported on its own.
+      //
+      // `el` is the same *box*: the layout can change behind an open puck (⌘K still offers
+      // `Layout: list/board`, and `setDisplay` closes no puck), and the kanban port's
+      // `scrollLeft` then went into the list's `.work` — measured, 200 read and `.work`
+      // opened at 178, its whole range. `.work` and `#port` both outlive every redraw
+      // (`renderBoard` replaces the board's children, not its ancestors), so identity is an
+      // exact answer where the layout class would only be a proxy for it.
+      //
+      // The stamp is the same *board*: a grouping change behind the puck keeps the very same
+      // `.port`, so identity alone said yes to a board that no longer exists — measured,
+      // `all␀␀status` scrolled to 200, switched to `all␀␀repo` from ⌘K, and closing opened a
+      // three-column repo board 200px in with 202 of range, Alpha and Beta off screen.
+      // Codex found both halves (#54), one after the other.
+      //
+      // Either way `boardAt` is cleared: that place no longer exists, and keeping it would
+      // only defer the same wrong write.
+      var sammaBräda = boardAt.group === (boardEl && boardEl.dataset.group);
+      if (back === boardAt.el && sammaBräda) {
+        back.scrollTop = boardAt.y;
+        back.scrollLeft = boardAt.x;
+      } else {
+        // **Not restoring is not enough — the offset has to be taken away.** Hiding the
+        // board empties the port, which clamps it to 0, and *Chromium gives that offset back
+        // by itself when the content returns* — the very behaviour `openDetail`'s comment
+        // notes one screen up, here working against us. Measured with our restore deleted
+        // outright: the port still came back at 200. So the guards above decide whether the
+        // place is *ours* to put back; when it is not, the browser's copy is what is left,
+        // and zeroing is the only thing that removes it. Same write `exitPuckView` does for
+        // a navigation, for the same reason: the place belongs to a board that is gone.
+        back.scrollTop = 0;
+        back.scrollLeft = 0;
+        // Only the box being handed back. Zeroing the *other* one as well — the kanban port
+        // left behind when the layout moved — was written first and removed: nothing could
+        // fell it. Switching back to kanban gives 200 either way, because Chromium's memory
+        // outlives a write made while the box had no range to hold it. And it is right that
+        // it does: that is the same board, and the reader did scroll it there. A declaration
+        // that cannot apply is not a guard, it is a claim.
+      }
+      // And each column, from the snapshot taken on the way in. It is written here whether
+      // or not the board was redrawn behind the puck: if it was not, the nodes still hold
+      // these very numbers and the write is a no-op; if it was, this is the first moment
+      // there is a scroll range to write into at all. The same stamp as above — it has
+      // always been checked here, for the reason the render-time restore checks it, and the
+      // port simply had not been asking the same question yet.
+      if (boardEl && boardAt.cols && sammaBräda) {
+        Array.prototype.forEach.call(boardEl.querySelectorAll(".cards[data-col]"), function (k) {
+          var v = boardAt.cols[k.dataset.col];
+          if (v) k.scrollTop = v;
+        });
+      }
       boardAt = null;
     }
+    // The stops, unconditionally — not inside the gate above. A redraw behind the puck
+    // took them from every column, and that happened whether or not a place was snapshotted
+    // and whether or not the grouping still matches. This is the first moment a column has
+    // a layout to be measured in again. See `markStops`.
+    markStops(boardEl);
   }
 
   // A table row — full-width, aligned columns (Name · Priority · Agent · Repo ·
@@ -4302,6 +4667,11 @@
   // an empty column is a real drop target. Open domains (agent, repo, priority) list
   // only the values actually on screen, so they can't produce phantom columns.
   var NO_VALUE = "\u0000"; // the "none" bucket — a key no real value can collide with
+  // The tray's own snapshot key. It is the one box on the board that scrolls but is not a
+  // grouping value — it holds rows rather than cards — so it needs a key no grouping can
+  // produce. Same trick as `NO_VALUE` one line up: a repo, a status, an agent and a tag are
+  // all plain text out of a harvest, so a NUL-prefixed string cannot collide with one.
+  var TRAY_KEY = "\u0000tray";
   function presentKeys(items, keyOf, rank) {
     var seen = {}, out = [];
     items.forEach(function (it) { var k = keyOf(it); if (!seen[k]) { seen[k] = 1; out.push(k); } });
@@ -4652,10 +5022,18 @@
     hidden.forEach(function (h) { trayColumns.keys[h.key] = 1; });
     var tray = el("div", "column hidden-cols");
     var head = el("div", "col-head");
+    // The swatch slot, empty. See `.hidden-cols .col-head .swatch`: it carries no colour,
+    // it carries the 18px that every column title stands behind.
+    head.appendChild(el("span", "swatch"));
     head.appendChild(el("h2", null, "Hidden"));
     head.appendChild(el("span", "count", String(hidden.length)));
     tray.appendChild(head);
     var list = el("div", "cards");
+    // A tall tray scrolls (measured: 469 against 128 with eleven archive-hidden repos in a
+    // 300px window), and without a key every offset snapshot walked straight past it —
+    // they all ask `.cards[data-col]`. A redraw then threw the reader back to the top of
+    // the one list whose whole purpose is the eyes further down it. Codex found it (#54).
+    list.dataset.col = TRAY_KEY;
     hidden.forEach(function (h) {
       var b = el("button", "row hidden-col");
       b.type = "button";
@@ -5017,6 +5395,26 @@
     return h;
   }
 
+  // The reader's place in each column, carried across one redraw. `renderBoard` fills it
+  // just before it empties the board and `renderColumns` spends it as each column is
+  // appended — two functions and one fact, which is a shape this file otherwise avoids.
+  // It earns the exception by being write-once-read-once within a single render: anything
+  // longer-lived would be a second source of truth for where the reader is.
+  var colPlaces = {};
+  // The column the keyboard was in when the board was replaced, by the same key as the
+  // places above. Null unless focus was actually inside the board — a redraw while the
+  // reader is in a sheet, the sidebar or a field must not pull focus onto a column.
+  var colFocus = null;
+  // Which grouping `colPlaces` was read out of. The keys are the grouping's own values and
+  // `NO_VALUE` belongs to four of them, so the key alone cannot say whether a place is this
+  // board's.
+  var colPlacesGroup = null;
+  // What makes a board *this* board, for the purpose of putting a reader's place back: the
+  // view, the filter and the grouping. `\u0001` separates them because a query may contain
+  // anything printable, and the grouping's own keys reach for `\u0000` already.
+  function boardStamp() {
+    return state.focus + "\u0001" + canonicalQuery(state.query || "") + "\u0001" + effectiveGroup();
+  }
   function renderColumns(groups) {
     var g = activeGroup();
     // No guard for status grouping, and none is needed — which is worth writing down,
@@ -5043,6 +5441,23 @@
       if (columnTerm(g, grp.key)) head.appendChild(colMenu(g, grp.key, grp.label));
       col.appendChild(head);
       var cards = el("div", "cards");
+      // Each column is its own scrollport now, so each is its own keyboard target. The
+      // board had one tab stop while it had one scroller; with the vertical axis inside the
+      // columns, Page Down on the port moves nothing — it only scrolls sideways. Chrome
+      // puts overflowing boxes in the tab order by itself and Safari does not, which is the
+      // same asymmetry `markPort()` was written for, so it is said out loud here too.
+      // Labelled by the column, because "region" with no name is a landmark you cannot tell
+      // from the next one.
+      // A named region either way — landmarks are navigated by name, not by Tab, so they
+      // cost no keystrokes — but the tab stop waits until the box has something to scroll.
+      // See the pass at the end of this function: a stop on an empty column is a target
+      // that answers nothing, which is the rule the list's caret gutter already follows.
+      cards.setAttribute("role", "region");
+      cards.setAttribute("aria-label", grp.label);
+      // The key a restored place is found by, and the grouping's own value — so a grouping
+      // change simply matches nothing and every column opens at the top, which is what a
+      // different arrangement of the same pucks deserves. Same mechanism as `collapsed`.
+      cards.dataset.col = grp.key;
       if (grp.items.length === 0) cards.appendChild(el("div", "empty", "—"));
       else grp.items.forEach(function (it) { cards.appendChild(card(it)); });
       col.appendChild(cards);
@@ -5053,7 +5468,14 @@
         add.appendChild(icon("plus"));
         add.setAttribute("aria-label", "New puck in " + grp.label);
         add.addEventListener("click", function () { openNewPuckPanel(g.preset(grp.key)); });
-        col.appendChild(add);
+        // Inside the scroller, after the last card — where it was before `.cards` became
+        // the column's scrollport. As a *sibling* of the flexed scroller it was pinned to
+        // the bottom of the column instead, which costs 31px in every column whether or not
+        // anything is drawn there: measured, `opacity: 0` on a hover device and still
+        // holding its row. Codex found it (#54). A permanently reachable `+` may well be
+        // the better affordance — Linear keeps one in the column head — but that is a
+        // design change and this is a restoration.
+        cards.appendChild(add);
       }
       // Manual ordering: dropping *between* cards writes `order` (and the status
       // too, when the card also changed column — one move, one commit).
@@ -5121,6 +5543,67 @@
     });
     // Last, where the columns it holds would have been.
     renderHiddenTray(g, groups);
+    // And only now the reader's places, in one pass over a board that is finished.
+    //
+    // The first version put each one back inside the loop, and its own check caught what
+    // that costs: writing `scrollTop` needs the scrollable extent, so it forces a layout —
+    // of a board holding two columns out of four. The port is wider than that, so its
+    // `scrollLeft` clamped to 0 and the sideways place was lost (measured: 90 → 0). It is
+    // the rule at the top of `renderBoard` in a new disguise — nothing may measure the
+    // board before it is whole — and the repair is the same: wait until it is.
+    //
+    // A key that is not in `colPlaces` (a new column, another grouping) opens at the top,
+    // and a column that has grown shorter clamps itself.
+    // The stamp says which *board* this is, not just how it is grouped, and the second half
+    // was a separate finding (Codex, #54). Grouping alone is not identity: navigate All →
+    // Ready with both grouped by status and the keys still match, so Ready's `now` opened
+    // where All's had been read — measured, 260px down. It is the failure `exitPuckView`
+    // names one box out ("a four-row view opened at `scrollLeft: 150` because a longer list
+    // had been read there"), and that function cannot catch this one: it returns at once
+    // when no puck is open, which is the whole of a board-to-board navigation.
+    //
+    // View plus query plus grouping, because those are what make a board a different board.
+    // A display toggle — the archive, a property — is the same board with more or less
+    // drawn, and returning to the place you were reading is right there.
+    // `effectiveGroup()`, not `g.key`: the groupings are keyed by their property name in
+    // `GROUPS` and carry no `key` member, so that read stamped the string "undefined" and
+    // the comparison then failed against a genuine `undefined` on the next pass. Caught by
+    // the redraw check within the minute, which is what it is for.
+    var gruppering = boardStamp();
+    board.dataset.group = gruppering;
+    var samma = colPlacesGroup === gruppering;
+    // A redraw behind an open puck writes into boxes with no layout, so these offsets go
+    // nowhere — and the capture above read 0 from every hidden column in the first place.
+    // That case is not this function's to solve: `openDetail` snapshots the columns while
+    // the board is still visible and `closeDetail` puts them back. The pass still runs,
+    // because it also decides the tab stops.
+    Array.prototype.forEach.call(board.querySelectorAll(".cards[data-col]"), function (k) {
+      var v = samma ? colPlaces[k.dataset.col] : 0;
+      if (v) k.scrollTop = v;
+    });
+    // And the tab stops, decided here because here is where measuring is allowed — the
+    // rule at the top of `renderBoard` forbids it only between the clear and the fill.
+    // Behind an open puck this answers "none", which is why `closeDetail` asks again;
+    // see `markStops`.
+    markStops(board);
+    // The keyboard's place, after the stops — a column has to *be* a stop before it can be
+    // focused, so the order is load-bearing rather than tidy. Only the same board (the stamp
+    // already gates the offsets, for the reason `NO_VALUE` taught), only a column that is
+    // still a stop, and never behind an open puck: focus belongs to the puck page there, and
+    // `display: none` would make the call a silent no-op anyway.
+    // `preventScroll`, because focusing a box scrolls it into view — which would undo the
+    // port's `scrollLeft` that was restored three lines above this.
+    // Found by scanning rather than by a selector: a key is a grouping's own value — a repo
+    // name with a slash in it, `NO_VALUE`'s NUL, `TRAY_KEY` — and none of those belong in an
+    // attribute selector. The places pass two lines up compares the same way.
+    if (samma && colFocus && !document.body.classList.contains("viewing-puck")) {
+      Array.prototype.some.call(board.querySelectorAll(".cards[data-col]"), function (k) {
+        if (k.dataset.col !== colFocus || !k.hasAttribute("tabindex")) return false;
+        k.focus({ preventScroll: true });
+        return true;
+      });
+    }
+    colFocus = null;
   }
 
   // Fold a group shut or open it. Display state, so it travels the same road as the
@@ -5774,6 +6257,38 @@
     // clear and the fill. `tests/chrome.test.mjs` holds the guarantee.
     // A glide still running would carry on moving whatever replaces the list it belonged to.
     stopGlide();
+    // The paragraph above holds for boxes that *survive* the clear, and the columns do not:
+    // each `.cards` is the board's vertical scrollport now and `innerHTML = ""` takes it
+    // with the rest. So the reader's place is read out first, by column key, and put back
+    // after the fill — Codex found this (#54), and the case is the very one the paragraph
+    // names: `loadWritableRepos` resolving on a signed-in board redraws identical content
+    // and would have returned a reader partway down a column to its top.
+    //
+    // Reading `scrollTop` here is safe: it is before the clear, not inside the gap the rule
+    // is about. Restoring happens after the appends, outside it too.
+    // The grouping the *existing* columns were drawn under, read off the board rather than
+    // from `state`: by the time this runs `effectiveGroup()` already answers with the new
+    // one, so asking it would compare a board to itself. Codex found what that costs (#54):
+    // `NO_VALUE` is the empty bucket for agent, priority, target and parent alike, so
+    // scrolling `Unrouted` and switching to Priority restored that offset into
+    // `No priority` — a column with nothing to do with it. The comment here used to claim a
+    // grouping change "simply matches nothing", and that was true of every key except the
+    // one they share.
+    colPlacesGroup = board.dataset.group || null;
+    colPlaces = {};
+    Array.prototype.forEach.call(board.querySelectorAll(".cards[data-col]"), function (k) {
+      if (k.scrollTop) colPlaces[k.dataset.col] = k.scrollTop;
+    });
+    // And which column the keyboard was standing in. Restoring the *offset* is only half of
+    // it: the node is replaced, so focus falls back to the document and Page Down then moves
+    // nothing at all — measured, focus on `.cards[data-col=now]` and its place both held at
+    // 120, and Page Down gave 120 → 120. That is a regression from per-column scroll; while
+    // `.work` was the one port it was a stable target that no redraw touched. Codex found it
+    // (#54). Same idiom the board already uses twice: `segmented()` puts the pressed segment
+    // back after a rebuild, and `toggleGroup` finds its control again by `data-fold`.
+    colFocus = null;
+    var aktiv = document.activeElement;
+    if (aktiv && aktiv.dataset && aktiv.dataset.col && board.contains(aktiv)) colFocus = aktiv.dataset.col;
     board.innerHTML = "";
     // The layout is whatever the toggle says — in every view.
     //
@@ -5790,6 +6305,11 @@
     var layout = state.view;
     trayColumns = null; // set again by the tray, if this render draws one
     board.classList.toggle("as-list", layout === "list");
+    // The class is what decides which box is the port, so the marks that belong to the
+    // port move with it — here rather than only in `openDetail`/`closeDetail`, because
+    // the layout switches without a puck ever being opened.
+    markPort();
+    relockScroll();
     // On the board rather than on each row: one write for the whole list, and the rows
     // inherit it. Written on every render because the set can change without the rows
     // changing at all — ticking a property off is a redraw of the same pucks.
@@ -5811,8 +6331,25 @@
     // count of the current view is already in the view header and the sidebar, and
     // a third copy under the fold was the only one that could go stale (it stayed
     // put, reading "1 of 145 shown", while a puck page covered the board).
-    document.getElementById("footmeta").textContent =
-      DATA.total + " pucks · generated " + DATA.generatedAt.slice(0, 16).replace("T", " ") + " UTC · ";
+    // Two nodes, not one string, and the date is the reason. A browser takes a hyphen as
+    // a break opportunity, so in the sidebar's 240px column `2026-08-16` broke after the
+    // month and left `16 18:29 UTC` starting the next line — a date split across two rows
+    // reads as two numbers. The count may wrap; the stamp may not.
+    //
+    // No trailing separator any more either: this is its own line, with the links on the
+    // next. Inline in the board's footer it had to hand over to whatever came after it.
+    var fm = document.getElementById("footmeta");
+    fm.textContent = "";
+    fm.appendChild(el("span", null, DATA.total + " pucks · generated "));
+    // Only the date is unbreakable, and that is the whole of the fix. Wrapping the entire
+    // stamp in `nowrap` stopped `2026-08-16` breaking after the month — a date split across
+    // two rows reads as two numbers — but made the 29-character run itself unbreakable, and
+    // the sidebar can be dragged to 190px (`MIN` in `initSidebarResize`). Measured before:
+    // 41px of horizontal overflow on a box whose whole job is to scroll vertically, with
+    // the stamp 40px past the edge — and 3px of it already at the default 240. Codex found
+    // it (#54). The words around the date may wrap; the digits and hyphens may not.
+    fm.appendChild(el("span", "fm-stamp", DATA.generatedAt.slice(0, 10)));
+    fm.appendChild(el("span", null, " " + DATA.generatedAt.slice(11, 16) + " UTC"));
   }
 
   // Which status groups the current view shows. Inbox is its own space, so it's

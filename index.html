@@ -59,6 +59,28 @@
           <div class="side-eyebrow">Repos</div>
           <div class="side-repos" id="repoFilters" aria-label="Repositories"></div>
         </div>
+        <!-- Where the board's footer went, and the move is the whole point: the same five
+             facts were horizontal furniture in the one place vertical space is scarce —
+             114px of an 844px phone, three lines, with an orphaned "·" on the last. A
+             sidebar is a vertical column where that space is cheap, and on a phone this
+             one is behind the menu button, so it costs nothing at all.
+
+             Sticky against the bottom, which is `.side-brand`'s rule mirrored: this band
+             sits *inside* the sidebar's own scroller (`overflow-y: auto`), so "last" would
+             only hold at the end of the scroll. `margin-top: auto` keeps it down when the
+             sections are short. -->
+        <footer class="side-foot">
+          <div id="footmeta"></div>
+          <div class="side-foot-links">
+            <!-- The repair sits beside the date it repairs: footmeta ends with the harvest
+                 time, and this asks CI for a fresher one. Wrapped with its own separator so
+                 hiding it (no token, no configured workflow) does not leave a stray "·". -->
+            <span id="syncWrap" hidden><button type="button" class="foot-sync" id="syncNow">sync now</button> ·</span>
+            <a href="ROADMAP.md">flat digest</a> ·
+            <a href="data/roadmap.json">roadmap.json</a> ·
+            <a id="sourceLink" href="#">source</a>
+          </div>
+        </footer>
       </aside>
 
       <!-- ── main column: topbar + work ── -->
@@ -129,8 +151,9 @@
 
         <!-- `.work` is the app's scrollport: the shell is a fixed-height column, so the
              topbar, the view header and the chip row stay put without sticky positioning
-             and this box scrolls under them. The footer lives *inside* it so it still
-             scrolls away with the board it dates, rather than becoming a permanent bar. -->
+             and this box scrolls under them. Nothing but the board is in here — what used
+             to date the harvest from below it now sits at the foot of the sidebar, where
+             vertical space is cheap. See `.side-foot`. -->
         <!-- The one scrollport, and therefore a keyboard target: with the shell at a fixed
              height the document no longer scrolls, so Page Down and Space from the topbar
              or the chip row had nothing to move. Chrome puts scrollers in the tab order by
@@ -138,22 +161,20 @@
              a keyboard can read and one it cannot. The label follows what the box is
              holding — see `openDetail`. -->
         <div class="work" id="work" tabindex="0" role="region" aria-label="Board">
+          <!-- The kanban scrollport, and now the board is all it holds. It wrapped the
+               board *and* a footer once, because the board cannot be the port and hold a
+               footer both — its children are laid out `grid-auto-flow: column`, so a
+               footer inside it is one more column. The box stays: the board still goes
+               back to overflowing visibly, which is what lets a sticky column head resolve
+               against the port. In the list this box scrolls nothing (`.work` is the port
+               there) and is pure structure. See `scrollPort()` in app.js. -->
+          <div class="port" id="port">
           <main id="board" class="board" aria-live="polite"></main>
+          </div>
           <aside class="detail-pane" id="detailPane" hidden aria-label="Puck detail">
             <button class="detail-close" id="detailClose" type="button" aria-label="Close"></button>
             <div class="detail-content" id="detailContent"></div>
           </aside>
-
-        <footer class="foot">
-          <span id="footmeta"></span>
-          <!-- The repair sits beside the date it repairs: footmeta ends with the harvest
-               time, and this asks CI for a fresher one. Wrapped with its own separator so
-               hiding it (no token, no configured workflow) does not leave a stray "·". -->
-          <span id="syncWrap" hidden><button type="button" class="foot-sync" id="syncNow">sync now</button> ·</span>
-          <a href="ROADMAP.md">flat digest</a> ·
-          <a href="data/roadmap.json">roadmap.json</a> ·
-          <a id="sourceLink" href="#">source</a>
-        </footer>
         </div>
       </div>
     </div>

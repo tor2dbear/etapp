@@ -404,11 +404,27 @@ body {
   grid-auto-flow: column;
   grid-auto-columns: minmax(280px, 1fr);
   gap: 16px;
-  padding: 18px var(--pad) 40px;
+  /* No padding at the top, and that is about the pinned head rather than about spacing.
+     A sticky box pins against the scrollport's *content* box, so the board's own 18px
+     gutter was a band above the head that belonged to neither: the cards scrolled up
+     through it and a strip of the one behind stood above `PIA 6` — measured at 390px,
+     `elementFromPoint` in that band answering `card` with the head pinned 18px lower
+     than the port's edge. It is the list's leak (two frozen cells with a 14px gap
+     between them) one layout over, and the same repair: give the space to the box that
+     travels. On the column it scrolls away with the column's own first screen. */
+  padding: 0 var(--pad) 40px;
   overflow-x: auto;
-  align-items: start;
+  /* Lika höga banor, inte innehållshöga kolumner. En sticky-box kan bara färdas inuti
+     sitt containing block, så en kort kolumn tar sin egen rubrik med sig ut ur rutan när
+     den tar slut: rapporterat från en telefon som "Now försvinner upp", och mätt — vid
+     scroll 380 stod `Now` på 106 med portens kant på 113, alltså avklippt mitt i ordet,
+     medan grannarna stod kvar. `start` gav varje kolumn dess egen höjd, vilket är rätt
+     för en lista av kort och fel för en bana man läser tvärs över. Stretchade är alla
+     banor den längstas höjd, ingen rubrik kan tryckas ut, och en tom kolumns släppyta
+     blir hela banan i stället för fyrtio pixlar. */
+  align-items: stretch;
 }
-.column { min-width: 0; border-radius: var(--r-lg); }
+.column { min-width: 0; border-radius: var(--r-lg); padding-top: 18px; }
 /* drag-to-restatus */
 .card[draggable="true"] { cursor: grab; }
 .card.dragging { opacity: .5; }
@@ -437,11 +453,33 @@ body {
 
 /* The hidden-columns tray — a column-shaped place at the end of the board holding the
    ones the filter took away. It is not a column: nothing drops into it, and it carries
-   rows rather than cards, so it sets itself apart by weight — a dashed edge and a
-   quieter head — instead of by size. The count on each row is the reason it exists:
+   rows rather than cards, so it sets itself apart by weight — a quieter head, and rows that
+   look nothing like cards — instead of by size. The count on each row is the reason it exists:
    the chip row can say *what* is hidden, never how much is behind it. */
-.hidden-cols { border: 1px dashed var(--line); border-radius: var(--r-lg); padding: 10px; align-self: start; }
+/* The tray lines up with the columns beside it, and the alignment is now a matter of
+   having nothing to align: the dashed edge is gone at the user's request, and with it the
+   1px border and 10px side padding that inset everything inside it. Measured before:
+   the tray's title 11px from its own left edge against a column's 18px, and its rows 11px
+   in where the cards beside them start at 0 — a seven-pixel and an eleven-pixel drift,
+   both of them paid for by a box that no longer exists. What is left is `align-self:
+   start` (a list of four rows should not be column-tall) — `.column`'s own `padding-top`
+   and `border-radius` say the rest, which is the point: the tray is a column.
+   It sets itself apart by its head and its rows now, not by a line around it. */
+.hidden-cols { align-self: start; }
+/* The head's height is set by the tallest thing it may hold — the `⋯` button at 27px — so a
+   head carrying none is 7px shorter, and its centred title rides up with it. Stated so every
+   head is the same height whatever controls it happens to have, which is what puts the
+   titles on one line. 41 = the button's 27 plus this rule's own `padding-block: 4px 10px`;
+   `box-sizing` is border-box here, so the padding is inside the number. */
+.col-head { min-height: 41px; }
 .hidden-cols .col-head { position: static; background: none; color: var(--ink-3); }
+/* The tray keeps the column head's *shape* without its mark: a swatch is a colour, and a
+   tray of four columns has no one colour to show. Blank, it is the slot rather than the
+   mark — and the slot is what puts `HIDDEN` on the same line as `NOW` and `NEXT`. Stated
+   as an absent background rather than as a left padding of 18px, so the width stays owned
+   by `.col-head .swatch` and the gap by the head: a padding would be those two numbers
+   written down a second time, in the one place nothing would keep them in step. */
+.hidden-cols .col-head .swatch { background: none; }
 .hidden-cols .col-head h2 { color: var(--ink-3); }
 .hidden-col { gap: 8px; font-size: var(--fs-md); }
 .hidden-col .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); flex: none; background: var(--ink-3); }
@@ -474,26 +512,30 @@ body {
 @media (hover: none) { .col-more { opacity: 1; } }
 /* in-column "+" — add a puck already in this column */
 .col-add {
-  margin-top: 10px; width: 100%; display: flex; align-items: center; justify-content: center;
+  /* No top margin: it sits inside `.cards`, whose own `gap` already spaces it from the last
+     card. The margin dates from when it was the column's sibling and doubled the gap once
+     it moved in. */
+  width: 100%; display: flex; align-items: center; justify-content: center;
   padding: 7px; opacity: 0; transition: opacity .12s;
 }
 .column:hover .col-add, .col-add:focus-visible { opacity: 1; }
 .col-add:hover { color: var(--accent); border-color: var(--accent); }
 .col-add svg { width: 15px; height: 15px; }
 @media (hover: none) { .col-add { opacity: 1; } }
+/* Not pinned, and no longer needing to be. The head sits *outside* the box that scrolls —
+   `.cards` is the scroller, the head is its sibling — so the whole apparatus a pin
+   requires is gone rather than tuned: no `position: sticky`, no `top: 0` resolving against
+   a port's content box, no `z-index` ranking it over the cards, and no opaque background
+   bleeding 8px past the column to cover the `0 2px 8px` shadow of a card passing beneath
+   it. That shadow was a real report from a phone — "a small edge/shadow behind the other
+   titles" — and the repair is that nothing passes beneath any more.
+   (The list's heading is `.list-head` and is still pinned: `.work` is its scrollport and
+   the heading travels inside it.) */
 .col-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  position: sticky;
-  /* The kanban .board is its own scroll container (overflow-x: auto forces
-     overflow-y: auto too), so this sticks relative to the board, not the page —
-     top: 0 keeps it at the column top. (The list view scrolls with the viewport
-     and offsets below the topbar via --topbar-h; see .list-head.) */
-  top: 0;
-  padding: 4px 2px 10px;
-  background: var(--bg);
-  z-index: 1;
+  padding-block: 4px 10px;
 }
 .col-head .swatch { width: 10px; height: 10px; border-radius: var(--r-xs); }
 /* Two kinds of head, and until parent grouping arrived there was only one. A category
@@ -898,8 +940,30 @@ body {
 .card h3 { margin: 0; font-size: var(--fs-xl); line-height: var(--lh-tight); font-weight: var(--fw-semibold); }
 .repo-name { font-size: var(--fs-sm); color: var(--repo, var(--ink-3)); font-weight: var(--fw-semibold); white-space: nowrap; }
 /* Row 2 — repo (colored dot + name) left, ⚠/date right. */
+/* The repo cell is what gives, and it is the only child here that can. Every other one is a
+   fixed mark — a date, a badge, a warning — and each is `nowrap` by design, so with nothing
+   able to shrink the row simply grew: measured at 280px with a long organisation name and
+   every property ticked, 149px of overflow in the row and the date block pushed 135px past
+   the card's right edge. That used to be reachable by scrolling sideways, which was the
+   two-axis bug; with `overflow-x: clip` on the column it is merely hidden, which is worse.
+   Codex found the pair (#54).
+   **Sabotage had to be run three times to say what bears it, and the answer is neither
+   declaration alone.** A flex item's automatic minimum is its content *only while its
+   `overflow` is `visible`* — so `min-width: 0` and `overflow: hidden` each lower it to zero
+   by themselves, and removing either one changes nothing. Only removing both brings the
+   overflow back. That is belt and braces rather than a mechanism, and it is kept for the
+   reason `.board.as-list` keeps the same pair: the declaration is what makes the behaviour
+   independent of whichever `overflow` this rule ends up carrying, and `overflow: hidden` is
+   here for the ellipsis in any case.
+   **What was removed is the one that never applied**: `min-width: 0` on `.card-meta`, where
+   `.card` is a block, so the row is not a flex item and has no automatic minimum to lower.
+   A declaration that cannot apply is not a guard, it is a claim. */
 .card-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: var(--fs-sm); color: var(--ink-3); }
-.card-repo { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-weight: var(--fw-semibold); white-space: nowrap; }
+/* `inline-block`, not `inline-flex`: the card's repo cell holds one text node (the dot
+   belongs to the list's `.repo-name` variant), so `align-items` and `gap` decided nothing —
+   and `text-overflow` needs a block container. As a flex box it clipped mid-letter instead
+   of ellipsising. */
+.card-repo { display: inline-block; color: var(--ink-2); font-weight: var(--fw-semibold); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .repo-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .card-date { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* Two or three dates, kept inside the card. `min-width: 0` is what lets the box be
@@ -927,6 +991,18 @@ body {
   border-radius: var(--r-sm); padding: 1px 7px;
 }
 .badge--pill, .status-pill, .rollup, .agent-badge { border-radius: var(--r-pill); }
+/* The agent handle gives, in the one place a card has to fit it. Measured at 1000px with a
+   long handle and four properties ticked: the badge stood 325px wide at `flex: none` while
+   `.card-repo` had already shrunk to nothing, and the row overflowed its card by 159px —
+   which `overflow-x: clip` on the column then hides rather than lets you reach. Codex found
+   it (#54), as the sequel to the repo name.
+   Scoped to the card's row on purpose: the list gives the agent its own 108px track and
+   answers this question there, and widening the rule into it would be a sweep nobody
+   measured. And `flex: 0 1 auto`, not `min-width` alone: the shared badge rule says
+   `flex: none`, which is `flex-shrink: 0` — a box that may not shrink does not care what
+   its minimum is. Measured with only the minimum lowered: 325px, unchanged. */
+.card-meta > .agent-badge { flex: 0 1 auto; min-width: 0; }
+.agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 /* Takes its colour from the value it stands for, so the border follows the text. */
 .badge--outline, .status-pill, .issue-state { background: none; border-color: currentColor; }
 .badge--mono, .rollup, .agent-badge { font-family: var(--mono); }
@@ -1112,6 +1188,17 @@ body.modal-open { overflow: hidden; }
    class — a fixed body with nothing to scroll is harmless, and its absence would be a
    silent behaviour change rather than a loud one. */
 body.scroll-locked { overflow: hidden; }
+/* The board's vertical scroll lives in the columns, so that is what a surface has to hold
+   still. Written as a selector and not as a set of elements on purpose: the surface that
+   locks is also the one that redraws the board, so any node the lock had remembered would
+   be detached by the time it was unlocked. See `lockScroll`.
+
+   The two `:not(.x)` are specificity, not logic, and they are load-bearing: the rule that
+   makes a column scroll is `body:not(.viewing-puck) .port > .board:not(.as-list) > .column
+   > .cards`, and a `:not()` counts as what is inside it — four classes to this rule's two.
+   Without them the lock computed `overflow-y: auto` and did nothing, while the sheet's own
+   scrim happened to swallow the wheel and made it look like it worked. */
+body.board-locked:not(.x) .port > .board:not(.x) > .column > .cards { overflow: hidden; }
 @media (max-width: 600px) {
   .modal-backdrop { padding: 0; }
   .modal { max-width: none; max-height: 100vh; height: 100%; border-radius: 0; border: none; border-left: none; }
@@ -1138,21 +1225,50 @@ body.scroll-locked { overflow: hidden; }
 }
 
 .empty { color: var(--ink-3); font-size: var(--fs-md); padding: 8px 2px; }
-.foot {
-  padding: 16px var(--pad) 28px;
+/* The sidebar's foot: where the board's footer went, and what it stopped being. It was a
+   horizontal row in the one place vertical space is scarce — 114px of an 844px phone,
+   three wrapped lines with an orphaned "·" on the last — and it had to be pinned sideways
+   (`position: sticky; left: 0`) because the port scrolls horizontally and the row is only
+   port-wide: read to the right, then to the bottom, and the harvest time, `sync now` and
+   every link stood parked off screen. Measured at 390px: `left: -800`.
+
+   None of that survives the move, because the box it was true of is gone. The list's own
+   footer had the same sideways fault (`left: -488`, since the day the list was written)
+   and it goes with it — one repair for a defect that had two homes.
+
+   Sticky against the bottom is `.side-brand`'s rule mirrored, and the reasoning beside
+   that band applies unchanged: this sits *inside* the sidebar's own scroller, so "last"
+   holds only at the end of the scroll. `margin-top: auto` puts it at the bottom while the
+   sections above are short enough not to fill the column. */
+.side-foot {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--sidebar-bg);
   border-top: 1px solid var(--line);
+  padding: 10px 8px 14px;
   color: var(--ink-3);
-  font-size: var(--fs-md);
+  font-size: var(--fs-sm);
   display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
 }
-.foot a { color: var(--ink-2); }
-/* The footer dates the harvest, so the control that refreshes it belongs in the same
+/* The date is one token however many hyphens are in it — and *only* the date. The words
+   around it wrap, or the whole 29-character stamp becomes unbreakable and a sidebar dragged
+   to its 190px minimum gets 41px of horizontal overflow in a box that only scrolls
+   vertically. See `footmeta` for the measurement. */
+.fm-stamp { white-space: nowrap; }
+/* The links wrap among themselves rather than stretching the band: at 240px "flat digest ·
+   roadmap.json · source" is two lines, and that is the shape it should take. */
+.side-foot-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.side-foot a { color: var(--ink-2); }
+/* The band dates the harvest, so the control that refreshes it belongs in the same
    sentence — not in a menu two clicks away from the number it answers for. It is a
    button and not a link (it starts a workflow run; it does not go anywhere), but it
-   wears the footer's type: this row is prose, and one control shaped like a control
-   would read as chrome that wandered in. */
+   wears the band's type: this row is prose, and one control shaped like a control
+   would read as chrome that wandered in. The name is the board footer's, kept because
+   the thing it names did not change when its home did. */
 .foot-sync {
   font: inherit;
   color: var(--ink-2);
@@ -1168,13 +1284,13 @@ body.scroll-locked { overflow: hidden; }
    as well as the colour is what stops it reading as a link you may press again. */
 .foot-sync:disabled { cursor: default; color: var(--ink-3); text-decoration: none; }
 /* The wrapper holds the button *and* the separator after it, so hiding one hides both
-   — the alternative leaves a stray "·" on a logged-out board. It needs the footer's own
-   gap repeated inside it: `.foot`'s gap reaches between flex items and not into one, so
-   a plain space here set this separator tighter than the three beside it.
+   — the alternative leaves a stray "·" on a logged-out board. It needs the link row's own
+   gap repeated inside it: `.side-foot-links`' gap reaches between flex items and not into
+   one, so a plain space here set this separator tighter than the three beside it.
    Safe against `hidden` only because `[hidden]` above is `!important` — a bare
    `display: flex` would otherwise beat the browser's `[hidden] { display: none }` and
    put the button back on a board with no token. */
-#syncWrap { display: flex; gap: 10px; }
+#syncWrap { display: flex; gap: 6px; }
 .banner {
   margin: 24px;
   padding: 16px 18px;
@@ -1423,10 +1539,167 @@ body.scroll-locked { overflow: hidden; }
   grid-auto-rows: max-content;
   flex: 1; min-height: 0; overflow: auto;
 }
-/* It is a tab stop (see `index.html`), so a click on the empty space beside the columns
-   focuses it. The ring belongs to the keyboard route only — the same rule the focus
-   buttons follow. */
-.work:focus:not(:focus-visible) { outline: none; }
+/* …except in the kanban layout, where `.port` is the scrollport and therefore has to be
+   exactly as tall as this box. `max-content` is what the paragraph above needed while
+   `.work` was the only scrollport: a content-tall board in a row sized to the leftover
+   space painted over the footer. Stretched, the row *is* the port's height and there is
+   no leftover to get wrong — the port scrolls its own overflow instead of handing it
+   upwards, which is what `.col-head`'s `position: sticky` has claimed all along and what
+   puts the sideways scrollbar at the bottom of the window rather than at the bottom of
+   4700px of cards.
+   **The footer was inside the port, not beside it**, which is why `.port` came to exist
+   rather than the board being the scroller itself: the board lays its children out
+   `grid-auto-flow: column`, so a footer in there would be one more column — and a footer
+   *outside* the scroller is a footer that never scrolls away. (The footer has since moved
+   to the sidebar and the port holds only the board; the box stays for the other reason
+   below — a sticky column head must not resolve against the board.) It was one, for exactly one
+   commit: 114px of permanent furniture on a 390px phone, reported from the device.
+   `body:not(.viewing-puck)` for the reason the three rules below already give: a hidden
+   `#board` keeps its layout class, so without it a puck page would size its only row to
+   the port and clip its own content — the detail pane is `.work`'s other row, and it is
+   the one that has to stay content-tall and scroll. And `min-height: 0`, because a grid
+   item's automatic minimum is its content: without it the stretch is undone by the
+   columns' own height and the port grows straight back. */
+body:not(.viewing-puck) .work:has(> .port > .board:not(.as-list)) { grid-auto-rows: auto; }
+body:not(.viewing-puck) .work > .port:has(> .board:not(.as-list)) {
+  align-self: stretch; min-height: 0;
+  /* One axis, and that is the whole of this change. The port used to be `overflow: auto`
+     — both axes in one box — and a box that can pan two ways is one the browser will pan
+     two ways: measured with a 42° drag on a phone, `left 299` *and* `top 337` from a
+     gesture meant as a read downwards. Before the board had a port at all the axes sat on
+     two boxes (`.work` scrolled y, `#board` scrolled x) and the browser picked one; the
+     port merged them and there was nothing left to pick between.
+     Sideways is the port's; downwards belongs to a column, one box further in.
+
+     **And this declaration is not what fixes it — the column being a scroller is.**
+     Sabotage says so: put `overflow: auto` back here and the drift check still passes,
+     because the gesture now targets the innermost scroller and that is the column. Take
+     `overflow-y` off `.cards` instead and the sideways drift returns at once (measured:
+     `portX: 514`), with or without this line. It stays as a statement of intent and as
+     the guard for the day something gives the board a vertical overflow again — the same
+     standing as the wheel forwarder's containment guard, which first refusal holds. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+/* And the board stops being a scroll container, or it — not the port — is what a sticky
+   column head would resolve against, and it has no height of its own to travel in. This
+   is the list's arrangement exactly: `.board.as-list` has turned its own `overflow-x` off
+   since the day the list was written, for the same reason. `min-width: 0` comes with it:
+   a grid item's automatic minimum is its min-content, and it was only 0 here because
+   `overflow-x: auto` made the box a scroll container. Without it the widest unbreakable
+   thing on the page decides the document's width again — measured at 652px on a 390px
+   phone the last time that happened. */
+body:not(.viewing-puck) .port > .board:not(.as-list) {
+  overflow: visible; min-width: 0;
+  /* The board fills the port rather than standing at its content height, because that is
+     what gives a column a definite height to scroll inside. Without it the board is as
+     tall as its tallest column (measured: 1833px in a 731px port), every column is
+     content-tall, and `.cards` has nothing to overflow — the rule below then does nothing
+     at all, silently. It is the least obvious line here and the one everything rests on. */
+  flex: 1; min-height: 0;
+  /* The bottom gutter was air after the last card, in a box that scrolled past it. The
+     port does not scroll downwards any more, so it would be dead space under every
+     column instead. Each column keeps its own. */
+  padding-bottom: 0;
+}
+/* A column is a head that stays and a list that moves. The head needs no `position:
+   sticky` — it is outside the box that scrolls, which is what dissolves the question
+   rather than answering it: no z-index against the cards, no pin resolving against a
+   port's content box, and no background bleeding to cover a card's shadow passing
+   underneath, because nothing passes underneath. */
+body:not(.viewing-puck) .port > .board:not(.as-list) > .column {
+  display: flex; flex-direction: column; min-height: 0;
+}
+/* The tray hugs its content — `align-self: start`, because a dashed box around four rows
+   should not be column-tall — and that left it the one box on the board with no ceiling.
+   With the port no longer scrolling downwards there is no ancestor to reach a clipped row
+   through, so a tray taller than the port simply loses its lower eyes: measured at 240px
+   with a single hidden column, already 89px of tray in an 80px port. Codex found it (#54).
+   A ceiling rather than a stretch: short stays short, tall stops at the port and its own
+   list takes over the scrolling — which it can, because `.cards` above is already a
+   scroller and only ever lacked a definite height to scroll within. */
+body:not(.viewing-puck) .port > .board:not(.as-list) > .column.hidden-cols { max-height: 100%; }
+body:not(.viewing-puck) .port > .board:not(.as-list) > .column > .cards {
+  overflow-y: auto; min-height: 0; flex: 1;
+  /* The scrollbar gets a lane of its own, beside the cards rather than on them. A scroller
+     exactly as wide as its content leaves an overlay bar nowhere to go but on top of it —
+     reported from a phone, the bar drawn across the right edge of every card in the column
+     being read. Linear's scroller is simply wider than its cards; this is that, borrowed
+     from the 16px the board already keeps between columns.
+     The bleed and the inset are the same number, so the cards' own box is unchanged: they
+     stay exactly column-wide and in line with `.col-head`, which is a sibling and does not
+     move. What lands in the borrowed strip is the bar and nothing else. Half the gap, so
+     the neighbouring column keeps the other half; the last column bleeds into the board's
+     own `--pad`, which is wider still. */
+  --bar-lane: 8px;
+  margin-right: calc(-1 * var(--bar-lane));
+  padding-right: var(--bar-lane);
+  /* And the bar drawn in that lane is the sidebar's, which has been the board's one
+     self-effacing scrollbar since it was written: a thin thumb in `--line`, no track, and
+     `--ink-3` while the pointer is over the box. Both themes are already answered, because
+     both tokens are — `--line` is a hairline on the page's own ground in each. The standard
+     properties only, deliberately no `::-webkit-scrollbar`: a width there is what turns an
+     overlay bar into a classic one, and a classic bar takes its width out of `clientWidth`,
+     which would shrink the cards by 8px and walk them out of line with `.col-head` — the
+     exact register the lane exists to keep. Measured in the test browser: `clientWidth` 288
+     before and after, the card's right edge 302 against the head's 302, both ways. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+  /* The card's shadow needs somewhere to fall on the left, and a scrollport clips at its
+     padding box. With no left padding the card's left edge *was* the clip edge — measured,
+     scroller and card both at 262 — so `0 2px 8px` fell softly into the lane on the right
+     and was cut flat on the left. One card, two different edges. Four pixels is the blur's
+     own reach (half of 8), bled and re-inset exactly like the lane above it, so the card's
+     box does not move: it stays column-wide and in register with the head. */
+  --card-bleed: 4px;
+  margin-left: calc(-1 * var(--card-bleed));
+  padding-left: var(--card-bleed);
+  /* One axis, said out loud, because CSS will not leave it alone otherwise: an `overflow`
+     of `visible` on one axis computes to `auto` when the other is not `visible`. This is
+     the rule the board already knows from the other direction — `overflow-x: auto` forcing
+     `overflow-y: auto` too, which is why `#board` must not be a scroll container — and it
+     bites here the moment a card holds something unbreakable. Measured with one URL in a
+     title: 414px of horizontal scroll beside 1337 of vertical, in the very box this whole
+     arrangement exists to keep to a single axis. Codex found it (#54).
+
+     `clip` states the intent — this axis is not a scroll axis — but be clear that it buys
+     nothing over `hidden` *here*: when the other axis scrolls, `clip` is specified to
+     compute to `hidden`, and it does (measured: `overflowX` reads `hidden`, and
+     `scrollLeft = 50` sticks at 50 under both). What either one buys is the half that
+     matters — neither can be *dragged* sideways, so the gesture stays on one axis. The
+     word is kept for the day the other axis stops scrolling and `clip` becomes literal.
+
+     **And this is the guarantee, not the fix.** With overflow still present it hides the
+     text instead of scrolling to it — measured, 414px of a title out of reach — which is
+     worse for a reader than the bug. The rule below is what removes the overflow; this one
+     is what stops anything *else* that overflows from re-opening a second axis. */
+  overflow-x: clip;
+}
+/* Findable when you reach for it, invisible when you are not. Guarded, because `:hover` is
+   a state a finger cannot leave — the convention the list's own controls already follow. */
+@media (hover: hover) {
+  body:not(.viewing-puck) .port > .board:not(.as-list) > .column > .cards:hover { scrollbar-color: var(--ink-3) transparent; }
+}
+/* The content shrinks instead of overflowing, and that is the actual repair. A title is
+   the one field holding arbitrary text — a pasted URL is the ordinary case — and
+   `anywhere` is what lets an unbreakable token break at all. Measured against the clip
+   above: with the wrap the column's horizontal overflow is 0; without it, 414px, clipped.
+   The metadata row is `nowrap` by design and already has `min-width: 0` to shrink inside
+   the card; the title was the one with no way out. */
+.card h3 { overflow-wrap: anywhere; }
+/* In the list the port is `.work`, so this box is structure and nothing else. */
+.port { min-width: 0; display: flex; flex-direction: column; }
+/* The scrollports are tab stops (see `markPort` and `renderColumns`), so a click on the
+   empty space beside the columns — or on a column's own background — lands on one. The
+   ring belongs to the keyboard route only, the same rule the focus buttons follow.
+   All three, because "the scrollport" stopped being one box: `.work` in the list and on a
+   puck page, `.port` in kanban, and every `.cards` since the columns took the vertical
+   axis. Written for `.work` alone it covered the layout that was, and in kanban a mouse
+   click landed a ring on the port or on the column it was aimed at — measured, `.work`
+   holding no `tabindex` at all there while `.port` and the columns hold theirs. */
+.work:focus:not(:focus-visible),
+.port:focus:not(:focus-visible),
+.cards:focus:not(:focus-visible) { outline: none; }
 /* One axis per drag, decided before the gesture rather than corrected after it: the
    browser is told it may not pan this box sideways, and `armAxisLock` drives `scrollLeft`
    itself when a drag turns out to be a sideways one. `pinch-zoom` stays, or the board
@@ -1436,7 +1709,7 @@ body.scroll-locked { overflow: hidden; }
    opened from the list would otherwise carry the list's lock through a page that is not a
    list at all, and forbid sideways panning inside its own code blocks and tables. The same
    puck reached from the board layout had none — an asymmetry with no reason behind it. */
-body:not(.viewing-puck) .work:has(> .board.as-list) { touch-action: pan-y pinch-zoom; }
+body:not(.viewing-puck) .work:has(> .port > .board.as-list) { touch-action: pan-y pinch-zoom; }
 /* And no rubber band sideways. `touch-action` stops the browser *starting* a horizontal
    pan; it does not re-decide a scroll already under way, which is why chaining a swipe
    down straight into a swipe right moves both axes on iOS (measured on the device: 1 of 9
@@ -1449,7 +1722,7 @@ body:not(.viewing-puck) .work:has(> .board.as-list) { touch-action: pan-y pinch-
    list is actually read with, and it stays. The property is not new here — the sheet has
    used it since `overscroll-behavior: none` was what removed *its* bounce, so it is known
    to land on the device this is for. */
-body:not(.viewing-puck) .work:has(> .board.as-list) { overscroll-behavior-x: none; }
+body:not(.viewing-puck) .work:has(> .port > .board.as-list) { overscroll-behavior-x: none; }
 /* No native scroll indicators on a phone, and the reason is that a two-axis port draws
    two of them badly. Reported from a real device, three symptoms of one cause: the
    vertical bar is painted *under* the sticky group headings, it travels with the sideways
@@ -1458,8 +1731,8 @@ body:not(.viewing-puck) .work:has(> .board.as-list) { overscroll-behavior-x: non
    since `armAxisLock` drives that one. Touch only: on a desktop the bar is how you learn
    the list scrolls sideways at all, and it is not transient there. */
 @media (pointer: coarse) {
-  body:not(.viewing-puck) .work:has(> .board.as-list) { scrollbar-width: none; }
-  body:not(.viewing-puck) .work:has(> .board.as-list)::-webkit-scrollbar { display: none; }
+  body:not(.viewing-puck) .work:has(> .port > .board.as-list) { scrollbar-width: none; }
+  body:not(.viewing-puck) .work:has(> .port > .board.as-list)::-webkit-scrollbar { display: none; }
 }
 /* A puck opens as a full-width page (same on desktop + mobile): the board and the
    view-header hide, and the detail fills the content area as a centered,
@@ -1476,7 +1749,6 @@ body:not(.viewing-puck) .work:has(> .board.as-list) { overscroll-behavior-x: non
    One flag for content, one for which page you are on; folding them together would let
    a render while a puck is open put the row back. */
 body.viewing-puck #board,
-body.viewing-puck .foot,
 body.viewing-puck .chiprow,
 body.viewing-puck .vhead { display: none; }
 .detail-pane {
@@ -1532,7 +1804,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 .sidebar {
   background: var(--sidebar-bg); border-right: 1px solid var(--line);
-  padding: 0 12px 16px; display: flex; flex-direction: column; gap: 18px;
+  /* No bottom padding: `.side-foot` is the last thing in here and owns that air. The
+     16px that used to keep the last repo row off the edge put a stripe *below* the
+     band, and a `bottom: 0` sticky box that stops 16px short looks stuck rather than
+     pinned. */
+  padding: 0 12px; display: flex; flex-direction: column; gap: 18px;
   /* minimal, self-effacing scrollbar */
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
   position: sticky; top: 0; height: 100%; overflow-y: auto;
