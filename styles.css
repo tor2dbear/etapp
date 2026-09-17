@@ -874,6 +874,19 @@ body {
 .list-owner { justify-content: center; }
 .list-owner .owner-avatar { width: 20px; height: 20px; }
 .list-tags { gap: 4px; overflow: hidden; }
+/* The width `fitTagCells` reserves for the `+N` badge — a reservation and not the rendered
+   badge's own width, because how wide `+N` is depends on N, which depends on how many
+   pills fit, which depends on the badge. A fixed number cuts that circle; `min-width` is
+   what makes the badge keep to it. On the board, not on the cell, so the pass reads it
+   once for the whole list. */
+.board.as-list { --more-w: 30px; }
+.list-more { min-width: var(--more-w); justify-content: center; color: var(--ink-3); }
+/* Where `fitTagCells` measures the widest badge a cell could need. Out of flow so it adds
+   no grid item, `visibility: hidden` rather than `display: none` because a box that is not
+   laid out cannot be measured, and off to the left because negative offsets do not extend
+   the scroll width. It carries the badge's own classes, so what is measured is what the
+   cell will actually get — the `min-width` floor included. */
+.tag-probe { position: absolute; visibility: hidden; left: -9999px; top: 0; display: flex; }
 /* The field's name, drawn only when a view shows more than one date — see dateEl(). Small
    and quiet: it is there so two numbers are not ambiguous, not to compete with them. */
 .date-tag {

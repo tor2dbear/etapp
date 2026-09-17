@@ -1920,7 +1920,20 @@
   // here for the same reason: it is the floor the title's 220px sits on top of, and a
   // floor computed from a track list that is no longer the track list is a row whose
   // declared minimum is not its actual one.
-  var LIST_TAGS_TRACK = "minmax(80px, 160px)";
+  // A fixed width like every other track, and the number is the ceiling that never
+  // applied. It was `minmax(80px, 160px)`, and a `minmax` track reaches its ceiling only
+  // when the grid has free space — a row whose `min-width` is the sum of its own tracks
+  // never has any, so on every screen narrower than that sum the cell stood at its
+  // **floor**. Measured at 390px against the live board under `group=none`: 61 of 109 rows
+  // clipped, the worst `#collab #permissions #supabase` at 215px of content in 80px with
+  // the last pill 135px past the edge and `overflow: hidden` for a pair of scissors.
+  //
+  // And the squeeze bought nothing: the row already scrolls sideways — that is what
+  // `min-width` is for — so a wider column costs scroll distance, not legibility. Tags
+  // were the only track that gave, and the only one with nothing to gain by giving.
+  // Distribution of the content widths: median 96, p90 142, p95 157, max 215. At 160 the
+  // same data clips 5 rows instead of 61; `fitTagCells` answers for those.
+  var LIST_TAGS_TRACK = "160px";
   // The date track is the one that grows, because it is the one holding a variable number
   // of things. A fixed 92px fits one bare date and nothing else: with `Created` and
   // `Updated` both ticked, the cell is right-aligned, so the overflow ran *leftwards* and
@@ -1938,7 +1951,7 @@
       px += parseInt(f.track, 10) || 0;
     });
     if (dn) { tracks.push(dateTrack(dn) + "px"); px += dateTrack(dn); }
-    if (propOn("tags")) { tracks.push(LIST_TAGS_TRACK); px += 80; }
+    if (propOn("tags")) { tracks.push(LIST_TAGS_TRACK); px += parseInt(LIST_TAGS_TRACK, 10); }
     return { tracks: tracks.join(" "), fixed: px, gaps: tracks.length + 1 };
   }
   function applyListTracks(node) {
@@ -1953,6 +1966,111 @@
     node.style.setProperty("--list-tracks", t.tracks || " ");
     node.style.setProperty("--list-track-px", t.fixed + "px");
     node.style.setProperty("--list-gaps", String(t.gaps));
+  }
+  // What the fixed width above cannot promise: a width is a tuning, never a guarantee. A
+  // puck with five labels tomorrow clips again, and **silently**, which is the actual
+  // complaint — the cell said nothing about what it had cut. So the cell says `+2`.
+  //
+  // **One pass over a finished board, every read before every write.** Doing it per cell
+  // inside the render loop would force a layout of a half-built board, which is the trap
+  // `colPlaces` already documents one screen down; interleaving a read and a write per row
+  // is that same layout 109 times over. Reads first into `plan`, writes after, so the
+  // whole list costs two layouts rather than two hundred.
+  function fitTagCells(board) {
+    var cells = board.querySelectorAll(".list-tags"), i, j;
+    if (!cells.length) return;
+    // **A hidden box cannot be measured, and this is the fourth face of that rule** — the
+    // place in a column, the tab stop and the keyboard's focus each needed their own answer
+    // to it, and this one is the worst of the four, because the pass does not merely fail
+    // to compute a plan: it *destroys* the one that is there. Behind an open puck
+    // `body.viewing-puck #board` is `display: none`, every rect reads 0, and `0 <= 0.5`
+    // says every cell fits — so the reset has already dropped the badges and unhidden the
+    // pills, and nothing puts them back. Measured with the fonts landing while a puck was
+    // open: closing it gave a row with no badge and **136px of clipped labels**, which is
+    // precisely the bug this whole function exists to prevent. Codex found it (#56).
+    //
+    // Before the reset, therefore, not after. `offsetParent` is the question itself — is
+    // this box laid out at all — where `viewing-puck` would only be the commonest reason
+    // for the answer.
+    //
+    // **The repair is `closeDetail`, and sabotage says so: deleting this line fells
+    // nothing.** Every way out of a puck funnels through `closeDetail` — `exitPuckView`
+    // calls it too — and it re-fits there unconditionally, exactly as it does for the
+    // stops, so the destruction is undone before a reader can see it. Deleting *that* call
+    // fells the check with the full 136px back. This line is kept anyway and at the same
+    // standing as `.port`'s own `overflow-y: hidden`: a statement of intent. A pass that can
+    // only compute a wrong answer should not run, and not happening is a better guarantee
+    // than being undone afterwards — but the paragraph is the record that the undoing is
+    // what the reader actually feels.
+    if (!board.offsetParent) return;
+    // The badge's width is *reserved* rather than measured, and that is not laziness: how
+    // wide `+N` renders depends on N, which depends on how many pills fit, which depends
+    // on how wide the badge is. A fixed reservation cuts the circle, and `min-width` on
+    // `.list-more` is what makes the badge honour the number this reads.
+    // **Idempotent, and that is a requirement rather than tidiness**: the font swap below
+    // re-runs this over a board it has already cut, and a second pass over its own output
+    // would hide the survivors and stack a second badge. Reset first — all writes, before
+    // a single measurement is taken.
+    //
+    // The probes go up in the same pass, and **the reservation is measured, never a
+    // constant**. The count is unbounded — a puck may carry any number of labels — and the
+    // badge's width follows its digits: measured, `+1` and `+9` sit at the 30px floor,
+    // `+10` at 33 and `+100` at 40. A flat 30 therefore kept a pill the real badge then
+    // pushed out: with `#backend #editing` (ending at 125) and ten more labels, `+10` ran
+    // 2px past the 160px edge and was clipped — this function's own failure, one level up.
+    // Codex found it (#56). It is not circular, and that is the trick: N can never exceed
+    // the cell's own pill count, so the **widest badge this cell could need** is known
+    // before anything is hidden. Measuring it rather than deriving it from a digit width
+    // also keeps the reservation true across a font swap, which is the paragraph below.
+    var need = {};
+    for (i = 0; i < cells.length; i++) {
+      var stale = cells[i].querySelector(".list-more");
+      if (stale) cells[i].removeChild(stale);
+      var back = cells[i].children;
+      for (j = 0; j < back.length; j++) back[j].hidden = false;
+      need["+" + back.length] = 1;
+    }
+    // One probe per distinct worst case, not one per cell: most rows carry the same few
+    // counts. Out of flow and hidden, so it cannot disturb the cells it is measured beside.
+    var rack = el("div", "tag-probe");
+    Object.keys(need).forEach(function (t) {
+      var s = el("span", "tagpill list-more", t);
+      s.setAttribute("data-probe", t);
+      rack.appendChild(s);
+    });
+    board.appendChild(rack);
+
+    var moreW = {};
+    Array.prototype.forEach.call(rack.children, function (s) {
+      moreW[s.getAttribute("data-probe")] = s.getBoundingClientRect().width;
+    });
+    var gap = parseInt(getComputedStyle(cells[0]).columnGap, 10) || 0;
+    var plan = [];
+    for (i = 0; i < cells.length; i++) {
+      var cell = cells[i], pills = cell.children;
+      if (!pills.length) { plan.push(-1); continue; }
+      var left = cell.getBoundingClientRect().left, room = cell.clientWidth, ends = [];
+      for (j = 0; j < pills.length; j++) ends.push(pills[j].getBoundingClientRect().right - left);
+      // Sub-pixel: a cell whose last pill lands exactly on the edge is not overflowing.
+      if (ends[ends.length - 1] <= room + 0.5) { plan.push(-1); continue; }
+      var res = moreW["+" + pills.length] || 0;
+      var keep = 0;
+      while (keep < ends.length && ends[keep] + gap + res <= room) keep++;
+      plan.push(keep);
+    }
+    board.removeChild(rack);
+    for (i = 0; i < cells.length; i++) {
+      if (plan[i] < 0) continue;
+      var c = cells[i], kids = Array.prototype.slice.call(c.children), cut = [];
+      for (j = plan[i]; j < kids.length; j++) { kids[j].hidden = true; cut.push(kids[j].textContent); }
+      var b = el("span", "tagpill list-more", "+" + cut.length);
+      // The names it is holding back, so the mark is answerable rather than just a number.
+      // Not a repair like the archive's eye — there is nothing to toggle, the labels are
+      // on the puck page — which is why it is a `<span>` and not a control.
+      b.title = cut.join(" ");
+      b.setAttribute("aria-label", cut.length + " more: " + cut.join(" "));
+      c.appendChild(b);
+    }
   }
   // `mark` is the row's alone, and that is the one place the list and the card part
   // company. The list reserves the date track whatever the puck holds, so a mark there
@@ -2167,8 +2285,30 @@
       // it is the box the chrome sits above, not the box that scrolls; what it forwards
       // to it asks `scrollPort()` per event.
       if (workEl) { armAxisLock(workEl); armChromeWheel(workEl); }
-    if (boardEl) { armColumnWheel(boardEl); armStopWatch(boardEl); }
+    if (boardEl) { armColumnWheel(boardEl); armStopWatch(boardEl); armFontRefit(boardEl); }
     }
+  }
+
+  // `fitTagCells` answers a question about *text*, and the text changes width without a
+  // render: `styles.css` ships the typefaces with `font-display: swap`, so a cold load
+  // paints the fallback first and the real metrics arrive afterwards. Measured with the
+  // woff2 held back, `document.fonts.check("11px Geist")` answers **false** while the board
+  // draws and a `#mcp` pill stands at **43px** against Geist's 44 — and one pixel per pill
+  // crosses the boundary often enough to matter: over 256 two-tag combinations, **16**
+  // planned differently before and after the swap. `#ui #editing #extra` keeps two pills in
+  // the fallback and one in Geist, so a cold load drew two pills and `+1` where only one
+  // fits — the second clipped, and the count wrong by one. Codex found it (#56).
+  //
+  // One re-fit when the fonts land, which is the whole reason the pass had to become
+  // idempotent. It is the same shape as `armStopWatch` one function down: a fact measured
+  // at render time that something other than a render can change.
+  function armFontRefit(board) {
+    if (!document.fonts || !document.fonts.ready) return;
+    document.fonts.ready.then(function () {
+      // The board it was armed on outlives every redraw, but the *layout* may have moved
+      // on: the fit is the list's, and asking a kanban board for its tag cells finds none.
+      if (board.classList.contains("as-list")) fitTagCells(board);
+    });
   }
 
   // A stop answers a question about *size*, and size changes without a render: a window
@@ -4740,6 +4880,11 @@
     // and whether or not the grouping still matches. This is the first moment a column has
     // a layout to be measured in again. See `markStops`.
     markStops(boardEl);
+    // And the tag cells, for the identical reason one line up: anything that measured them
+    // while the board was hidden read zeros and declined to answer (see `fitTagCells`), so
+    // a redraw behind the puck — an edit, a ⌘K layout change — or a font landing there
+    // leaves the list unfitted. This is the first moment it can be measured again.
+    if (boardEl && boardEl.classList.contains("as-list")) fitTagCells(boardEl);
   }
 
   // A table row — full-width, aligned columns (Name · Priority · Agent · Repo ·
@@ -6491,8 +6636,13 @@
     var visible = DATA.items.filter(matches).sort(sortComparator());
     var groups = groupsOf(visible);
 
-    if (layout === "list") renderList(groups);
-    else renderColumns(groups);
+    if (layout === "list") {
+      renderList(groups);
+      // After the fill, never inside it — see the function's own note. It writes nothing
+      // that changes a row's width (the track is fixed), so it cannot shift the layout it
+      // has just measured.
+      fitTagCells(board);
+    } else renderColumns(groups);
 
     var shown = visible.length;
     updateViewHeader(shown);
