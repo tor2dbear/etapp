@@ -52,9 +52,15 @@
   var PRIORITY_LABEL = { urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
   // A small priority badge: filled signal bars, Linear-style. Level → filled bars.
   var PRIORITY_BARS = { urgent: 3, high: 3, medium: 2, low: 1 };
+  // `null` is a value here, not a missing one — `priority` is urgent/high/medium/low **or
+  // null = none** — so the badge draws its own emptiness rather than leaving that to a
+  // caller. It needed no new artwork and cannot drift from the filled form, because the
+  // empty one is what the component has drawn all along with nothing lit: the bars sit at
+  // `opacity: .3` and `.on` is the only thing that raises them. Three faint bars, which is
+  // the mark the reference draws as `---`.
   function priorityBadge(level) {
-    var b = el("span", "pri pri-" + level);
-    b.title = "Priority: " + (PRIORITY_LABEL[level] || level);
+    var b = el("span", "pri pri-" + (level || "none"));
+    b.title = level ? "Priority: " + (PRIORITY_LABEL[level] || level) : "No priority";
     if (level === "urgent") {
       // Was the character "!" in a red square — the fourth mark on this board drawn as
       // text rather than as a path, after `warn`, `x` and the agent arrow. It slipped
@@ -88,10 +94,16 @@
   function statusPill(st, cls) {
     return el("span", (cls ? cls + " " : "") + "status-pill status-" + st, STATUS_LABEL[st] || st);
   }
+  // Same rule as `priorityBadge` one field over: the badge knows what it looks like with
+  // nothing in it. The glyph alone, in the stylesheet's own placeholder shape
+  // (`badge--dashed`, which `.adapted-badge` has used since it was written) — an agent
+  // handle is text, so unlike the priority bars there is no faint version of the value to
+  // show, and the dashed outline is what says *a handle belongs here*.
   function agentBadge(name) {
-    var b = el("span", "agent-badge");
-    b.title = "Routed to " + name;
+    var b = el("span", "agent-badge" + (name ? "" : " agent-none badge--dashed"));
+    b.title = name ? "Routed to " + name : "No agent";
     b.appendChild(icon("agent", "agent-glyph"));
+    if (!name) return b;
     // The name in a box of its own, because the badge is an `inline-flex` and
     // `text-overflow` needs a block container — a bare text node there clips mid-letter
     // instead of ellipsising. The badge is the second field in a card's metadata row with
@@ -1315,6 +1327,14 @@
     return new Date(Date.UTC(Number(p[0]), Number(p[1]), 0)).toISOString().slice(0, 10);
   }
   function targetEl(date, cls) {
+    // The third of the same rule: the clock without a time. No dashed box here — a date is
+    // text on this board, not a badge, so there is no outline to draw the placeholder in.
+    if (!date) {
+      var e = el("span", (cls || "card-date") + " target-date target-none", "\u25f7");
+      e.title = "No target";
+      e.setAttribute("aria-label", e.title);
+      return e;
+    }
     var passed = daysSince(date) > 0;
     var d = el("span", (cls || "card-date") + " target-date" + (passed ? " past" : ""), "◷ " + targetLabel(date));
     d.title = "Target " + date + (passed ? " — horizon passed" : "");
@@ -1634,6 +1654,64 @@
   // What is *not* here is what a puck cannot be read without: the title, the puck glyph
   // (it carries the repo colour) and the ⚠ badge, which is the drift signal — being able
   // to hide it is being able to hide that something is wrong.
+  // Can this puck be written from where you are standing? The rail computes exactly this
+  // (`ghToken() && item.native && canWrite(item)`), and the row now asks the same question,
+  // so one answer governs both surfaces rather than two that can drift.
+  function itemEditable(item) { return !!(ghToken() && item.native && canWrite(item)); }
+
+  // What a cell draws when the puck has no value for it — the whole of "tomma egenskaper
+  // syns". Two things at once, and the **gate is the difference between them**: the *mark*
+  // is drawn for everyone, because a column with holes in it is not a column and that is a
+  // readability problem a logged-out reader has too; the *picker* needs write rights. Draw
+  // the mark only with a token and an unauthenticated reader gets back the very hole this
+  // exists to fill; make it pressable for everyone and it breaks the rule the edit controls
+  // already follow — *a control that only fails when you press it is not gated, it is
+  // decorated*.
+  //
+  // **Without write rights it is text, not a disabled control**, and that is the one place
+  // the rail's own answer could not be reused. `propPicker({ editable: false })` returns a
+  // `<button disabled>`, which is right in the rail — nothing there is listening above it —
+  // and wrong in a row, whose whole job is to open the puck: a disabled button swallows the
+  // click outright, so the mark would be a 44px dead patch in the middle of it. Measured at
+  // 1200px with no token, clicking the priority cell of the first row: with the disabled
+  // button, `location.hash` stayed `""` and no puck opened; with the span it opened
+  // `#alpha/a-parent`, like every other pixel of the row. A `<span>` has nothing to
+  // swallow.
+  //
+  // **`mark()` is the ghost of the value, not one em dash for all of them.** The first
+  // version drew `\u2014` everywhere — `propPicker`'s own placeholder and the rail's empty
+  // Target row both use it, so the board had chosen it already. Reported from a phone with
+  // the reference beside it, and the report is right: in the rail that dash sits next to a
+  // label saying *Priority*, and a row has no label, so three identical dashes said which
+  // cells were empty and nothing at all about which columns they were. Each field's own
+  // builder now knows its empty form (`priorityBadge(null)`, `agentBadge(null)`,
+  // `targetEl(null)`), which is one writer per mark rather than a second table here, and it
+  // costs no vertical space — the other half of the reference, a header row naming the
+  // columns, is a question about the *filled* cells too and is left to its own puck.
+  function emptyMark(item, opts) {
+    if (!itemEditable(item)) {
+      var plain = opts.mark();
+      plain.classList.add("prop-empty");
+      return plain;
+    }
+    var node = propPicker({
+      title: opts.title,
+      editable: true,
+      blank: opts.mark,
+      current: null,
+      options: opts.options(),
+      valueNode: opts.valueNode,
+      onPick: opts.onPick,
+    });
+    node.classList.add("prop-empty");
+    // The button's whole content is a mark, so it has no accessible name worth the word —
+    // the rail's chips are named by the label standing beside them and a row has no such
+    // label. The state belongs in the name too: "Priority" alone would read as a heading
+    // rather than as a field with nothing in it.
+    var btn = node.querySelector(".pick-chip");
+    if (btn) btn.setAttribute("aria-label", opts.title + ", not set");
+    return node;
+  }
   var PROPS = [
     { key: "rollup", label: "Rollup", where: "name",
       has: function (i) { return !!i.progress; }, make: function (i) { return progressBadge(i); } },
@@ -1656,9 +1734,52 @@
       // class, opacity and text — with 131 of 175 pucks done.
       has: function () { return true; }, make: function (i) { return statusPill(i.status); } },
     { key: "priority", label: "Priority", where: "cell", cls: "list-pri", track: "44px",
-      has: function (i) { return !!i.priority; }, make: function (i) { return priorityBadge(i.priority); } },
+      has: function (i) { return !!i.priority; }, make: function (i) { return priorityBadge(i.priority); },
+      // `null` is a value here, not a hole — `priority` is urgent/high/medium/low **or
+      // null = none** — which is what makes the mark honest rather than an apology for
+      // missing data. `No priority` is therefore an option with a tick like any other.
+      empty: function (i) {
+        return emptyMark(i, {
+          title: "Priority",
+          mark: function () { return priorityBadge(null); },
+          options: function () {
+            return [{ value: null, label: "No priority" }].concat(
+              PRIORITIES.map(function (p) { return { value: p, label: PRIORITY_LABEL[p] }; }));
+          },
+          valueNode: function (o) {
+            if (!o.value) return el("span", "prop-muted", "No priority");
+            var v = el("span", "pri-inline");
+            v.appendChild(priorityBadge(o.value));
+            v.appendChild(document.createTextNode(" " + (PRIORITY_LABEL[o.value] || o.value)));
+            return v;
+          },
+          onPick: function (v) { changePriority(i, v); },
+        });
+      } },
     { key: "agent", label: "Agent", where: "cell", cls: "list-agent", track: "108px",
-      has: function (i) { return !!i.agent; }, make: function (i) { return agentBadge(i.agent); } },
+      has: function (i) { return !!i.agent; }, make: function (i) { return agentBadge(i.agent); },
+      empty: function (i) {
+        return emptyMark(i, {
+          title: "Agent",
+          mark: function () { return agentBadge(null); },
+          options: function () {
+            return [{ value: null, label: "Unassigned" }].concat(
+              agentOptions().map(function (a) { return { value: a, label: agentLabel(a) }; }));
+          },
+          valueNode: function (o) {
+            if (!o.value) return el("span", "prop-muted", "Unassigned");
+            var v = el("span", "agent-inline");
+            v.appendChild(agentBadge(o.value));
+            return v;
+          },
+          onPick: function (v) { changeAgent(i, v); },
+        });
+      } },
+    // No `empty` here, and it is the rule rather than an omission: `owner` is a frontmatter
+    // line with no `change*` behind it, so a placeholder could only ever be a box that does
+    // not open. The rail already draws that conclusion — it hides the Assignee row entirely
+    // when there is nobody to show, *"so an empty row could only ever say —"*. A mark you
+    // cannot fill is worse than a hole, because it claims to be a way in.
     { key: "owner", label: "Owner", where: "cell", cls: "list-owner", track: "28px",
       has: function (i) { return !!i.owner; }, make: function (i) { return ownerEl(i.owner); } },
     { key: "repo", label: "Repo", where: "cell", cls: "list-repo", track: "148px",
@@ -1762,15 +1883,33 @@
   // which, and `dateEl` used to hardcode *"Last updated"* into both its tooltip and its
   // accessible name — so the second date was not merely unlabelled but read out wrong.
   var DATE_LABEL = { created: "Created", updated: "Updated", target: "Target" };
-  function oneDate(item, field, cls, label) {
+  function oneDate(item, field, cls, label, mark) {
     if (field === "target") {
       if (item.target) return targetEl(item.target, cls); // already says "◷" and names itself
       // Only the automatic rule falls back: it picked `target` on the view's behalf, so a
       // puck without one would otherwise be a hole where every other row has a date. A
-      // view that *asked* for Target gets the truth, which is that this puck has none.
-      return state.props ? null : (item.updated ? dateEl(item.updated, cls, "updated", label) : null);
+      // view that *asked* for Target gets the truth, which is that this puck has none —
+      // and where a mark is wanted, says so with one rather than with a gap.
+      if (!state.props) return item.updated ? dateEl(item.updated, cls, "updated", label) : null;
+      return mark ? targetMark(item) : null;
     }
+    // `created` and `updated` never get a mark, and it is the same rule that keeps `owner`
+    // out of `PROPS`' empties: both are derived at harvest, so a placeholder there could
+    // only ever be a box that does not open.
     return item[field] ? dateEl(item[field], cls, field, label) : null;
+  }
+  // `emptyMark`'s two answers in the one field whose picker is a calendar rather than a
+  // list — `datePicker` is the rail's own control and already takes the item, so there is
+  // nothing to route through `propPicker`.
+  function targetMark(item) {
+    if (!itemEditable(item)) {
+      var plain = targetEl(null, "list-date");
+      plain.classList.add("prop-empty");
+      return plain;
+    }
+    var node = datePicker(item, null, targetEl(null, "list-date"));
+    node.classList.add("prop-empty");
+    return node;
   }
   // The row's tracks, from the same list the cells come from — one walk, two outputs, so
   // a property cannot be drawn without a column or reserve a column it never fills. The
@@ -1815,10 +1954,15 @@
     node.style.setProperty("--list-track-px", t.fixed + "px");
     node.style.setProperty("--list-gaps", String(t.gaps));
   }
-  function dateCells(item, cls) {
+  // `mark` is the row's alone, and that is the one place the list and the card part
+  // company. The list reserves the date track whatever the puck holds, so a mark there
+  // costs no layout; a card has no tracks at all, so every unset property would *add*
+  // something to the densest thing the board draws. Row first, and the card as its own
+  // question once the row has stood a while.
+  function dateCells(item, cls, mark) {
     var fs = dateFields(), out = [], many = fs.length > 1;
     fs.forEach(function (f) {
-      var e = oneDate(item, f, cls, many);
+      var e = oneDate(item, f, cls, many, mark);
       if (e) out.push(e);
     });
     return out;
@@ -3266,6 +3410,19 @@
       if (!opts.anchorWrap) root.classList.add("pop-center");
     }
 
+    // A surface is a layer above the page, and a click inside it is never a click on
+    // whatever it happens to be drawn *inside*. An anchored popover mounts into its own
+    // `anchorWrap`, which until now always sat somewhere inert — the topbar, a column
+    // head, the rail. A picker in a list row put one inside a box whose whole job is to
+    // open the puck, and the menu's own rows bubbled straight into it: measured, choosing
+    // `High` from a row's priority cell wrote the file *and* left the board on
+    // `#alpha/a-parent` with the puck page open. Stopping it at the root rather than in
+    // the picker, because the next surface anchored inside something clickable would have
+    // the identical bug and no reason to remember this one. Bubble phase only: the
+    // outside-click detector listens on the document in *capture*, so it still sees every
+    // click and still decides for itself what counts as outside.
+    root.addEventListener("click", function (e) { e.stopPropagation(); });
+
     var handle = { close: close, el: root };
     openSurfaces.push(handle);
     opts.build(body, { close: close, phone: phone });
@@ -3402,7 +3559,16 @@
     var chip = el("button", "pick-chip");
     chip.type = "button";
     function paint(node) { chip.innerHTML = ""; chip.appendChild(node); }
-    paint(cur ? opts.valueNode(cur) : el("span", "prop-muted", opts.placeholder || "\u2014"));
+    // `blank` is what the chip shows for an absent value, and it wins over the resolved
+    // one. `null` is a real value for these fields — "No priority", "Unassigned" — so the
+    // menu ticks that row and is right to; the chip is a different question. In the rail it
+    // has a column to say the words in; in a list row it has 44px, and "No priority"
+    // wrapped to three lines there, took the chip to 58×47 inside a 44px cell and pushed
+    // the whole row from 40px to 71px. One value, two spellings, and the mark is the narrow
+    // one. A node rather than a string, because the narrow spelling is a *shape*: the
+    // priority bars unlit, the agent glyph in a dashed outline.
+    if (opts.blank) paint(opts.blank());
+    else paint(cur ? opts.valueNode(cur) : el("span", "prop-muted", opts.placeholder || "\u2014"));
     if (!opts.editable) { chip.classList.add("static"); chip.disabled = true; return chip; }
     chip.classList.add("editable");
     // A chip whose value is bare text has nothing of its own to look like, so it
@@ -4628,7 +4794,14 @@
     PROPS.forEach(function (f) {
       if (f.where !== "cell" || !propOn(f.key)) return;
       var cell = el("div", "list-cell " + f.cls);
+      // A property with no value draws a mark rather than nothing — a column with holes in
+      // it does not read as a column. Only where `empty` exists: the list has to be
+      // explicit, never "everything that has a `has`", or `repo` and `owner` would get a
+      // placeholder that can never be filled. And it sits *behind* `propOn`, so
+      // `groupSays` still silences the whole cell: under `group=priority` the column head
+      // is the answer and the row repeating it — as a value or as a hole — says nothing.
       if (f.has(item)) cell.appendChild(f.make(item));
+      else if (f.empty) cell.appendChild(f.empty(item));
       r.appendChild(cell);
     });
 
@@ -4643,7 +4816,7 @@
     // whole list.
     if (dateFields().length) {
       var dt = el("div", "list-cell list-dt");
-      dateCells(item, "list-date").forEach(function (d) { dt.appendChild(d); });
+      dateCells(item, "list-date", true).forEach(function (d) { dt.appendChild(d); });
       r.appendChild(dt);
     }
     if (propOn("tags")) {
@@ -9596,18 +9769,63 @@
   }
 
   // Optimistic: flip in-memory + re-render, commit in the background, revert on failure.
+  // The row you just wrote in has to stay under your finger, and it does **not** follow
+  // from what was already there. The port keeps its place by itself — `renderBoard` clears
+  // and refills without measuring in between — but the row does not: a write bumps
+  // `updated`, and `updated` is the second key of the default chain, so the row re-sorts
+  // under a scroll offset that did not move. Measured in a 40-row list at 1200×500,
+  // scrolled to 400, setting a priority from the row: the port stayed at 400 and the row
+  // went from y=220 to **y=-241** — 461px, off the top of the window, leaving the reader
+  // looking at whichever row slid into its place. Under `group=none` it happens to hold
+  // still, because that grouping proposes `status,order` and `updated` is not in it; that
+  // is a property of one grouping, not of the board.
+  //
+  // Same idiom the board already uses three times — `toggleGroup` for a fold control,
+  // `segmented` for a pressed segment, `colFocus` for a focused column: read the distance
+  // from the port's top edge, let the render happen, find the node again by its durable
+  // key and put the distance back. It clamps honestly, like `toggleGroup`'s: the same
+  // measurement with it in place gives port 400 → 0 and the row 220 → 159, because a
+  // fresh `updated` sorts it to the head of the whole list and there is no offset left to
+  // hold. Following the row you touched to the top of the list is the answer; losing it
+  // off the top of the window is not. Under an ordering the write does not disturb it is
+  // a no-op — `sort=title`, same list, 400 → 400 and 220 → 220.
+  //
+  // `null` whenever there is no row — the puck page, the kanban board — so the same call
+  // is correct from every caller of a `change*` and costs nothing where a row is not what
+  // the reader is looking at.
+  function listRowFor(id) {
+    // A scan, not `[data-id="…"]`: an id carries a repo name with a slash in it, and the
+    // board has been caught once already reaching for an attribute selector it would have
+    // had to escape.
+    var rows = document.querySelectorAll(".list-row");
+    for (var i = 0; i < rows.length; i++) if (rows[i].getAttribute("data-id") === id) return rows[i];
+    return null;
+  }
+  function rowPlace(item) {
+    var port = scrollPort(), row = port && listRowFor(item.id);
+    if (!row) return null;
+    var at = row.getBoundingClientRect().top - port.getBoundingClientRect().top;
+    return function () {
+      var back = listRowFor(item.id);
+      if (!back) return; // the write took it off this board — the filter, or a grouping it left
+      port.scrollTop += (back.getBoundingClientRect().top - port.getBoundingClientRect().top) - at;
+    };
+  }
   function changePriority(item, priority) {
     if (priority === (item.priority || null) || !ghToken()) return;
-    var prevP = item.priority, prevU = item.updated;
+    var prevP = item.priority, prevU = item.updated, place = rowPlace(item);
     item.priority = priority; item.updated = today();
     renderBoard(); reopenIfOpen(item);
+    if (place) place();
     toast("Saving…");
     commitPriority(item, priority)
       .then(function () { toast("✓ Saved — live in ~1 min"); })
       .catch(function (err) {
+        var back = rowPlace(item);
         item.priority = prevP; item.updated = prevU;
         noteWriteError(item, err);
         renderBoard(); reopenIfOpen(item);
+        if (back) back();
         toast("✗ " + err.message, true);
       });
   }
@@ -9636,16 +9854,19 @@
   }
   function changeAgent(item, agent) {
     if (agent === (item.agent || null) || !ghToken()) return;
-    var prevA = item.agent, prevU = item.updated;
+    var prevA = item.agent, prevU = item.updated, place = rowPlace(item);
     item.agent = agent; item.updated = today();
     renderBoard(); buildAgentChips(); reopenIfOpen(item);
+    if (place) place();
     toast("Saving…");
     commitAgent(item, agent)
       .then(function () { toast(agent ? "✓ Routed to " + agent + " — live in ~1 min" : "✓ Unassigned — live in ~1 min"); })
       .catch(function (err) {
+        var back = rowPlace(item);
         noteWriteError(item, err);
         item.agent = prevA; item.updated = prevU;
         renderBoard(); buildAgentChips(); reopenIfOpen(item);
+        if (back) back();
         toast("✗ " + err.message, true);
       });
   }
@@ -9733,16 +9954,19 @@
   function changeTarget(item, date) {
     date = date || null;
     if (date === (item.target || null) || !ghToken()) return;
-    var prevT = item.target, prevU = item.updated;
+    var prevT = item.target, prevU = item.updated, place = rowPlace(item);
     item.target = date; item.updated = today();
     renderBoard(); reopenIfOpen(item);
+    if (place) place();
     toast("Saving…");
     commitTarget(item, date)
       .then(function () { toast(date ? "✓ Target " + date + " — live in ~1 min" : "✓ Target cleared — live in ~1 min"); })
       .catch(function (err) {
+        var back = rowPlace(item);
         item.target = prevT; item.updated = prevU;
         noteWriteError(item, err);
         renderBoard(); reopenIfOpen(item);
+        if (back) back();
         toast("✗ " + err.message, true);
       });
   }
@@ -9781,12 +10005,21 @@
   function ymd(d) { return d.toISOString().slice(0, 10); }
   //   content: the node to show inside the trigger (the current target), or null
   //   for the empty state, which labels itself.
-  function datePicker(item, content) {
+  // `emptyNode` is what the trigger shows with no date on it. The rail says "Set target",
+  // which is a sentence in a column with room for one; a row's date track is 92px and
+  // right-aligned beside four other cells, so there it is the mark `targetEl` draws for an
+  // absent date. The default keeps the rail's wording where the rail is the caller.
+  function datePicker(item, content, emptyNode) {
     var wrap = el("div", "prop-pick");
     var btn = el("button", "linklike prop-trigger" + (content ? " has-value" : ""));
     btn.type = "button";
     if (content) btn.appendChild(content);
-    else btn.appendChild(document.createTextNode("Set target"));
+    else if (emptyNode) {
+      btn.appendChild(emptyNode);
+      // A clock glyph is not a name. The rail's trigger says what it does in words and
+      // needs none; a row's cannot, so the words move to the accessible name instead.
+      btn.setAttribute("aria-label", "Target, not set");
+    } else btn.appendChild(document.createTextNode("Set target"));
     wrap.appendChild(btn);
     var open = null;
 

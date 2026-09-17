@@ -883,6 +883,68 @@ body {
   text-transform: uppercase; letter-spacing: .04em;
 }
 .list-date { color: var(--ink-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ── an empty property draws a mark ──────────────────────────────────────────
+   A column with holes in it does not read as a column, so a cell with no value draws the
+   same em dash the rail already uses rather than nothing. Two shapes behind one class:
+   plain text for a reader who cannot write, and the picker's own chip for one who can —
+   the split `emptyMark()` makes, and the same one `targetValue()` has made in the rail
+   since it was written.
+
+   **The mark is visible at rest, and only the box waits for a pointer.** Linear reveals
+   the whole placeholder on hover; the board cannot, because `:hover` is a state you
+   cannot leave on touch — the rule is written out eleven times in this file. So what
+   hover adds here is the affordance, never the information.
+
+   **`.list-empty` was taken** — it is the `No matching parts` stub, three sections up,
+   and it carries `display: flex; width: 100%; padding: 6px 6px 6px 12px`. Written as
+   `.list-empty` first, the mark inherited all of that: measured, the wrapper filled its
+   44px cell and stood 35px tall with the dash pushed 12px right of where a value sits.
+   Same mistake as `FIELDS` one file over, and the same cure: the name belongs to one
+   thing. This is `PROPS`' empty, so it is `.prop-empty`, beside `.prop-muted` and
+   `.prop-pick` it is drawn out of. */
+/* **The mark is the ghost of the value, and two of the three needed no rule at all.**
+   `.pri-none` is the priority badge with nothing lit: the bars already sit at
+   `opacity: .3` and `.on` is the only thing that raises them, so the empty form is what
+   the component has drawn all along — it cannot drift from the filled one, and it is the
+   `---` the reference draws. `.agent-none` borrows `.badge--dashed`, the stylesheet's own
+   placeholder shape since `.adapted-badge` was written: an agent handle is text, so there
+   is no faint value to show and the dashed outline is what says a handle belongs here.
+   Only the two colours are new, and they are the same colour every empty mark has had. */
+.agent-badge.agent-none, .target-date.target-none { color: var(--ink-3); }
+/* The glyph is `--accent` wherever an agent *is* routed — that is the routing mark, and it
+   is meant to catch the eye. An empty mark must not: measured on the dark theme, the badge
+   and its dashed border came out at `--ink-3` and `--line` as intended while the robot
+   inside stayed `#c17985`, so the quietest of the three cells was the loudest thing in the
+   row. `inherit`, so it follows the badge rather than naming a second colour. */
+.agent-badge.agent-none .icn.agent-glyph { color: inherit; }
+.prop-empty { color: var(--ink-3); font-size: var(--fs-md); }
+.list-dt .prop-empty { font-size: var(--fs-sm); }
+/* The date mark's control is `datePicker`'s trigger, and its styling lives under `.prop` —
+   the rail's scope — so in a row it got nothing but the global button reset. Measured with
+   the rule deleted: 13px in a column of 11px dates, in a 12×20 box. It takes the chip's
+   shape here instead, and the two halves answer different things: the padding is the touch
+   target (26×25) and the negative margin pays it back, so the dash still sits on the
+   column's own line rather than 7px in from it — the mark's text right edge at 1369
+   against a real date's 1370. */
+.prop-empty .prop-trigger {
+  font: inherit; font-size: inherit; color: var(--ink-3); background: none;
+  border: 1px solid transparent; border-radius: var(--r-md);
+  padding: 3px 7px; margin: -3px -7px; cursor: pointer;
+}
+/* `.pick-chip.editable:hover` is the rail's, and it is unguarded — which was right while
+   the chip only ever stood in a surface. In a row it paints a background and then stays
+   under your finger: a tap leaves a dark box drawn around the cell you just pressed and
+   nothing takes it away. Neutralised here, restored where a pointer exists. */
+.prop-empty .pick-chip.editable:hover { background: none; border-color: transparent; }
+@media (hover: hover) {
+  .prop-empty .pick-chip.editable:hover,
+  .prop-empty .prop-trigger:hover { background: var(--panel-2); border-color: var(--line); color: var(--ink); }
+}
+.prop-empty .pick-chip.editable:focus-visible,
+.prop-empty .prop-trigger:focus-visible,
+.prop-empty .pick-chip.editable:active,
+.prop-empty .prop-trigger:active { background: var(--panel-2); border-color: var(--line); color: var(--ink); }
 /* The columns the tiers used to drop. They are all here, always — the row is as wide as
    its columns need and the box scrolls, so nothing has to be dropped and nothing has to
    be computed. What went with them: `@container list (min-width: 560px|720px)` for flat
