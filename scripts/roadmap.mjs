@@ -26,7 +26,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
-import { stripComment, parseList, encodeItem } from "./lib/frontmatter.mjs";
+import { stripComment, stripQuotes, parseList, encodeItem } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -144,16 +144,16 @@ function getField(text, key) {
   const raw = stripComment(lines[at.index].slice(key.length + 1).trim()).trim();
   if (at.count === 1) return raw;
   // A block sequence is handed back in the inline shape, which is the one every
-  // caller here already parses and the one setField writes. Quoting is left exactly
-  // as written: an item is quoted because it needs to be, and decoding it here meant
-  // `- "release #1"` came back bare, went through formatValue unquoted, and the
-  // parser then read `# 1, new]` as a comment — the tag reaching the board as
-  // `"[release"`. Handing back the source spelling is what closes the round trip,
-  // and it is what the inline branch above already does.
+  // caller here already parses. Flattening is where the two spellings meet, and each
+  // item has to be re-encoded on the way through: a sequence item owns its whole
+  // line, so `- ui, api` is one tag, and pasting it between commas made it two the
+  // moment anything split the result. Decode to the value, encode for the shape —
+  // the same pair the readers and formatValue use, so nothing is decided twice.
   const items = lines
     .slice(at.index + 1, at.index + at.count)
-    .map((l) => stripComment(l.replace(/^\s*-\s+/, "").trim()).trim())
-    .filter(Boolean);
+    .map((l) => stripQuotes(stripComment(l.replace(/^\s*-\s+/, "").trim()).trim()))
+    .filter(Boolean)
+    .map(encodeItem);
   return `[${items.join(", ")}]`;
 }
 
@@ -312,11 +312,16 @@ async function cmdIssue() {
   const slug = pos.shift();
   const num = pos.shift();
   if (!slug || !num) fail("usage: roadmap issue <slug> <number>");
+  // Validated here rather than left to Number(), which turns a typo into NaN — and
+  // `issue: NaN` is written, reported as a success, and then read back as null by
+  // the harvester. The link and both drift signals disappear with nothing said.
+  const n = normalizeNumber(num);
+  if (n == null) fail(`issue must be a number — got "${num}"`);
   const { path: p, text } = await readPuckOrFail(slug);
-  let out = setField(text, "issue", Number(num));
+  let out = setField(text, "issue", n);
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
-  console.log(`✓ ${slug} issue #${num}  (updated ${TODAY})`);
+  console.log(`✓ ${slug} issue #${n}  (updated ${TODAY})`);
 }
 
 // The horizon. A calendar date so it sorts and compares without a period parser;

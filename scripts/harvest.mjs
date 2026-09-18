@@ -341,24 +341,37 @@ async function main() {
   }
 
   // The same safety one level down. The guard above only fires when *every* source
-  // failed, which is the rare shape; one source erroring is the common one, and it
+  // failed, which is the rare shape; one source going quiet is the common one, and it
   // republished the board without that repo's pucks. Everything pointing into it —
   // every cross-repo `parent` and `depends` — then resolved to nothing and committed
   // a false `parent-missing` / `depends-missing`, while the digest read an untroubled
-  // "0 items". Refuse when a source that *had* items last run now has none because it
-  // errored. A source that is legitimately empty, or newly added and broken from the
-  // start, has nothing to lose and does not freeze the board.
+  // "0 items".
+  //
+  // The test is the count, not whether anything threw. Keying on `error` looked
+  // stricter and caught almost nothing: `repo.list()` answers a 404 with `[]` and a
+  // missing local directory with `[]`, so a repo gone private, a renamed default
+  // branch and a moved `roadmap/` — the ways this actually happens — all arrive as a
+  // clean zero. A source that had pucks last run and has none now is the thing worth
+  // refusing, however quietly it got there.
+  //
+  // A repo that has legitimately emptied its roadmap trips this too, which is the
+  // right way round: that is a person's decision to confirm, not a silent one to
+  // discover later, and the message says how.
   const prev = await readJsonIfExists(path.join(ROOT, "data", "roadmap.json"));
   const regressed = sources.filter((s) => {
-    if (!s.error || s.count > 0) return false;
+    if (s.count > 0) return false;
     const before = prev && (prev.sources || []).find((p) => p.repo === s.repo);
     return Boolean(before && before.count > 0);
   });
   if (regressed.length) {
     throw new Error(
       "Refusing to overwrite existing data: " +
-        regressed.map((s) => `${s.repo} (${s.error})`).join("; ") +
-        " — harvested 0 items but had items in the previous run. See errors above.",
+        regressed
+          .map((s) => `${s.repo} (${s.error || "no error — the source returned no pucks"})`)
+          .join("; ") +
+        " — harvested 0 items but had items in the previous run.\n" +
+        "If a source has genuinely emptied its roadmap, drop it from sources.json or " +
+        "let the next run through once its data/roadmap.json entry is gone.",
     );
   }
 

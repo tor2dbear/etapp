@@ -128,7 +128,7 @@ export function parseFrontmatter(text) {
   // Strip a leading UTF-8 BOM before the fence check. With one in place the file does
   // not start with `---`, so the whole frontmatter block was returned as body and the
   // puck lost every field it had — silently, and only for editors that emit one.
-  const normalized = text.replace(/^﻿/, "").replace(/\r\n/g, "\n");
+  const normalized = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
     return { data: {}, body: normalized };
   }
