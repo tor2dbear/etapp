@@ -204,12 +204,17 @@ const YAML_WORD = /^(?:y|n|yes|no|true|false|on|off|null|~)$/i;
 // reading `123` means the three characters, and writing it bare hands an external
 // reader the integer instead. So the exception is the caller's to declare: this
 // function only ever sees a value, and a value cannot know which field it is in.
-const PLAIN_INT = /^-?\d+$/;
+// A number, not only a whole one: `order` is a rank, and `move` halves the gap
+// between two neighbours to slot a puck between them — which is why normalizeNumber
+// does not round either. Matching integers alone wrote `order: "10.5"` as a string
+// beside its neighbours' `order: 10`, so the one field whose whole job is to compare
+// was the one spelled inconsistently.
+const PLAIN_NUMBER = /^-?\d+(?:\.\d+)?$/;
 const PLAIN_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function bareIsSafe(s, plain, typed) {
   if (s !== s.trim() || s === "") return false;
-  if (typed && (PLAIN_INT.test(s) || PLAIN_DATE.test(s))) return true;
+  if (typed && (PLAIN_NUMBER.test(s) || PLAIN_DATE.test(s))) return true;
   return plain.test(s) && !COMMENT_OPENS.test(s) && !YAML_WORD.test(s);
 }
 
