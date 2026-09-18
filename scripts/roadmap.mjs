@@ -65,6 +65,10 @@ function frontmatterRange(lines) {
   return null;
 }
 
+// The fields whose schema is not a string: a number for the first two, a date for the
+// rest. Only these may write a digit string bare — everywhere else `123` is text.
+const TYPED_FIELDS = new Set(["order", "issue", "updated", "created", "target"]);
+
 function formatValue(key, value) {
   // Inline arrays (tags, depends) — one shape for every list field. Each item is
   // encoded rather than pasted in, so a value that needs quoting gets it back on the
@@ -75,7 +79,7 @@ function formatValue(key, value) {
   // `key === "title" && /[:#]/` — so `roadmap new "@frontend refactor"` wrote a title
   // that no YAML parser accepts, because @ is not : or #, and it quoted `C# tips`
   // that needed nothing.
-  return encodeScalar(value);
+  return encodeScalar(value, TYPED_FIELDS.has(key));
 }
 
 // Where a field lives, and how many lines it spans. A block sequence is one field

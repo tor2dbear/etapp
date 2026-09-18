@@ -195,30 +195,39 @@ const SCALAR_PLAIN = /^[A-Za-z][A-Za-z0-9 _./#,-]*$/; // a comma is text outside
 const COMMENT_OPENS = /\s#/;
 const YAML_WORD = /^(?:y|n|yes|no|true|false|on|off|null|~)$/i;
 
-// Two spellings the convention writes bare on purpose, and which every puck already
-// carries: an integer for `order` and `issue`, an ISO date for `updated`/`created`/
-// `target`. YAML reads them as a number and a date rather than as strings, which is
-// what the format has always meant by them — quoting them here would rewrite every
-// file on the next edit to say something it does not mean.
+// Two spellings the convention writes bare on purpose: an integer for `order` and
+// `issue`, an ISO date for `updated`/`created`/`target`. YAML reads them as a number
+// and a date rather than as strings, which is what the format means by them — quoting
+// them would rewrite every existing puck to say something it does not.
+//
+// But that is true of those *fields*, not of those characters. A title or a tag
+// reading `123` means the three characters, and writing it bare hands an external
+// reader the integer instead. So the exception is the caller's to declare: this
+// function only ever sees a value, and a value cannot know which field it is in.
 const PLAIN_INT = /^-?\d+$/;
 const PLAIN_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-function bareIsSafe(s, plain) {
+function bareIsSafe(s, plain, typed) {
   if (s !== s.trim() || s === "") return false;
-  if (PLAIN_INT.test(s) || PLAIN_DATE.test(s)) return true;
+  if (typed && (PLAIN_INT.test(s) || PLAIN_DATE.test(s))) return true;
   return plain.test(s) && !COMMENT_OPENS.test(s) && !YAML_WORD.test(s);
 }
 
 // A list item, which sits inside `[...]`, so a comma would end it and a bracket or
 // brace would open something else.
+// A list item. `tags` and `depends` hold strings and nothing else, so no field here
+// ever wants the number-or-date reading.
 export function encodeItem(value) {
   const s = String(value);
-  return bareIsSafe(s, ITEM_PLAIN) ? s : JSON.stringify(s);
+  return bareIsSafe(s, ITEM_PLAIN, false) ? s : JSON.stringify(s);
 }
 
 // A scalar after `key:`, where a comma is ordinary text — `title: Hello, world` needs
 // no quotes and should not get them.
-export function encodeScalar(value) {
+// A scalar after `key:`, where a comma is ordinary text — `title: Hello, world` needs
+// no quotes. `typed` says the field's schema is a number or a date rather than a
+// string; see bareIsSafe.
+export function encodeScalar(value, typed = false) {
   const s = String(value);
-  return bareIsSafe(s, SCALAR_PLAIN) ? s : JSON.stringify(s);
+  return bareIsSafe(s, SCALAR_PLAIN, typed) ? s : JSON.stringify(s);
 }
