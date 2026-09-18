@@ -142,10 +142,15 @@ function getField(text, key) {
   const raw = stripComment(lines[at.index].slice(key.length + 1).trim()).trim();
   if (at.count === 1) return raw;
   // A block sequence is handed back in the inline shape, which is the one every
-  // caller here already parses and the one setField writes.
+  // caller here already parses and the one setField writes. Quoting is left exactly
+  // as written: an item is quoted because it needs to be, and decoding it here meant
+  // `- "release #1"` came back bare, went through formatValue unquoted, and the
+  // parser then read `# 1, new]` as a comment — the tag reaching the board as
+  // `"[release"`. Handing back the source spelling is what closes the round trip,
+  // and it is what the inline branch above already does.
   const items = lines
     .slice(at.index + 1, at.index + at.count)
-    .map((l) => stripComment(l.replace(/^\s*-\s+/, "").trim()).trim().replace(/^["']|["']$/g, ""))
+    .map((l) => stripComment(l.replace(/^\s*-\s+/, "").trim()).trim())
     .filter(Boolean);
   return `[${items.join(", ")}]`;
 }
