@@ -110,7 +110,7 @@ function parseScalar(raw) {
 
 // Used for the items inside an inline array, which are quoted by the same writer and
 // so need the same decoding as a scalar.
-function stripQuotes(s) {
+export function stripQuotes(s) {
   if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
     try { return JSON.parse(s); } catch { return s.slice(1, -1); }
   }
@@ -168,4 +168,28 @@ export function parseFrontmatter(text) {
     seqKey = data[key] === "" ? key : null;
   }
   return { data, body: body.trim() };
+}
+
+// A list field, decoded into its items — the inverse of what encodeItem writes, and
+// the same steps parseScalar takes on an inline array. The CLI reads lists through
+// this so that a tag is compared as the value it denotes rather than as the spelling
+// it happens to carry: `- "ui"` and `- ui` are the same tag, and a set that held the
+// quotes let `roadmap tag x -ui` report success while removing nothing, and
+// `+ui` write the tag a second time for the board to show twice.
+export function parseList(raw) {
+  const inner = String(raw == null ? "" : raw).trim().replace(/^\[|\]$/g, "");
+  return splitList(inner).map((s) => stripQuotes(s.trim())).filter((s) => s !== "");
+}
+
+// One item, written so that reading it back yields the same string. Bare is the
+// preferred spelling because it is how the convention's examples read; quotes go on
+// only when the value would otherwise come back as something else — a comma would
+// split it, a `#` would open a comment, surrounding space would be trimmed off, a
+// leading quote would be taken for a delimiter. The test is the round trip itself,
+// so this cannot drift from the rules the readers above apply.
+export function encodeItem(value) {
+  const s = String(value);
+  const survivesBare =
+    s !== "" && stripQuotes(stripComment(s).trim()) === s && !s.includes(",") && !/^["']/.test(s);
+  return survivesBare ? s : JSON.stringify(s);
 }

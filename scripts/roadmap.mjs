@@ -26,7 +26,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
-import { stripComment, splitList } from "./lib/frontmatter.mjs";
+import { stripComment, parseList, encodeItem } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -66,8 +66,10 @@ function frontmatterRange(lines) {
 }
 
 function formatValue(key, value) {
-  // Inline arrays (tags, depends) — one shape for every list field.
-  if (Array.isArray(value)) return `[${value.join(", ")}]`;
+  // Inline arrays (tags, depends) — one shape for every list field. Each item is
+  // encoded rather than pasted in, so a value that needs quoting gets it back on the
+  // way out instead of being written bare and read as something else next time.
+  if (Array.isArray(value)) return `[${value.map(encodeItem).join(", ")}]`;
   if (key === "tags") return "[]";
   const s = String(value);
   if (key === "title" && /[:#]/.test(s)) return JSON.stringify(s);
@@ -233,9 +235,7 @@ async function cmdTag() {
   if (!slug || pos.length === 0) fail("usage: roadmap tag <slug> +add -remove …");
   const { path: p, text } = await readPuckOrFail(slug);
   const cur = getField(text, "tags");
-  const set = new Set(
-    (cur ? splitList(cur.replace(/^\[|\]$/g, "")) : []).map((s) => s.trim()).filter(Boolean),
-  );
+  const set = new Set(parseList(cur));
   for (const op of pos) {
     if (op.startsWith("-")) set.delete(slugify(op.slice(1)));
     else set.add(slugify(op.replace(/^\+/, "")));
@@ -254,9 +254,7 @@ async function cmdDepends() {
   if (!slug) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
   const { path: p, text } = await readPuckOrFail(slug);
   const cur = getField(text, "depends");
-  const list = (cur ? splitList(cur.replace(/^\[|\]$/g, "")) : [])
-    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
-    .filter(Boolean);
+  const list = parseList(cur);
   const set = new Set(list);
 
   if (opts.clear) {
@@ -302,9 +300,7 @@ async function dependencyPath(from, target, seen) {
   const p = puckPath(from);
   if (!p) return null;
   const raw = getField(await readFile(p, "utf8"), "depends") || "";
-  const deps = splitList(raw.replace(/^\[|\]$/g, ""))
-    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
-    .filter((x) => x && !x.includes("#"));
+  const deps = parseList(raw).filter((x) => !x.includes("#"));
   for (const d of deps) {
     const rest = await dependencyPath(d, target, seen);
     if (rest) return [from, ...rest];
