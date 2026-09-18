@@ -86,18 +86,38 @@ function fieldLines(lines, range, key) {
   const [start, end] = range;
   for (let i = start; i < end; i++) {
     if (!new RegExp(`^${key}:`).test(lines[i])) continue;
-    let count = 1;
+    let last = i;
     if (stripComment(lines[i].slice(key.length + 1).trim()).trim() === "") {
-      while (i + count < end && /^\s*-\s+/.test(lines[i + count])) count += 1;
+      // A blank or comment line does not end a sequence — the parser skips it and
+      // goes on collecting — so the span has to reach past it to the last item.
+      // Stopping at the first one removed the header and the items above it and left
+      // the rest stranded, which is the same silent loss one storey down.
+      // Separators only belong to the field when an item still follows: a blank line
+      // before the next key is that key's, not this one's.
+      for (let j = i + 1; j < end; j++) {
+        if (/^\s*-\s+/.test(lines[j])) { last = j; continue; }
+        if (!lines[j].trim() || lines[j].trimStart().startsWith("#")) continue;
+        break;
+      }
     }
-    return { index: i, count };
+    return { index: i, count: last - i + 1 };
   }
   return null;
 }
 
-function setField(text, key, value) {
+// The CLI reads the files the harvester reads, so it has to tolerate what the parser
+// tolerates. The parser drops a leading BOM before its fence check and this did not,
+// so every mutating command failed with "no YAML frontmatter found" on a puck the
+// board was happily showing — the editors that emit one made a puck readable but not
+// editable. The BOM is carried back out so an edit does not silently rewrite it.
+function splitText(text) {
+  const bom = text.startsWith("\uFEFF") ? "\uFEFF" : "";
   const nl = text.includes("\r\n") ? "\r\n" : "\n";
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  return { bom, nl, lines: text.slice(bom.length).replace(/\r\n/g, "\n").split("\n") };
+}
+
+function setField(text, key, value) {
+  const { bom, nl, lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) fail("no YAML frontmatter found — is this a puck?");
   const line = `${key}: ${formatValue(key, value)}`;
@@ -105,11 +125,11 @@ function setField(text, key, value) {
   // The new value is the whole field, so a sequence's items go with the header.
   if (at) lines.splice(at.index, at.count, line);
   else lines.splice(range[1], 0, line); // insert before closing fence
-  return lines.join(nl);
+  return bom + lines.join(nl);
 }
 
 function getField(text, key) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const { lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) return null;
   const at = fieldLines(lines, range, key);
@@ -133,13 +153,12 @@ function getField(text, key) {
 // Delete a frontmatter field line (no-op if absent). Keeps everything else
 // byte-identical, same as setField.
 function removeField(text, key) {
-  const nl = text.includes("\r\n") ? "\r\n" : "\n";
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const { bom, nl, lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) fail("no YAML frontmatter found — is this a puck?");
   const at = fieldLines(lines, range, key);
   if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
-  return lines.join(nl);
+  return bom + lines.join(nl);
 }
 
 // ── locate a puck file by slug: roadmap/<slug>.md | roadmap/<slug>/README.md ──

@@ -13,9 +13,14 @@
 // permanent depends-missing flag), and `title: "x" # note` came back with its quotes
 // still on. Stripping the comment afterwards, as this did, is too late by then.
 //
-// A `#` only opens a comment when whitespace precedes it, so `C# tips`, a bare
-// `#123` and `owner/repo#slug` all survive — inside an inline array too, which is
-// where cross-repo refs live. And a quote only opens a quoted run where a value can
+// A `#` opens a comment when it starts the value or has whitespace before it, which
+// is YAML's own rule. `C# tips` and `owner/repo#slug` therefore survive — inside an
+// inline array too, which is where cross-repo refs live — while `depends: # blockers`
+// is an empty value, not the scalar "# blockers". Reading it as a scalar was worse
+// than losing a nicety: it cleared the sequence below and published an invented
+// blocker by that name. The nicety it costs, a bare `issue: #123`, resolved to null
+// anyway once normalizeNumber saw the NaN, so nothing downstream reads differently.
+// And a quote only opens a quoted run where a value can
 // start: at the beginning, or after an array's `[` or `,`. Anywhere else it is an
 // apostrophe in a bare scalar (`Torbjörn's board`), which must not swallow the
 // comment that follows it.
@@ -33,7 +38,7 @@ export function stripComment(v) {
       }
       continue;
     }
-    if (c === "#" && i > 0 && /\s/.test(v[i - 1])) return v.slice(0, i).trim();
+    if (c === "#" && (i === 0 || /\s/.test(v[i - 1]))) return v.slice(0, i).trim();
     if ((c === '"' || c === "'") && (prev === "" || prev === "[" || prev === ",")) {
       quote = c;
       continue;
