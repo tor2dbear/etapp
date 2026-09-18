@@ -204,11 +204,26 @@ const YAML_WORD = /^(?:y|n|yes|no|true|false|on|off|null|~)$/i;
 // reading `123` means the three characters, and writing it bare hands an external
 // reader the integer instead. So the exception is the caller's to declare: this
 // function only ever sees a value, and a value cannot know which field it is in.
-// A number, not only a whole one: `order` is a rank, and `move` halves the gap
-// between two neighbours to slot a puck between them — which is why normalizeNumber
-// does not round either. Matching integers alone wrote `order: "10.5"` as a string
-// beside its neighbours' `order: 10`, so the one field whose whole job is to compare
-// was the one spelled inconsistently.
+// A number, spelled so that YAML reads it back as one.
+//
+// This exists because `String()` does not. `move` halves the gap between neighbours
+// to slot a puck between them, and enough halvings give `5e-7` — which YAML 1.1 reads
+// as the *string* "5e-7", not as a number. Its canonical form wants a decimal point
+// in the mantissa, so `5.0e-7` parses and a bare `5e-7` does not.
+//
+// Passing the number through here rather than matching whatever String() produced is
+// the point. The pattern below has now been extended twice, once per spelling it had
+// not anticipated — integers, then decimals, then this. A number does not need to be
+// recognised; it needs to be written.
+export function encodeNumber(n) {
+  const s = String(n);
+  const exp = /^(-?)(\d+)(e[+-]\d+)$/.exec(s);
+  return exp ? `${exp[1]}${exp[2]}.0${exp[3]}` : s;
+}
+
+// Kept for a typed field that still arrives as text — a date does, and so would a
+// rank read back out of a file. It is deliberately the plain spellings only: anything
+// stranger is a number and belongs in encodeNumber above.
 const PLAIN_NUMBER = /^-?\d+(?:\.\d+)?$/;
 const PLAIN_DATE = /^\d{4}-\d{2}-\d{2}$/;
 

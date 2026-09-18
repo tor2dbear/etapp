@@ -26,7 +26,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
-import { stripComment, stripQuotes, parseList, encodeItem, encodeScalar } from "./lib/frontmatter.mjs";
+import { stripComment, stripQuotes, parseList, encodeItem, encodeScalar, encodeNumber } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -75,10 +75,13 @@ function formatValue(key, value) {
   // way out instead of being written bare and read as something else next time.
   if (Array.isArray(value)) return `[${value.map(encodeItem).join(", ")}]`;
   if (key === "tags") return "[]";
-  // By what the value is, not by which field it happens to be. The old rule asked
-  // `key === "title" && /[:#]/` — so `roadmap new "@frontend refactor"` wrote a title
-  // that no YAML parser accepts, because @ is not : or #, and it quoted `C# tips`
-  // that needed nothing.
+  // A number is written as a number, without a detour through a string that something
+  // then has to recognise as numeric again.
+  if (typeof value === "number" && Number.isFinite(value)) return encodeNumber(value);
+  // Otherwise by what the value is, not by which field it happens to be. The old rule
+  // asked `key === "title" && /[:#]/` — so `roadmap new "@frontend refactor"` wrote a
+  // title that no YAML parser accepts, because @ is not : or #, and it quoted
+  // `C# tips` that needed nothing.
   return encodeScalar(value, TYPED_FIELDS.has(key));
 }
 
@@ -605,7 +608,7 @@ async function rankColumn(pucks, status, all) {
   for (let i = 0; i < column.length; i++) {
     const want = (i + 1) * 10;
     if (column[i].order === want) continue;
-    let out = setField(column[i].text, "order", String(want));
+    let out = setField(column[i].text, "order", want);
     out = setField(out, "updated", TODAY);
     await writeFile(column[i].path, out);
     changed.push(`${column[i].slug} ${column[i].order == null ? "—" : column[i].order} → ${want}`);
@@ -658,7 +661,7 @@ async function cmdMove() {
   }
   // Keep it an integer when the gap allows; decimals are legal but ugly in git.
   if (Number.isInteger(a) && Number.isInteger(b) && Math.abs(b - a) >= 2) value = Math.round(value);
-  let out = setField(me.text, "order", String(value));
+  let out = setField(me.text, "order", value);
   out = setField(out, "updated", TODAY);
   await writeFile(me.path, out);
   console.log(`✓ ${slug} order ${value} (${opts.before ? "before" : "after"} ${anchor})  (updated ${TODAY})`);
