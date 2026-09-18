@@ -28,6 +28,7 @@ export function stripComment(raw) {
   const v = raw.trim();
   let quote = "";
   let prev = ""; // last non-space character seen outside a quoted run
+  let depth = 0; // how deep inside `[...]`
   for (let i = 0; i < v.length; i++) {
     const c = v[i];
     if (quote) {
@@ -40,10 +41,17 @@ export function stripComment(raw) {
       continue;
     }
     if (c === "#" && (i === 0 || /\s/.test(v[i - 1]))) return v.slice(0, i).trim();
-    if ((c === '"' || c === "'") && (prev === "" || prev === "[" || prev === ",")) {
+    // A quote delimits only where YAML lets it: at the start of the value, or at the
+    // start of an item inside a flow array. After a comma in a *bare* scalar it is an
+    // ordinary character — `title: Alpha, "beta #1"` is `Alpha, "beta` to YAML,
+    // because the ` #` opens a comment, and treating the quote as a delimiter made us
+    // keep the rest of a line the format says is a comment.
+    if ((c === '"' || c === "'") && (prev === "" || (depth > 0 && (prev === "[" || prev === ",")))) {
       quote = c;
       continue;
     }
+    if (c === "[") depth += 1;
+    else if (c === "]" && depth > 0) depth -= 1;
     if (!/\s/.test(c)) prev = c;
   }
   return v;
