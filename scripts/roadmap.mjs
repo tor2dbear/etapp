@@ -74,18 +74,37 @@ function formatValue(key, value) {
   return s;
 }
 
+// Where a field lives, and how many lines it spans. A block sequence is one field
+// written across several lines, so every edit has to see all of them — rewriting the
+// header alone left `- alpha` / `- beta` stranded under a new inline value, which the
+// parser then ignores. The blockers vanished silently and the file was no longer
+// valid YAML either.
+//
+// Items belong to the key only while its own value is empty, which is the rule the
+// parser uses to decide the same thing — the two have to agree on where a field ends.
+function fieldLines(lines, range, key) {
+  const [start, end] = range;
+  for (let i = start; i < end; i++) {
+    if (!new RegExp(`^${key}:`).test(lines[i])) continue;
+    let count = 1;
+    if (stripComment(lines[i].slice(key.length + 1).trim()).trim() === "") {
+      while (i + count < end && /^\s*-\s+/.test(lines[i + count])) count += 1;
+    }
+    return { index: i, count };
+  }
+  return null;
+}
+
 function setField(text, key, value) {
   const nl = text.includes("\r\n") ? "\r\n" : "\n";
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const range = frontmatterRange(lines);
   if (!range) fail("no YAML frontmatter found — is this a puck?");
-  const [start, end] = range;
   const line = `${key}: ${formatValue(key, value)}`;
-  let replaced = false;
-  for (let i = start; i < end; i++) {
-    if (new RegExp(`^${key}:`).test(lines[i])) { lines[i] = line; replaced = true; break; }
-  }
-  if (!replaced) lines.splice(end, 0, line); // insert before closing fence
+  const at = fieldLines(lines, range, key);
+  // The new value is the whole field, so a sequence's items go with the header.
+  if (at) lines.splice(at.index, at.count, line);
+  else lines.splice(range[1], 0, line); // insert before closing fence
   return lines.join(nl);
 }
 
@@ -93,16 +112,22 @@ function getField(text, key) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const range = frontmatterRange(lines);
   if (!range) return null;
-  for (let i = range[0]; i < range[1]; i++) {
-    const m = new RegExp(`^${key}:\\s*(.*)$`).exec(lines[i]);
-    // Through the parser's own comment rule, so the CLI and the harvester read a
-    // field the same way. They did not: `order: 20 # after a` reached normalizeNumber
-    // as the whole string, went to null, and the puck the board shows as ranked 20 was
-    // one `renumber` skipped and `move` sorted among the unranked — then wrote that
-    // back. It is not only `order`; every field read here had the comment on it.
-    if (m) return stripComment(m[1].trim()).trim();
-  }
-  return null;
+  const at = fieldLines(lines, range, key);
+  if (!at) return null;
+  // Through the parser's own comment rule, so the CLI and the harvester read a field
+  // the same way. They did not: `order: 20 # after a` reached normalizeNumber as the
+  // whole string, went to null, and the puck the board shows as ranked 20 was one
+  // `renumber` skipped and `move` sorted among the unranked — then wrote that back.
+  // It is not only `order`; every field read here had the comment on it.
+  const raw = stripComment(lines[at.index].slice(key.length + 1).trim()).trim();
+  if (at.count === 1) return raw;
+  // A block sequence is handed back in the inline shape, which is the one every
+  // caller here already parses and the one setField writes.
+  const items = lines
+    .slice(at.index + 1, at.index + at.count)
+    .map((l) => stripComment(l.replace(/^\s*-\s+/, "").trim()).trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+  return `[${items.join(", ")}]`;
 }
 
 // Delete a frontmatter field line (no-op if absent). Keeps everything else
@@ -112,9 +137,8 @@ function removeField(text, key) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const range = frontmatterRange(lines);
   if (!range) fail("no YAML frontmatter found — is this a puck?");
-  for (let i = range[0]; i < range[1]; i++) {
-    if (new RegExp(`^${key}:`).test(lines[i])) { lines.splice(i, 1); break; }
-  }
+  const at = fieldLines(lines, range, key);
+  if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
   return lines.join(nl);
 }
 
