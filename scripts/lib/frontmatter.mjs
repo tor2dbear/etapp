@@ -24,13 +24,14 @@
 // start: at the beginning, or after an array's `[` or `,`. Anywhere else it is an
 // apostrophe in a bare scalar (`Torbjörn's board`), which must not swallow the
 // comment that follows it.
-export function stripComment(v) {
+export function stripComment(raw) {
+  const v = raw.trim();
   let quote = "";
   let prev = ""; // last non-space character seen outside a quoted run
   for (let i = 0; i < v.length; i++) {
     const c = v[i];
     if (quote) {
-      if (quote === '"' && c === "\\") { i++; continue; }
+      if (quote === '"' && c === "\\" && i + 1 < v.length) { i++; continue; }
       if (c === quote) {
         if (quote === "'" && v[i + 1] === "'") { i++; continue; } // YAML's '' → '
         quote = "";
@@ -53,7 +54,7 @@ export function stripComment(v) {
 // handed back `"release` and `one"` — the quoting is there precisely to say the comma
 // belongs to the value, and both readers went straight past it. The CLI shares this
 // so a list means the same thing whichever of them reads it.
-export function splitList(inner) {
+function splitList(inner) {
   const out = [];
   let cur = "";
   let quote = "";
@@ -79,7 +80,7 @@ export function splitList(inner) {
 }
 
 function parseScalar(raw) {
-  let v = stripComment(raw.trim()).trim();
+  const v = stripComment(raw);
   if (v === "") return "";
   // Quoted forms come first, and that order is the point: a quoted value that happens
   // to open with `[` is a string, not a list.
@@ -89,21 +90,14 @@ function parseScalar(raw) {
   // a plain slice left the escapes in the value, so a title with a quote in it came
   // back corrupted and got written corrupted the next time. The round trip has to
   // close on the same rules at both ends.
-  if (v.length >= 2 && v[0] === '"' && v[v.length - 1] === '"') {
-    try { return JSON.parse(v); } catch { return v.slice(1, -1); }
+  if (v.length >= 2 && (v[0] === '"' || v[0] === "'") && v[v.length - 1] === v[0]) {
+    return stripQuotes(v);
   }
-  // Single-quoted: YAML's only escape inside is '' → '.
-  if (v.length >= 2 && v[0] === "'" && v[v.length - 1] === "'") {
-    return v.slice(1, -1).replace(/''/g, "'");
-  }
-  // Inline array: [a, b, c] — only for genuinely unquoted values.
-  if (v[0] === "[" && v[v.length - 1] === "]") {
-    const inner = v.slice(1, -1).trim();
-    if (inner === "") return [];
-    return splitList(inner)
-      .map((s) => stripQuotes(s.trim()))
-      .filter((s) => s !== "");
-  }
+  // Inline array: [a, b, c] — only for genuinely unquoted values, which is why it
+  // comes after the quoted forms. parseList is the one definition of what a list
+  // decodes to; writing the same four steps out here again is how the two spellings
+  // of a list would drift apart, which is the thing this file exists to prevent.
+  if (v[0] === "[" && v[v.length - 1] === "]") return parseList(v);
   // Bare scalar. The comment is already gone.
   return v;
 }
@@ -153,12 +147,14 @@ export function parseFrontmatter(text) {
     // ordinary YAML way became the empty string. Downstream that reads as falsy — so
     // the puck published as *ready* while its author had declared blockers, with no
     // flag anywhere. Silent, and in the one direction that matters.
-    const seq = /^\s*-\s+(.*)$/.exec(line);
-    if (seq && seqKey !== null) {
-      if (!Array.isArray(data[seqKey])) data[seqKey] = [];
-      const item = stripQuotes(stripComment(seq[1].trim()).trim());
-      if (item !== "") data[seqKey].push(item);
-      continue;
+    if (seqKey !== null) {
+      const seq = /^\s*-\s+(.*)$/.exec(line);
+      if (seq) {
+        if (!Array.isArray(data[seqKey])) data[seqKey] = [];
+        const item = stripQuotes(stripComment(seq[1]));
+        if (item !== "") data[seqKey].push(item);
+        continue;
+      }
     }
     const idx = line.indexOf(":");
     if (idx === -1) continue;
@@ -190,6 +186,6 @@ export function parseList(raw) {
 export function encodeItem(value) {
   const s = String(value);
   const survivesBare =
-    s !== "" && stripQuotes(stripComment(s).trim()) === s && !s.includes(",") && !/^["']/.test(s);
+    s !== "" && stripQuotes(stripComment(s)) === s && !s.includes(",") && !/^["']/.test(s);
   return survivesBare ? s : JSON.stringify(s);
 }

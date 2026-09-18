@@ -87,9 +87,13 @@ function formatValue(key, value) {
 function fieldLines(lines, range, key) {
   const [start, end] = range;
   for (let i = start; i < end; i++) {
-    if (!new RegExp(`^${key}:`).test(lines[i])) continue;
+    if (!lines[i].startsWith(key + ":")) continue;
+    // Derived once and handed back: getField recomputed the identical expression, so
+    // where a value starts on a key line — including the offset that ties it to the
+    // prefix test above — was written in two places that had to stay in step.
+    const value = stripComment(lines[i].slice(key.length + 1));
     let last = i;
-    if (stripComment(lines[i].slice(key.length + 1).trim()).trim() === "") {
+    if (value === "") {
       // A blank or comment line does not end a sequence — the parser skips it and
       // goes on collecting — so the span has to reach past it to the last item.
       // Stopping at the first one removed the header and the items above it and left
@@ -102,7 +106,7 @@ function fieldLines(lines, range, key) {
         break;
       }
     }
-    return { index: i, count: last - i + 1 };
+    return { index: i, count: last - i + 1, value };
   }
   return null;
 }
@@ -130,31 +134,41 @@ function setField(text, key, value) {
   return bom + lines.join(nl);
 }
 
+// A scalar field's value, through the parser's own comment rule so the CLI and the
+// harvester read a field the same way. They did not: `order: 20 # after a` reached
+// normalizeNumber as the whole string, went to null, and the puck the board shows as
+// ranked 20 was one `renumber` skipped and `move` sorted among the unranked — then
+// wrote that back. It is not only `order`; every field read here had the comment on
+// it. For a list field, use getList.
 function getField(text, key) {
   const { lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) return null;
   const at = fieldLines(lines, range, key);
-  if (!at) return null;
-  // Through the parser's own comment rule, so the CLI and the harvester read a field
-  // the same way. They did not: `order: 20 # after a` reached normalizeNumber as the
-  // whole string, went to null, and the puck the board shows as ranked 20 was one
-  // `renumber` skipped and `move` sorted among the unranked — then wrote that back.
-  // It is not only `order`; every field read here had the comment on it.
-  const raw = stripComment(lines[at.index].slice(key.length + 1).trim()).trim();
-  if (at.count === 1) return raw;
-  // A block sequence is handed back in the inline shape, which is the one every
-  // caller here already parses. Flattening is where the two spellings meet, and each
-  // item has to be re-encoded on the way through: a sequence item owns its whole
-  // line, so `- ui, api` is one tag, and pasting it between commas made it two the
-  // moment anything split the result. Decode to the value, encode for the shape —
-  // the same pair the readers and formatValue use, so nothing is decided twice.
-  const items = lines
+  return at ? at.value : null;
+}
+
+// A list field's items, decoded. Both spellings land here: an inline `[a, b]` through
+// parseList, a block sequence through its own lines.
+//
+// This used to go the long way round — flatten the sequence back into `[a, b]` text,
+// hand that to the caller, and have the caller parseList it apart again. The shape in
+// the middle had no reader: all three callers undid it on the next line. It cost two
+// rounds of review to make that round trip lossless (quote-aware splitting so the
+// join survived, re-encoding so the split did), and `- ui, api` — one tag, because a
+// sequence item owns its whole line — was two tags until the second of them. A shape
+// invented to be dismantled is worth neither.
+function getList(text, key) {
+  const { lines } = splitText(text);
+  const range = frontmatterRange(lines);
+  if (!range) return [];
+  const at = fieldLines(lines, range, key);
+  if (!at) return [];
+  if (at.count === 1) return parseList(at.value);
+  return lines
     .slice(at.index + 1, at.index + at.count)
-    .map((l) => stripQuotes(stripComment(l.replace(/^\s*-\s+/, "").trim()).trim()))
-    .filter(Boolean)
-    .map(encodeItem);
-  return `[${items.join(", ")}]`;
+    .map((l) => stripQuotes(stripComment(l.replace(/^\s*-\s+/, ""))))
+    .filter(Boolean);
 }
 
 // Delete a frontmatter field line (no-op if absent). Keeps everything else
@@ -197,9 +211,9 @@ async function cmdNew() {
 
   const fm = [
     "---",
-    `title: ${/[:#]/.test(title) ? JSON.stringify(title) : title}`,
+    `title: ${formatValue("title", title)}`,
     `status: ${status}`,
-    ...(tags.length ? [`tags: [${tags.join(", ")}]`] : []),
+    ...(tags.length ? [`tags: ${formatValue("tags", tags)}`] : []),
     `updated: ${TODAY}`,
     `created: ${TODAY}`,
     "---",
@@ -234,8 +248,7 @@ async function cmdTag() {
   const slug = pos.shift();
   if (!slug || pos.length === 0) fail("usage: roadmap tag <slug> +add -remove …");
   const { path: p, text } = await readPuckOrFail(slug);
-  const cur = getField(text, "tags");
-  const set = new Set(parseList(cur));
+  const set = new Set(getList(text, "tags"));
   for (const op of pos) {
     if (op.startsWith("-")) set.delete(slugify(op.slice(1)));
     else set.add(slugify(op.replace(/^\+/, "")));
@@ -243,7 +256,7 @@ async function cmdTag() {
   let out = setField(text, "tags", [...set]);
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
-  console.log(`✓ ${slug} tags: [${[...set].join(", ")}]  (updated ${TODAY})`);
+  console.log(`✓ ${slug} tags: ${formatValue("tags", [...set])}  (updated ${TODAY})`);
 }
 
 // Dependencies. Same `+add -remove` shape as `tag`, because it's the same kind of
@@ -253,9 +266,7 @@ async function cmdDepends() {
   const slug = pos.shift();
   if (!slug) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
   const { path: p, text } = await readPuckOrFail(slug);
-  const cur = getField(text, "depends");
-  const list = parseList(cur);
-  const set = new Set(list);
+  const set = new Set(getList(text, "depends"));
 
   if (opts.clear) {
     set.clear();
@@ -284,7 +295,7 @@ async function cmdDepends() {
   await writeFile(p, out);
   console.log(
     set.size
-      ? `✓ ${slug} depends: [${[...set].join(", ")}]  (updated ${TODAY})`
+      ? `✓ ${slug} depends: ${formatValue("depends", [...set])}  (updated ${TODAY})`
       : `✓ ${slug} depends cleared  (updated ${TODAY})`,
   );
 }
@@ -299,8 +310,7 @@ async function dependencyPath(from, target, seen) {
   if (from === target) return [from];
   const p = puckPath(from);
   if (!p) return null;
-  const raw = getField(await readFile(p, "utf8"), "depends") || "";
-  const deps = parseList(raw).filter((x) => !x.includes("#"));
+  const deps = getList(await readFile(p, "utf8"), "depends").filter((x) => !x.includes("#"));
   for (const d of deps) {
     const rest = await dependencyPath(d, target, seen);
     if (rest) return [from, ...rest];
@@ -508,7 +518,7 @@ async function listPucks() {
     const text = await readFile(file, "utf8");
     pucks.push({
       slug,
-      title: (getField(text, "title") || slug).replace(/^["']|["']$/g, ""),
+      title: stripQuotes(getField(text, "title") || slug),
       status: getField(text, "status") || "inbox",
       updated: getField(text, "updated") || "",
     });
@@ -572,8 +582,8 @@ async function allPucks() {
 }
 // The board's own ordering: `order` first, then freshest, then slug.
 function rankSort(a, b) {
-  const ao = a.order == null ? Infinity : a.order;
-  const bo = b.order == null ? Infinity : b.order;
+  const ao = Number.isFinite(a.order) ? a.order : Infinity;
+  const bo = Number.isFinite(b.order) ? b.order : Infinity;
   return ao - bo || b.updated.localeCompare(a.updated) || a.slug.localeCompare(b.slug);
 }
 
