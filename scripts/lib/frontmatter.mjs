@@ -177,15 +177,35 @@ export function parseList(raw) {
   return splitList(inner).map((s) => stripQuotes(s.trim())).filter((s) => s !== "");
 }
 
-// One item, written so that reading it back yields the same string. Bare is the
-// preferred spelling because it is how the convention's examples read; quotes go on
-// only when the value would otherwise come back as something else — a comma would
-// split it, a `#` would open a comment, surrounding space would be trimmed off, a
-// leading quote would be taken for a delimiter. The test is the round trip itself,
-// so this cannot drift from the rules the readers above apply.
+// Writing a value so that it is still YAML — and still this value — when read back.
+//
+// The round trip alone was the wrong test. It asks "does *our* reader return what we
+// put in", which `@frontend` passes: this parser has no notion of YAML's reserved
+// indicators, so it reads a bare `@frontend` happily and the check declared it safe.
+// Anything else opening the same puck disagrees — `tags: [@frontend, new]` is not
+// YAML at all. These files are plain markdown that other tools read; a file only our
+// own reader can parse is how a format stops being a format.
+//
+// So the rule is YAML's: a plain scalar may not open with an indicator, may not carry
+// `: ` or ` #`, and may not lead or trail whitespace. The round trip stays as the last
+// clause, because it still catches what is specific to us (a value that looks quoted).
+const YAML_INDICATOR = /^[-?:,[\]{}#&*!|>'"%@`]/;
+const YAML_UNSAFE = /: |\s#|^\s|\s$/;
+
+function encodable(s) {
+  return s !== "" && !YAML_INDICATOR.test(s) && !YAML_UNSAFE.test(s) && stripQuotes(stripComment(s)) === s;
+}
+
+// A list item, which sits inside `[...]`, so the flow indicators matter too: a comma
+// would end it and a bracket or brace would open something else.
 export function encodeItem(value) {
   const s = String(value);
-  const survivesBare =
-    s !== "" && stripQuotes(stripComment(s)) === s && !s.includes(",") && !/^["']/.test(s);
-  return survivesBare ? s : JSON.stringify(s);
+  return encodable(s) && !/[,[\]{}]/.test(s) ? s : JSON.stringify(s);
+}
+
+// A scalar after `key:`, where a comma is ordinary text — `title: Hello, world` needs
+// no quotes and should not get them.
+export function encodeScalar(value) {
+  const s = String(value);
+  return encodable(s) ? s : JSON.stringify(s);
 }

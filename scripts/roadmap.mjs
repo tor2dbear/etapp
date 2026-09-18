@@ -26,7 +26,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
-import { stripComment, stripQuotes, parseList, encodeItem } from "./lib/frontmatter.mjs";
+import { stripComment, stripQuotes, parseList, encodeItem, encodeScalar } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -71,9 +71,11 @@ function formatValue(key, value) {
   // way out instead of being written bare and read as something else next time.
   if (Array.isArray(value)) return `[${value.map(encodeItem).join(", ")}]`;
   if (key === "tags") return "[]";
-  const s = String(value);
-  if (key === "title" && /[:#]/.test(s)) return JSON.stringify(s);
-  return s;
+  // By what the value is, not by which field it happens to be. The old rule asked
+  // `key === "title" && /[:#]/` — so `roadmap new "@frontend refactor"` wrote a title
+  // that no YAML parser accepts, because @ is not : or #, and it quoted `C# tips`
+  // that needed nothing.
+  return encodeScalar(value);
 }
 
 // Where a field lives, and how many lines it spans. A block sequence is one field
