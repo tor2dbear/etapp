@@ -19,7 +19,7 @@
 // start: at the beginning, or after an array's `[` or `,`. Anywhere else it is an
 // apostrophe in a bare scalar (`Torbjörn's board`), which must not swallow the
 // comment that follows it.
-function stripComment(v) {
+export function stripComment(v) {
   let quote = "";
   let prev = ""; // last non-space character seen outside a quoted run
   for (let i = 0; i < v.length; i++) {

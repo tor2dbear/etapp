@@ -26,6 +26,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
+import { stripComment } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -94,7 +95,12 @@ function getField(text, key) {
   if (!range) return null;
   for (let i = range[0]; i < range[1]; i++) {
     const m = new RegExp(`^${key}:\\s*(.*)$`).exec(lines[i]);
-    if (m) return m[1].trim();
+    // Through the parser's own comment rule, so the CLI and the harvester read a
+    // field the same way. They did not: `order: 20 # after a` reached normalizeNumber
+    // as the whole string, went to null, and the puck the board shows as ranked 20 was
+    // one `renumber` skipped and `move` sorted among the unranked — then wrote that
+    // back. It is not only `order`; every field read here had the comment on it.
+    if (m) return stripComment(m[1].trim()).trim();
   }
   return null;
 }
