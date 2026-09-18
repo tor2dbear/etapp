@@ -179,33 +179,46 @@ export function parseList(raw) {
 
 // Writing a value so that it is still YAML — and still this value — when read back.
 //
-// The round trip alone was the wrong test. It asks "does *our* reader return what we
-// put in", which `@frontend` passes: this parser has no notion of YAML's reserved
-// indicators, so it reads a bare `@frontend` happily and the check declared it safe.
-// Anything else opening the same puck disagrees — `tags: [@frontend, new]` is not
-// YAML at all. These files are plain markdown that other tools read; a file only our
-// own reader can parse is how a format stops being a format.
+// This is a whitelist, and that is the point. Three times now the rule was a list of
+// YAML's hazards, and three times the list was short one: the round trip alone missed
+// reserved indicators (`@frontend`), naming the indicators missed a terminal colon
+// (`foo:`), and neither noticed that a bare `true` comes back a boolean rather than
+// the string the file held. Enumerating what can go wrong in a format this old is
+// open at the wrong end. Enumerating what is plainly safe is closed, and its failure
+// mode is a pair of quotes nobody needed — which cannot corrupt a file.
 //
-// So the rule is YAML's: a plain scalar may not open with an indicator, may not carry
-// `: ` or ` #`, and may not lead or trail whitespace. The round trip stays as the last
-// clause, because it still catches what is specific to us (a value that looks quoted).
-const YAML_INDICATOR = /^[-?:,[\]{}#&*!|>'"%@`]/;
-const YAML_UNSAFE = /: |\s#|^\s|\s$/;
+// Plainly safe means: opens with a letter, holds nothing but letters, digits, spaces
+// and a few inert punctuation marks, never `<space>#` (a comment), and is not one of
+// the words YAML reads as a boolean or a null.
+const ITEM_PLAIN = /^[A-Za-z][A-Za-z0-9 _./#-]*$/;
+const SCALAR_PLAIN = /^[A-Za-z][A-Za-z0-9 _./#,-]*$/; // a comma is text outside `[...]`
+const COMMENT_OPENS = /\s#/;
+const YAML_WORD = /^(?:y|n|yes|no|true|false|on|off|null|~)$/i;
 
-function encodable(s) {
-  return s !== "" && !YAML_INDICATOR.test(s) && !YAML_UNSAFE.test(s) && stripQuotes(stripComment(s)) === s;
+// Two spellings the convention writes bare on purpose, and which every puck already
+// carries: an integer for `order` and `issue`, an ISO date for `updated`/`created`/
+// `target`. YAML reads them as a number and a date rather than as strings, which is
+// what the format has always meant by them — quoting them here would rewrite every
+// file on the next edit to say something it does not mean.
+const PLAIN_INT = /^-?\d+$/;
+const PLAIN_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function bareIsSafe(s, plain) {
+  if (s !== s.trim() || s === "") return false;
+  if (PLAIN_INT.test(s) || PLAIN_DATE.test(s)) return true;
+  return plain.test(s) && !COMMENT_OPENS.test(s) && !YAML_WORD.test(s);
 }
 
-// A list item, which sits inside `[...]`, so the flow indicators matter too: a comma
-// would end it and a bracket or brace would open something else.
+// A list item, which sits inside `[...]`, so a comma would end it and a bracket or
+// brace would open something else.
 export function encodeItem(value) {
   const s = String(value);
-  return encodable(s) && !/[,[\]{}]/.test(s) ? s : JSON.stringify(s);
+  return bareIsSafe(s, ITEM_PLAIN) ? s : JSON.stringify(s);
 }
 
 // A scalar after `key:`, where a comma is ordinary text — `title: Hello, world` needs
 // no quotes and should not get them.
 export function encodeScalar(value) {
   const s = String(value);
-  return encodable(s) ? s : JSON.stringify(s);
+  return bareIsSafe(s, SCALAR_PLAIN) ? s : JSON.stringify(s);
 }
