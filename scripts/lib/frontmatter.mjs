@@ -1,10 +1,50 @@
 // Minimal, dependency-free YAML-frontmatter parser.
 // Handles exactly the subset the roadmap convention uses:
-//   scalars (quoted or bare), integers, dates, and inline arrays [a, b, c].
+//   scalars (quoted or bare), integers, dates, inline arrays [a, b, c], and the
+//   block-sequence spelling of the same list (`key:` then `  - item` lines).
 // The body is everything after the closing `---`.
 
+// Strip a trailing YAML comment. Quote-aware, and it runs *before* anything asks
+// what shape a value has — which is the whole point of it being its own function.
+//
+// The checks in parseScalar recognise a form by its *last* character, so a trailing
+// comment hid every one of them: `depends: [a, b] # note` was not an array but the
+// string "[a, b]" (one unsatisfiable blocker instead of two real ones, and a
+// permanent depends-missing flag), and `title: "x" # note` came back with its quotes
+// still on. Stripping the comment afterwards, as this did, is too late by then.
+//
+// A `#` only opens a comment when whitespace precedes it, so `C# tips`, a bare
+// `#123` and `owner/repo#slug` all survive — inside an inline array too, which is
+// where cross-repo refs live. And a quote only opens a quoted run where a value can
+// start: at the beginning, or after an array's `[` or `,`. Anywhere else it is an
+// apostrophe in a bare scalar (`Torbjörn's board`), which must not swallow the
+// comment that follows it.
+function stripComment(v) {
+  let quote = "";
+  let prev = ""; // last non-space character seen outside a quoted run
+  for (let i = 0; i < v.length; i++) {
+    const c = v[i];
+    if (quote) {
+      if (quote === '"' && c === "\\") { i++; continue; }
+      if (c === quote) {
+        if (quote === "'" && v[i + 1] === "'") { i++; continue; } // YAML's '' → '
+        quote = "";
+        prev = c;
+      }
+      continue;
+    }
+    if (c === "#" && i > 0 && /\s/.test(v[i - 1])) return v.slice(0, i).trim();
+    if ((c === '"' || c === "'") && (prev === "" || prev === "[" || prev === ",")) {
+      quote = c;
+      continue;
+    }
+    if (!/\s/.test(c)) prev = c;
+  }
+  return v;
+}
+
 function parseScalar(raw) {
-  let v = raw.trim();
+  let v = stripComment(raw.trim()).trim();
   if (v === "") return "";
   // Quoted forms come first, and that order is the point: a quoted value that happens
   // to open with `[` is a string, not a list.
@@ -30,11 +70,7 @@ function parseScalar(raw) {
       .map((s) => stripQuotes(s.trim()))
       .filter((s) => s !== "");
   }
-  // Bare scalar: strip a trailing YAML comment. A `#` only opens a comment when
-  // whitespace precedes it, so `C# tips` and a bare `#123` survive intact — without
-  // that rule the fix would quietly eat half the values it was meant to protect.
-  const c = v.search(/\s#/);
-  if (c !== -1) v = v.slice(0, c).trim();
+  // Bare scalar. The comment is already gone.
   return v;
 }
 
@@ -58,7 +94,7 @@ export function parseFrontmatter(text) {
   // Strip a leading UTF-8 BOM before the fence check. With one in place the file does
   // not start with `---`, so the whole frontmatter block was returned as body and the
   // puck lost every field it had — silently, and only for editors that emit one.
-  const normalized = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  const normalized = text.replace(/^﻿/, "").replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
     return { data: {}, body: normalized };
   }
@@ -72,13 +108,30 @@ export function parseFrontmatter(text) {
   const body = afterFence === -1 ? "" : normalized.slice(afterFence + 1);
 
   const data = {};
+  // The key a block sequence would continue: set when a key line carries no inline
+  // value, cleared by any key that does. Only such a key can collect `- item` lines,
+  // so the two spellings of a list never mix into one another.
+  let seqKey = null;
   for (const line of block.split("\n")) {
     if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    // A block sequence item, tested before the `key:` split: `- owner/repo#slug` has
+    // no colon and used to be skipped outright, which is how `depends:` written the
+    // ordinary YAML way became the empty string. Downstream that reads as falsy — so
+    // the puck published as *ready* while its author had declared blockers, with no
+    // flag anywhere. Silent, and in the one direction that matters.
+    const seq = /^\s*-\s+(.*)$/.exec(line);
+    if (seq && seqKey !== null) {
+      if (!Array.isArray(data[seqKey])) data[seqKey] = [];
+      const item = stripQuotes(stripComment(seq[1].trim()).trim());
+      if (item !== "") data[seqKey].push(item);
+      continue;
+    }
     const idx = line.indexOf(":");
     if (idx === -1) continue;
     const key = line.slice(0, idx).trim();
     if (!key) continue;
     data[key] = parseScalar(line.slice(idx + 1));
+    seqKey = data[key] === "" ? key : null;
   }
   return { data, body: body.trim() };
 }

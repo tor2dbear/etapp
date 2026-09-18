@@ -25,7 +25,7 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { STATUSES, PRIORITIES, slugify, normalizeDate } from "./lib/adapters.mjs";
+import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -505,7 +505,12 @@ async function allPucks() {
       text,
       status: getField(text, "status") || "inbox",
       updated: getField(text, "updated") || "",
-      order: raw == null || raw === "" ? null : Number(raw),
+      // Finite-or-null, the same rule the harvester reads this field by. A bare
+      // `Number()` yields NaN for a hand-typed `order: high`, and NaN is falsy, so
+      // `rankSort`'s `ao - bo || …` quietly fell through to the tiebreak — making the
+      // bad puck compare equal to *every* other one. That is an intransitive
+      // comparator, and `renumber` writes its result back into the files.
+      order: normalizeNumber(raw),
     });
   }
   return out;

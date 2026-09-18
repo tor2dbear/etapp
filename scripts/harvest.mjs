@@ -265,8 +265,13 @@ function resolveHierarchy(items) {
 
 function sortItems(a, b) {
   // Manual `order` first (lower = higher), then freshest `updated`, then title.
-  const ao = a.order ?? Number.POSITIVE_INFINITY;
-  const bo = b.order ?? Number.POSITIVE_INFINITY;
+  // `??` alone was not enough: it catches null and undefined but passes NaN straight
+  // through, and a comparator that returns NaN is read as 0 — so one puck with a
+  // junk `order` silently reordered *other* pucks, differently depending on the order
+  // they arrived in. The adapters now normalize `order` to a finite number or null;
+  // this keeps the comparator total whatever reaches it.
+  const ao = Number.isFinite(a.order) ? a.order : Number.POSITIVE_INFINITY;
+  const bo = Number.isFinite(b.order) ? b.order : Number.POSITIVE_INFINITY;
   if (ao !== bo) return ao - bo;
   if (a.updated !== b.updated) return (b.updated || "").localeCompare(a.updated || "");
   return a.title.localeCompare(b.title);
@@ -335,6 +340,28 @@ async function main() {
     );
   }
 
+  // The same safety one level down. The guard above only fires when *every* source
+  // failed, which is the rare shape; one source erroring is the common one, and it
+  // republished the board without that repo's pucks. Everything pointing into it —
+  // every cross-repo `parent` and `depends` — then resolved to nothing and committed
+  // a false `parent-missing` / `depends-missing`, while the digest read an untroubled
+  // "0 items". Refuse when a source that *had* items last run now has none because it
+  // errored. A source that is legitimately empty, or newly added and broken from the
+  // start, has nothing to lose and does not freeze the board.
+  const prev = await readJsonIfExists(path.join(ROOT, "data", "roadmap.json"));
+  const regressed = sources.filter((s) => {
+    if (!s.error || s.count > 0) return false;
+    const before = prev && (prev.sources || []).find((p) => p.repo === s.repo);
+    return Boolean(before && before.count > 0);
+  });
+  if (regressed.length) {
+    throw new Error(
+      "Refusing to overwrite existing data: " +
+        regressed.map((s) => `${s.repo} (${s.error})`).join("; ") +
+        " — harvested 0 items but had items in the previous run. See errors above.",
+    );
+  }
+
   // Reconcile pucks that link an issue against its real GitHub state.
   // ROADMAP_ISSUE_STATES names a JSON file of {"owner/repo#123": "open"|"closed"} and
   // answers from it instead of the network. A seam for fixtures, not an authoring path:
@@ -384,7 +411,6 @@ async function main() {
   // disk (everything except the timestamp), keep the previous generatedAt so the
   // output is byte-for-byte unchanged. Otherwise the hourly sync would commit a
   // new timestamp every run and spam history with no-op changes.
-  const prev = await readJsonIfExists(path.join(ROOT, "data", "roadmap.json"));
   if (prev && sameContent(prev, payload)) {
     payload.generatedAt = prev.generatedAt;
   }
@@ -439,6 +465,11 @@ function renderDigest(payload) {
   for (const s of payload.sources) {
     const kind = s.native ? "native pucks" : `adapted (${s.adapter})`;
     lines.push(`- **[${s.name}](${s.url})** — ${s.count} items, ${kind}. ${s.blurb}`);
+    // A failed source says so here. `error` was carried in the payload all along but
+    // rendered nowhere, so the committed digest read "0 items, adapted (pucks)" for a
+    // repo whose harvest had actually fallen over — the one reader most likely to
+    // notice was the only one not told.
+    if (s.error) lines.push(`  - ⚠ harvest failed: ${s.error}`);
   }
   lines.push("");
 
