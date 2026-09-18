@@ -48,6 +48,36 @@ export function stripComment(v) {
   return v;
 }
 
+// Split an inline array's interior on the commas that separate items, ignoring the
+// ones inside a quoted item. A plain `split(",")` tore `"release,one"` in half and
+// handed back `"release` and `one"` — the quoting is there precisely to say the comma
+// belongs to the value, and both readers went straight past it. The CLI shares this
+// so a list means the same thing whichever of them reads it.
+export function splitList(inner) {
+  const out = [];
+  let cur = "";
+  let quote = "";
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (quote) {
+      cur += c;
+      if (quote === '"' && c === "\\" && i + 1 < inner.length) { cur += inner[++i]; continue; }
+      if (c === quote) {
+        if (quote === "'" && inner[i + 1] === "'") { cur += inner[++i]; continue; } // YAML's '' → '
+        quote = "";
+      }
+      continue;
+    }
+    if (c === "," ) { out.push(cur); cur = ""; continue; }
+    // A quote opens an item only where one can start, which is the same rule
+    // stripComment uses: an apostrophe mid-word is not a delimiter.
+    if ((c === '"' || c === "'") && cur.trim() === "") quote = c;
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
 function parseScalar(raw) {
   let v = stripComment(raw.trim()).trim();
   if (v === "") return "";
@@ -70,8 +100,7 @@ function parseScalar(raw) {
   if (v[0] === "[" && v[v.length - 1] === "]") {
     const inner = v.slice(1, -1).trim();
     if (inner === "") return [];
-    return inner
-      .split(",")
+    return splitList(inner)
       .map((s) => stripQuotes(s.trim()))
       .filter((s) => s !== "");
   }

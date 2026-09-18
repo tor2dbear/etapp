@@ -26,7 +26,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
-import { stripComment } from "./lib/frontmatter.mjs";
+import { stripComment, splitList } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -234,7 +234,7 @@ async function cmdTag() {
   const { path: p, text } = await readPuckOrFail(slug);
   const cur = getField(text, "tags");
   const set = new Set(
-    (cur ? cur.replace(/^\[|\]$/g, "").split(",") : []).map((s) => s.trim()).filter(Boolean),
+    (cur ? splitList(cur.replace(/^\[|\]$/g, "")) : []).map((s) => s.trim()).filter(Boolean),
   );
   for (const op of pos) {
     if (op.startsWith("-")) set.delete(slugify(op.slice(1)));
@@ -254,7 +254,7 @@ async function cmdDepends() {
   if (!slug) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
   const { path: p, text } = await readPuckOrFail(slug);
   const cur = getField(text, "depends");
-  const list = (cur ? cur.replace(/^\[|\]$/g, "").split(",") : [])
+  const list = (cur ? splitList(cur.replace(/^\[|\]$/g, "")) : [])
     .map((x) => x.trim().replace(/^["']|["']$/g, ""))
     .filter(Boolean);
   const set = new Set(list);
@@ -302,7 +302,7 @@ async function dependencyPath(from, target, seen) {
   const p = puckPath(from);
   if (!p) return null;
   const raw = getField(await readFile(p, "utf8"), "depends") || "";
-  const deps = raw.replace(/^\[|\]$/g, "").split(",")
+  const deps = splitList(raw.replace(/^\[|\]$/g, ""))
     .map((x) => x.trim().replace(/^["']|["']$/g, ""))
     .filter((x) => x && !x.includes("#"));
   for (const d of deps) {
