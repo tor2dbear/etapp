@@ -1,0 +1,3 @@
+# Python writes one of these the moment a judge in scripts/ is imported rather than
+# run — which is how one landed in a commit. Nothing generated belongs in the tree.
+__pycache__/

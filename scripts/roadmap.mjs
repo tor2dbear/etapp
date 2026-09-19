@@ -204,6 +204,42 @@ async function cmdTag() {
   console.log(`✓ ${slug} tags: ${formatValue("tags", [...set])}  (updated ${TODAY})`);
 }
 
+// Which repo this checkout is, as the board would name it — `owner/repo`. Asked of the
+// origin remote, and best-effort: outside a checkout, without a remote, or with one
+// spelled some way this does not recognise, the answer is null and every check below
+// falls back to what it did before.
+//
+// It matters because `auth` and `owner/repo#auth` are the *same reference* when
+// `owner/repo` is this repo, and until this existed the qualified spelling walked past
+// all three guards: `roadmap depends x +owner/repo#x` wrote the self-dependency the
+// next line refuses, the loop walk skipped every `#` hop including the ones that come
+// straight home, and `-auth` could not remove a blocker stored as `owner/repo#auth`.
+let SELF_REPO;
+function selfRepo() {
+  if (SELF_REPO !== undefined) return SELF_REPO;
+  SELF_REPO = null;
+  try {
+    const url = execFileSync("git", ["remote", "get-url", "origin"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    // `https://host/owner/repo(.git)`, `git@host:owner/repo(.git)`, `ssh://…/owner/repo`.
+    const m = url.replace(/\.git$/, "").match(/[/:]([^/:]+\/[^/:]+)$/);
+    if (m) SELF_REPO = m[1];
+  } catch {}
+  return SELF_REPO;
+}
+
+// A reference as this repo would write it: the bare slug when it names a puck here,
+// unchanged otherwise. One place, so the add, the remove and the loop walk cannot
+// disagree about what "the same reference" means.
+function localRef(ref) {
+  const s = String(ref).trim();
+  const at = s.indexOf("#");
+  if (at === -1) return s;
+  const repo = selfRepo();
+  return repo && s.slice(0, at) === repo ? s.slice(at + 1) : s;
+}
+
 // Dependencies. Same `+add -remove` shape as `tag`, because it's the same kind of
 // edit — a list field on one puck. A reference is a slug in this repo or
 // `owner/repo#slug` anywhere on the board (the form `parent` already uses).
@@ -211,16 +247,20 @@ async function cmdDepends() {
   const slug = pos.shift();
   if (!slug) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
   const { path: p, text } = await readPuckOrFail(slug);
-  const set = new Set(getList(text, "depends"));
+  // Stored as written, but matched by what the reference *is*: a puck listing
+  // `owner/repo#auth` is blocked by `auth`, so `-auth` has to reach it.
+  const stored = getList(text, "depends");
+  const set = new Map(stored.map((r) => [localRef(r), r]));
 
   if (opts.clear) {
     set.clear();
   } else {
     if (pos.length === 0) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
     for (const op of pos) {
-      if (op.startsWith("-")) { set.delete(op.slice(1)); continue; }
-      const ref = op.replace(/^\+/, "").trim();
-      if (!ref) continue;
+      if (op.startsWith("-")) { set.delete(localRef(op.slice(1))); continue; }
+      const written = op.replace(/^\+/, "").trim();
+      if (!written) continue;
+      const ref = localRef(written);
       if (ref === slug) fail("a puck can't depend on itself");
       // A same-repo reference is checked here; a cross-repo one can only be verified
       // at harvest, where the whole board is in hand (it flags one that misses).
@@ -231,16 +271,17 @@ async function cmdDepends() {
         const loop = await dependencyPath(ref, slug);
         if (loop) fail(`that would make a dependency loop (${[slug, ...loop].join(" → ")})`);
       }
-      set.add(ref);
+      set.set(ref, ref);
     }
   }
+  const refs = [...set.values()];
 
-  let out = set.size ? setField(text, "depends", [...set]) : removeField(text, "depends");
+  let out = refs.length ? setField(text, "depends", refs) : removeField(text, "depends");
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
   console.log(
-    set.size
-      ? `✓ ${slug} depends: ${formatValue("depends", [...set])}  (updated ${TODAY})`
+    refs.length
+      ? `✓ ${slug} depends: ${formatValue("depends", refs)}  (updated ${TODAY})`
       : `✓ ${slug} depends cleared  (updated ${TODAY})`,
   );
 }
@@ -255,7 +296,12 @@ async function dependencyPath(from, target, seen) {
   if (from === target) return [from];
   const p = puckPath(from);
   if (!p) return null;
-  const deps = getList(await readFile(p, "utf8"), "depends").filter((x) => !x.includes("#"));
+  // Every reference that lands in this repo, however it was spelled. A `#` used to stop
+  // the walk unconditionally, so a loop that went out through the qualified name of this
+  // very repo came back unseen.
+  const deps = getList(await readFile(p, "utf8"), "depends")
+    .map(localRef)
+    .filter((x) => !x.includes("#"));
   for (const d of deps) {
     const rest = await dependencyPath(d, target, seen);
     if (rest) return [from, ...rest];

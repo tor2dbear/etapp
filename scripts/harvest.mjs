@@ -126,9 +126,13 @@ function refKey(ref, fromRepo) {
   const at = s.indexOf("#");
   return at === -1 ? fromRepo + SEP + s : s.slice(0, at) + SEP + s.slice(at + 1);
 }
+// First wins, because the board's `resolveRef()` returns the first match and two pucks
+// with one (repo, slug) would otherwise resolve to different pucks on the two sides —
+// reachable with `roadmap/foo.md` beside `roadmap/foo/README.md`. Neither answer is
+// right; agreeing is, and the pair shows up as a duplicate slug either way.
 function indexByRef(items) {
   const byKey = new Map();
-  for (const it of items) byKey.set(it.repo + SEP + it.slug, it);
+  for (const it of items) if (!byKey.has(it.repo + SEP + it.slug)) byKey.set(it.repo + SEP + it.slug, it);
   return byKey;
 }
 
@@ -183,27 +187,62 @@ function resolveBlockedBy(items) {
   }
   for (const it of items) it.blocks.sort();
 
-  // Depth-first walk over the dependency edges; every puck on a back edge is in a
-  // cycle. Colour: 1 = on the current path, 2 = finished.
-  const colour = new Map();
+  // Every puck that can reach itself. This was a back-edge walk, which flags only the
+  // pucks on the path that happened to close the loop: with `r → a → u → r` and a second
+  // way round, `r → v → u`, the puck `v` waits for itself just as much and was never
+  // flagged. Measured, and the judge missed it too until it stopped being a
+  // transliteration of this.
+  //
+  // A strongly connected component is that question asked properly: a component of more
+  // than one puck is exactly a set of pucks that all wait for each other, whichever way
+  // round you enter it. A lone puck is in a loop only if it names itself.
+  //
+  // Tarjan, iterative — a chain of pucks would otherwise be a chain of stack frames, and
+  // a deep roadmap should not be able to end the harvest with an overflow.
+  const index = new Map();
+  const low = new Map();
+  const onStack = new Set();
+  const pending = [];
   const cycles = new Set();
-  const walk = (it, path) => {
-    colour.set(it, 1);
-    path.push(it);
-    for (const d of edges.get(it)) {
-      if (colour.get(d) === 1) {
-        for (let i = path.length - 1; i >= 0; i--) {
-          cycles.add(path[i]);
-          if (path[i] === d) break;
-        }
-      } else if (!colour.has(d)) {
-        walk(d, path);
+  let counter = 0;
+  for (const root of items) {
+    if (index.has(root)) continue;
+    const work = [[root, 0]];
+    while (work.length) {
+      const frame = work[work.length - 1];
+      const node = frame[0];
+      if (frame[1] === 0) {
+        index.set(node, counter);
+        low.set(node, counter);
+        counter++;
+        pending.push(node);
+        onStack.add(node);
+      }
+      const deps = edges.get(node);
+      if (frame[1] < deps.length) {
+        const d = deps[frame[1]++];
+        if (!index.has(d)) work.push([d, 0]);
+        else if (onStack.has(d)) low.set(node, Math.min(low.get(node), index.get(d)));
+        continue;
+      }
+      work.pop();
+      if (work.length) {
+        const parent = work[work.length - 1][0];
+        low.set(parent, Math.min(low.get(parent), low.get(node)));
+      }
+      if (low.get(node) === index.get(node)) {
+        const component = [];
+        let popped;
+        do {
+          popped = pending.pop();
+          onStack.delete(popped);
+          component.push(popped);
+        } while (popped !== node);
+        if (component.length > 1) for (const c of component) cycles.add(c);
+        else if (deps.includes(node)) cycles.add(node);
       }
     }
-    path.pop();
-    colour.set(it, 2);
-  };
-  for (const it of items) if (!colour.has(it)) walk(it, []);
+  }
   return cycles;
 }
 // dep:end

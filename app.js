@@ -8486,7 +8486,7 @@
     {
       key: "owner", label: "Owner",
       values: function () {
-        var seen = Object.create(null); // keys are repo+NUL+slug, but no inherited ones
+        var seen = {};
         DATA.items.forEach(function (it) { if (it.owner) seen[it.owner] = 1; });
         return Object.keys(seen).sort().map(function (o) { return { value: o, label: "@" + o }; });
       },
@@ -10503,7 +10503,7 @@
     DATA.items.forEach(function (it) {
       var unresolved = [];
       var live = [];
-      var seen = {};
+      var seen = Object.create(null);
       (it.depends || []).forEach(function (ref) {
         // Two spellings of one reference are one edge — see the same rule in the
         // harvester. Counting both drew the blocker twice and made every count of
@@ -10576,8 +10576,13 @@
         toast("✗ " + err.message, true);
       });
   }
+  // Removing a blocker removes every way it was written. `auth` and `me/repo#auth` are
+  // one reference and the row above draws them as one chip, so a ✕ that took only the
+  // spelling it was rendered from would leave the puck blocked by a blocker it no longer
+  // shows.
   function removeDepend(item, ref) {
-    changeDepends(item, (item.depends || []).filter(function (r) { return r !== ref; }),
+    var key = refKey(item, ref);
+    changeDepends(item, (item.depends || []).filter(function (r) { return refKey(item, r) !== key; }),
       "roadmap: " + item.slug + " no longer blocked by " + ref);
   }
   // Which pucks could block this one: anything but itself, what it already lists,
@@ -10594,7 +10599,14 @@
   // they can still be removed), each with a ✕ when writable, plus "Add".
   function dependsValue(item, editable) {
     var wrap = el("div", "prop-blockers");
+    // One chip per blocker, not per line of `depends:`. Two spellings of one reference
+    // are one blocker everywhere else — `blockedBy` collapses them, the badge counts
+    // them once — so drawing both put two identical chips under a badge that said one.
+    var drawn = Object.create(null);
     (item.depends || []).forEach(function (ref) {
+      var key = refKey(item, ref);
+      if (drawn[key]) return;
+      drawn[key] = 1;
       var d = resolveRef(item, ref);
       var chip = el("span", "dep-chip");
       if (d) {

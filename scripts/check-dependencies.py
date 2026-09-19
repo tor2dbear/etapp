@@ -41,9 +41,17 @@ def fail(check, detail):
     failures.append((check, detail))
 
 
+# What JavaScript's `trim()` removes, spelled out. Python's `str.strip()` is a different
+# set — it takes U+001C…U+001F and U+0085 and leaves U+FEFF — so a reference padded with
+# a BOM would have been trimmed on one side of this comparison and not the other, and the
+# judge would have reddened the gate over correct code.
+JS_TRIM = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007" \
+          "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+
 def key(ref, from_repo):
     """What a reference is, before asking whether anything answers to it."""
-    s = str(ref).strip()
+    s = str(ref).strip(JS_TRIM)
     at = s.find("#")
     return (from_repo + SEP + s) if at == -1 else (s[:at] + SEP + s[at + 1:])
 
@@ -77,32 +85,58 @@ def derive(items):
 
 
 def loops(items, edges):
-    """Every puck on a cycle of the authored graph. Iterative, since a probe should not
-    be able to end a judge with a stack overflow."""
-    colour, found = {}, set()
-    for start in items:
-        if start["id"] in colour:
+    """Every puck that can reach itself.
+
+    Kosaraju, and deliberately not the algorithm the harvester uses. The first version of
+    this walked back edges exactly as the harvester did, agreed with it perfectly, and
+    both were wrong the same way: in `r → a → u → r` with a second way round, `r → v → u`,
+    the puck `v` waits for itself and neither flagged it. A judge that transliterates the
+    code it judges is not a second opinion. Two passes over the graph and its reverse
+    answer the same question by a different route, and a component of more than one puck
+    is exactly a set of pucks that all wait for each other.
+
+    Iterative, because a probe should not be able to end a judge with a stack overflow.
+    """
+    ids = [it["id"] for it in items]
+    out = {i: [d["id"] for d in edges[i]] for i in ids}
+    rev = {i: [] for i in ids}
+    for i in ids:
+        for j in out[i]:
+            rev[j].append(i)
+
+    order, seen = [], set()
+    for start in ids:
+        if start in seen:
             continue
-        stack = [(start, iter(edges[start["id"]]))]
-        path = [start]
-        colour[start["id"]] = 1
+        seen.add(start)
+        stack = [(start, iter(out[start]))]
         while stack:
-            node, it = stack[-1]
-            nxt = next(it, None)
+            node, walk = stack[-1]
+            nxt = next(walk, None)
             if nxt is None:
+                order.append(node)
                 stack.pop()
-                path.pop()
-                colour[node["id"]] = 2
-                continue
-            if colour.get(nxt["id"]) == 1:
-                for back in reversed(path):
-                    found.add(back["id"])
-                    if back["id"] == nxt["id"]:
-                        break
-            elif nxt["id"] not in colour:
-                colour[nxt["id"]] = 1
-                path.append(nxt)
-                stack.append((nxt, iter(edges[nxt["id"]])))
+            elif nxt not in seen:
+                seen.add(nxt)
+                stack.append((nxt, iter(out[nxt])))
+
+    found, assigned = set(), set()
+    for root in reversed(order):
+        if root in assigned:
+            continue
+        assigned.add(root)
+        group, stack = [], [root]
+        while stack:
+            node = stack.pop()
+            group.append(node)
+            for back in rev[node]:
+                if back not in assigned:
+                    assigned.add(back)
+                    stack.append(back)
+        if len(group) > 1:
+            found.update(group)
+        elif root in out[root]:
+            found.add(root)
     return found
 
 
