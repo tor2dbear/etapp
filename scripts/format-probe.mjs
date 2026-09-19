@@ -50,15 +50,11 @@ function assertServedAsClassicScript() {
   if (/\btype\s*=\s*["']module["']/i.test(tag[0])) {
     throw new Error("index.html loads format.js as a module — it does not load at all from file://");
   }
-  // The script *tags*, not the first mention of each name: app.js is named in three
-  // comments above the tags, so comparing `indexOf` on the filenames said the order was
-  // wrong on a file whose order is right. Checking a proxy for the thing is how this
-  // check would have failed for a reason that has nothing to do with the property.
-  const appTag = /<script\b[^>]*\bsrc=["']app\.js["'][^>]*>/i.exec(html);
-  if (!appTag) throw new Error("index.html no longer loads app.js");
-  if (tag.index > appTag.index) {
-    throw new Error("index.html loads format.js after app.js — the global is read before it is written");
-  }
+  // No ordering assertion. There was one — format.js had to be loaded before app.js —
+  // and it guarded a hazard the product made for itself: app.js snapshotted
+  // `globalThis.__PUCK_FORMAT__` into a `var` at IIFE-execution time. `fmt()` reads the
+  // global at call time now, so there is nothing to capture too early and nothing here
+  // to check. Deleting the cause deleted the assertion, which is the better direction.
 }
 
 assertServedAsClassicScript();

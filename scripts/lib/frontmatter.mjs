@@ -17,6 +17,7 @@ const {
   encodeNumber,
   encodeScalar,
   fieldSpan,
+  formatLine,
   formatValue,
   frontmatterRange,
   parseList,
@@ -29,7 +30,7 @@ const {
 } = globalThis.__PUCK_FORMAT__;
 
 export {
-  encodeItem, encodeNumber, encodeScalar, fieldSpan, formatValue, frontmatterRange,
+  encodeItem, encodeNumber, encodeScalar, fieldSpan, formatLine, formatValue, frontmatterRange,
   parseList, removeField, replaceBody, setField, splitText, stripComment, stripQuotes,
 };
 

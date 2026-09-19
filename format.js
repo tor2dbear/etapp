@@ -188,19 +188,16 @@
   }
 
   // A list item, which sits inside `[...]`, so a comma would end it and a bracket or
-  // brace would open something else.
-  // A list item. `tags` and `depends` hold strings and nothing else, so no field here
-  // ever wants the number-or-date reading.
+  // brace would open something else. `tags` and `depends` hold strings and nothing
+  // else, so no field here ever wants the number-or-date reading.
   function encodeItem(value) {
     const s = String(value);
     return bareIsSafe(s, ITEM_PLAIN, false) ? s : JSON.stringify(s);
   }
 
   // A scalar after `key:`, where a comma is ordinary text — `title: Hello, world` needs
-  // no quotes and should not get them.
-  // A scalar after `key:`, where a comma is ordinary text — `title: Hello, world` needs
-  // no quotes. `typed` says the field's schema is a number or a date rather than a
-  // string; see bareIsSafe.
+  // no quotes and should not get them. `typed` says the field's schema is a number or
+  // a date rather than a string; see bareIsSafe.
   function encodeScalar(value, typed = false) {
     const s = String(value);
     return bareIsSafe(s, SCALAR_PLAIN, typed) ? s : JSON.stringify(s);
@@ -239,8 +236,6 @@
     return null;
   }
 
-  // The one name both sides reach for. `__ROADMAP__` next to it on the page is the
-  // same idea: a global is what a classic script can offer.
   // ── which spelling a *field* gets, and how a field is edited in place ────────
   //
   // The half that was missing. This file owned how a *value* is spelled and stopped
@@ -264,12 +259,17 @@
     // encoded rather than pasted in, so a value that needs quoting gets it back on the
     // way out instead of being written bare and read as something else next time.
     if (Array.isArray(value)) return `[${value.map(encodeItem).join(", ")}]`;
-    if (key === "tags") return "[]";
     // A number is written as a number, without a detour through a string that something
     // then has to recognise as numeric again.
     if (typeof value === "number" && Number.isFinite(value)) return encodeNumber(value);
     return encodeScalar(value, TYPED_FIELDS.has(key));
   }
+
+  // A whole frontmatter line. One line of code, and it was written out three times —
+  // twice in app.js and once inlined in the CLI's `cmdNew`, where `status`, `updated`
+  // and `created` were still going in raw because that copy predated `formatValue`.
+  // The birth path deserves the owner as much as the edit path does.
+  function formatLine(key, value) { return `${key}: ${formatValue(key, value)}`; }
 
   // A BOM is dropped before the fence check and carried back out, because the parser
   // tolerates one and an editor that emits one otherwise makes a puck readable but not
@@ -293,7 +293,7 @@
     const { bom, nl, lines } = splitText(text);
     const range = frontmatterRange(lines);
     if (!range) return null;
-    const line = `${key}: ${formatValue(key, value)}`;
+    const line = formatLine(key, value);
     const at = fieldSpan(lines, range[0], range[1], key);
     // The new value is the whole field, so a sequence's items go with the header.
     if (at) lines.splice(at.index, at.count, line);
@@ -325,6 +325,9 @@
     return bom + head.concat([""], body, [""]).join(nl);
   }
 
+  // The one name both sides reach for. `__ROADMAP__` next to it on the page is the
+  // same idea: a global is what a classic script can offer. (This caption had drifted
+  // 85 lines up, where it read as a heading for the section below it.)
   globalThis.__PUCK_FORMAT__ = {
     stripComment,
     splitList,
@@ -335,14 +338,12 @@
     encodeScalar,
     fieldSpan,
     formatValue,
+    formatLine,
     setField,
     removeField,
-    // Exported because the readers need the same fence the writers use. They had
-    // private copies — `roadmap.mjs` for `getField`/`getList`, app.js for
-    // `replaceBody` — and a copy of a rule is a rule that will disagree. It already
-    // did: `replaceBody` kept the BOM-blind fence, so once `setField` learned to
-    // tolerate one, a puck with a BOM became field-editable and still refused
-    // "Edit body".
+    // Exported because the readers need the same fence the writers use: `roadmap.mjs`
+    // for `getField`/`getList`, app.js for the body edit. They each had a copy, and
+    // one of them had already gone stale — see `replaceBody` above.
     splitText,
     frontmatterRange,
     replaceBody,

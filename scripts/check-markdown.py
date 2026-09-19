@@ -234,8 +234,10 @@ def main():
         ("<blockquote>", "a blockquote"),
         ("<pre><code>", "a fenced block"),
         ('<th style="text-align:right">right</th>', "a right-aligned table cell"),
-        ("<p># The board", "an `#` heading shown as typed, outside the subset"),
-        ("<p>##### Fifth level is outside the subset</p>", "an `#####` heading shown as typed"),
+        # One needle per claim. There were two for `#` and two for `#####` — the
+        # fixture's title line and its "Outside the subset" line say the same thing,
+        # and the sandwiched ones are what the promise is actually about, so those
+        # are the ones kept.
         ("<p># A first-level heading is outside the subset</p>",
          "an `#` heading on its own line, with prose immediately above and below it"),
         ("<p>##### A fifth-level heading is outside the subset</p>",

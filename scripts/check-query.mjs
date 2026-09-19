@@ -23,34 +23,22 @@
 // so what is checked is the bytes the browser runs. A missing marker is a hard failure.
 //
 // Node builtins only, like the rest of scripts/.
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { liftRegion } from "./lib/region.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const BEGIN = "// q:begin";
-const END = "// q:end";
+// The whole app.js source, read once — section 6 below scans it for unguarded URL
+// decodes and used to read the 656 KB file a second time to do so.
+const { src: APP_SRC, region: GRAMMAR } = liftRegion("app.js", "q");
 
 function loadGrammar() {
-  const lines = fs.readFileSync(path.join(ROOT, "app.js"), "utf8").split("\n");
-  const from = lines.findIndex((l) => l.trim() === BEGIN);
-  const to = lines.findIndex((l) => l.trim() === END);
-  if (from < 0 || to < 0 || to <= from) {
-    throw new Error(
-      `app.js no longer carries a ${BEGIN} … ${END} fence around the query grammar ` +
-        `(found ${from < 0 ? "no begin" : "begin at " + (from + 1)}, ` +
-        `${to < 0 ? "no end" : "end at " + (to + 1)}). ` +
-        "Restore the markers or this check silently stops checking anything."
-    );
-  }
-  // The two names the fence reaches for and does not define. Named here rather than
-  // guessed: if the region grows a third, it throws instead of being quietly skipped.
-  const prelude =
-    "var TERMINAL = { done: 1, cancelled: 1 };\n" +
-    "var isFlagged = function (i) { return !!i.flagged; };\n";
-  const region = lines.slice(from + 1, to).join("\n");
+  // No prelude. There was one, supplying `TERMINAL` and `isFlagged` by hand because
+  // they sat outside the fence — and the hand-written `isFlagged` was `!!i.flagged`,
+  // a field app.js never sets, so `is:flagged` was checked against a predicate that
+  // could not fire. Both definitions moved inside the fence instead. If the region
+  // ever reaches for a name it does not define, this throws rather than being handed
+  // a stub that agrees with nothing.
+  // eslint-disable-next-line no-new-func
   return new Function(
-    `"use strict";${prelude}${region};` +
+    `"use strict";${GRAMMAR};` +
       "return { parseQuery, serializeTerms, tokenize, runQuery, FIELDS, IS_STATES, FIELD_ALIAS, IS_ALIAS };"
   )();
 }
@@ -58,6 +46,10 @@ function loadGrammar() {
 const G = loadGrammar();
 const rt = (s) => G.serializeTerms(G.parseQuery(s));
 
+// One bail-out threshold. It was `> 8` in two places and `> 12` in a third, with
+// nothing saying why they differed — a fuzz that breaks tends to break in floods, and
+// the first handful name the defect as well as a hundred do.
+const BAIL = 8;
 const failures = [];
 const fail = (check, detail) => failures.push([check, detail]);
 
@@ -119,17 +111,31 @@ for (const s of INPUTS) {
     once = rt(s);
   } catch (e) {
     fail("throws", `parseQuery/serializeTerms threw on ${JSON.stringify(s)} — ${e.message}`);
-    if (failures.length > 8) break;
+    if (failures.length > BAIL) break;
     continue;
   }
   try {
     twice = rt(once);
   } catch (e) {
     fail("throws", `the second pass threw on ${JSON.stringify(once)} — ${e.message}`);
-    if (failures.length > 8) break;
+    if (failures.length > BAIL) break;
     continue;
   }
   checked++;
+  // ── 3. Nothing a person typed silently disappears ──────────────────────────
+  // "Anything that isn't a known field or `is:` state stays free text, so a typo
+  // narrows the search instead of silently disappearing." Held to token count: a
+  // tokenized input must produce at least as many terms as it produced tokens. In
+  // this loop rather than its own: it needs the same `parseQuery` the round trip
+  // already ran, and a second pass over 200k inputs cost 253ms to re-derive it.
+  const tokens = G.tokenize(s).length;
+  if (tokens) {
+    const terms = G.parseQuery(s).length;
+    if (terms < tokens) {
+      fail("vanishing", `${JSON.stringify(s)} has ${tokens} token(s) but only ${terms} term(s)`);
+      if (failures.length > BAIL) break;
+    }
+  }
   // ── 2. serialize∘parse is a fixed point ────────────────────────────────────
   if (once !== twice) {
     fail(
@@ -137,23 +143,10 @@ for (const s of INPUTS) {
       `${JSON.stringify(s)} serializes to ${JSON.stringify(once)} and then to ` +
         `${JSON.stringify(twice)} — the round trip rewrites the query`
     );
-    if (failures.length > 8) break;
+    if (failures.length > BAIL) break;
   }
 }
 
-// ── 3. Nothing a person typed silently disappears ────────────────────────────
-// "Anything that isn't a known field or `is:` state stays free text, so a typo
-// narrows the search instead of silently disappearing." Held to token count: a
-// tokenized input must produce at least as many terms as it produced tokens.
-for (const s of INPUTS) {
-  const tokens = G.tokenize(s).length;
-  if (!tokens) continue;
-  const terms = G.parseQuery(s).length;
-  if (terms < tokens) {
-    fail("vanishing", `${JSON.stringify(s)} has ${tokens} token(s) but only ${terms} term(s)`);
-    if (failures.length > 12) break;
-  }
-}
 
 // ── 4. The documented grammar still means what AGENTS.md says ────────────────
 const MEANS = [
@@ -196,6 +189,52 @@ for (const [q, want] of [["don't", true], ["don't ship", true], ["ship", true], 
   if (hit !== want) fail("search", `${JSON.stringify(q)} ${hit ? "matches" : "does not match"} ${JSON.stringify(ITEM.title)}, expected the opposite`);
 }
 
+// ── 5b. Every `is:` state is a real predicate that runs ──────────────────────
+// The grammar checks above parse `is:flagged` and serialize it back without ever
+// *calling* the predicate — a name in `IS_STATES` could be undefined, or throw, and
+// nothing here would notice. That is not hypothetical: the probe used to supply a
+// hand-written `isFlagged` reading a field app.js never sets, so the state was
+// permanently false and this file was the last place that would have said so.
+//
+// Anchored by name, so a state deleted from `IS_STATES` fails here rather than
+// quietly leaving the grammar. These are the ones AGENTS.md and the sidebar rely on.
+const IS_NAMES = [
+  "ready", "blocked", "flagged", "stale", "adapted", "done",
+  "blocking", "parent", "member", "standalone",
+];
+const SAMPLES = [
+  { id: "bare", status: "now", signals: [], blockedBy: [], blocks: [], children: [], parentRef: null, native: true },
+  { id: "rich", status: "done", signals: [{ type: "stale" }], blockedBy: ["x"], blocks: ["y"],
+    children: ["c"], parentRef: "o/r#p", native: false },
+];
+for (const name of IS_NAMES) {
+  const pred = G.IS_STATES[name];
+  if (typeof pred !== "function") {
+    fail("is-states", `IS_STATES has no ${name} — the grammar lost a state the board offers`);
+    continue;
+  }
+  for (const item of SAMPLES) {
+    let got;
+    try {
+      got = pred(item);
+    } catch (e) {
+      fail("is-states", `is:${name} threw on the ${item.id} sample — ${e.message}`);
+      continue;
+    }
+    if (typeof got !== "boolean") {
+      fail("is-states", `is:${name} answered ${String(got)} on the ${item.id} sample, not a boolean`);
+    }
+  }
+}
+// And the two that a stub would have got wrong: they have to disagree across the two
+// samples, or the predicate is not reading anything.
+for (const name of ["flagged", "blocked", "blocking", "parent", "member", "adapted", "done"]) {
+  const pred = G.IS_STATES[name];
+  if (typeof pred === "function" && pred(SAMPLES[0]) === pred(SAMPLES[1])) {
+    fail("is-states", `is:${name} answers the same for an empty puck and a fully-linked one — it is not reading the item`);
+  }
+}
+
 // ── 6. Nothing decodes the URL bare ──────────────────────────────────────────
 // A source check, not a behavioural one, because the behaviour it guards is a thrown
 // URIError in a browser and this file runs in Node. `decodeURIComponent` throws on a
@@ -209,7 +248,7 @@ for (const [q, want] of [["don't", true], ["don't ship", true], ["ship", true], 
 // `location.hash` is handed to a bare decode. The demo interceptor's own decodes are
 // out of scope on purpose: they read URLs the app itself just encoded.
 {
-  const src = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
+  const src = APP_SRC;
   if (!/function safeDecode\(/.test(src)) {
     fail("url-decode", "app.js no longer defines safeDecode — the URL readers are unguarded again");
   }
@@ -236,5 +275,6 @@ if (failures.length) {
 console.log(
   `✓ query: ${checked} inputs parse without throwing and round-trip to a fixed point, ` +
     `no token vanishes, ${MEANS.length} documented forms parse as AGENTS.md describes, ` +
+    `${IS_NAMES.length} \`is:\` states answer as predicates rather than as stubs, ` +
     `an apostrophe finds the puck that carries one, and nothing decodes the URL bare`
 );

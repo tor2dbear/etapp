@@ -30,6 +30,16 @@ def fail(check, detail):
     failures.append((check, detail))
 
 
+def frontmatter(text):
+    """The frontmatter block of a puck, as PyYAML reads it.
+
+    One helper because there were four spellings of this line in this file and two of
+    them stripped a BOM while two did not — divergent copies of a three-token
+    expression, in the file whose job is to catch exactly that elsewhere.
+    """
+    return yaml.safe_load(text.lstrip("\ufeff").split("---")[1])
+
+
 def load(line):
     """Parse one `key: value` line, or raise."""
     return list(yaml.safe_load(line).values())[0]
@@ -53,15 +63,23 @@ def normalize(x):
 # by name rather than as a Python traceback: the failure it guards against is a board
 # where every write throws while all five gates stay green, and that deserves a
 # sentence, not a stack.
-_run = subprocess.run(
-    ["node", str(HERE / "format-probe.mjs")],
-    capture_output=True, text=True, timeout=120,
-)
+try:
+    _run = subprocess.run(
+        ["node", str(HERE / "format-probe.mjs")],
+        capture_output=True, text=True, timeout=120,
+    )
+except subprocess.TimeoutExpired:
+    # The sibling judge catches this and this one did not — `timeout=` was copied over
+    # and the `except` was not, so a hung probe would have ended in a traceback where
+    # check-markdown.py prints a sentence. Copy-drift, in the file about copy-drift.
+    print("✗ format-probe.mjs did not finish in 120s", file=sys.stderr)
+    sys.exit(1)
 if _run.returncode != 0:
     msg = next((l for l in _run.stderr.splitlines() if l.startswith("Error:")), "")
-    print("✗ format-probe.mjs failed" + (f" — {msg[len('Error: '):]}" if msg else ":"), file=sys.stderr)
-    if not msg:
-        print(_run.stderr.strip(), file=sys.stderr)
+    if msg:
+        print(f"✗ format-probe.mjs failed — {msg[len('Error: '):]}", file=sys.stderr)
+    else:
+        print("✗ format-probe.mjs failed:\n" + _run.stderr.strip(), file=sys.stderr)
     sys.exit(1)
 probe = json.loads(_run.stdout)
 
@@ -138,7 +156,6 @@ for row in probe["lines"]:
 #    where the author typed three characters — a defect that reached review once
 #    already and that checks 1-5 cannot see. So this drives the real commands and
 #    judges the files they leave behind.
-import os
 import tempfile
 
 CLI = str(HERE / "roadmap.mjs")
@@ -152,7 +169,7 @@ def run(cwd, *args):
 
 
 def frontmatter_of(path):
-    return yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1])
+    return frontmatter(path.read_text(encoding="utf-8"))
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -203,7 +220,7 @@ with tempfile.TemporaryDirectory() as tmp:
     made = sorted((tmp / "roadmap").glob("*.md"))
     for path in made:
         try:
-            yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1])
+            frontmatter(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as e:
             fail("cli", f"{path.name} is not valid YAML — {type(e).__name__}")
 
@@ -214,9 +231,9 @@ with tempfile.TemporaryDirectory() as tmp:
 # as a file PyYAML refuses, committed to somebody else's repo. Asked of PyYAML rather
 # than of our own reader, because "the wrong type" is exactly what our reader was
 # lenient about.
-# Anchored by key, the way check-markdown.py anchors its case sets. A list the judge
-# merely iterates can be shortened without anything saying so, and the success line's
-# count moves along with the deletion — the check narrows and still reads as a pass.
+# Anchored by key and by count, for the reason check-markdown.py sets out where it
+# does the same thing: a list the judge merely iterates can be shortened without
+# anything saying so.
 WRITER_KEYS = {"parent", "agent", "owner", "priority", "title", "status",
                "order", "issue", "target", "updated", "tags", "depends"}
 MINIMUMS = {"strings": 48, "numbers": 11, "dates": 2, "lines": 22, "writes": 20}
@@ -239,7 +256,7 @@ for w in probe["writes"]:
         fail("writer", f"{where}: setField refused a puck that has frontmatter")
         continue
     try:
-        data = yaml.safe_load(w["file"].lstrip("\ufeff").split("---")[1])
+        data = frontmatter(w["file"])
     except yaml.YAMLError as e:
         fail("writer", f"{where}: PyYAML refuses the file the writer produced — {type(e).__name__}")
         continue
@@ -254,39 +271,50 @@ for w in probe["writes"]:
         if k != w["key"] and data.get(k) != want:
             fail("writer", f"{where}: the edit disturbed {k} — {data!r}")
 
-# A BOM is tolerated and carried back out, on both the write and the remove. An editor
-# that emits one used to make a puck readable but not editable from the board.
-for name, text in (("setField", probe["bom"]), ("removeField", probe["bomRemoved"])):
+# The three entry points, asked the same four questions in one table. They were three
+# blocks with the BOM assertion written out twice in two wordings and the "invented
+# frontmatter" assertion split across two near-identical ifs.
+#
+# A BOM is tolerated and carried back out by all of them: an editor that emits one used
+# to make a puck readable but not editable from the board, and `replaceBody` — the last
+# copy of the fence — still refused "Edit body" after `setField` had learned.
+#
+#   name          the probe key        must contain      must not contain
+FENCE_CASES = [
+    ("setField",          "bom",         "status: next",   None),
+    ("removeField",       "bomRemoved",  None,             "status:"),
+    ("replaceBody",       "bodyBom",     "a new body",     None),
+]
+for name, key, wanted, unwanted in FENCE_CASES:
+    text = probe[key]
     if text is None:
         fail("writer", f"{name} refuses a puck that starts with a BOM")
-    elif not text.startswith("\ufeff"):
-        fail("writer", f"{name} dropped the BOM instead of carrying it back out")
-if probe["bom"] and "status: next" not in probe["bom"]:
-    fail("writer", "setField did not write the field on a BOM-prefixed puck")
-if probe["bomRemoved"] and "status:" in probe["bomRemoved"].split("---")[1]:
-    fail("writer", "removeField did not remove the field on a BOM-prefixed puck")
-# Text that is not a puck answers null, so each caller can say so in its own words.
-if probe["noFrontmatter"] is not None:
-    fail("writer", "setField invented frontmatter for a file that has none")
-if probe["bodyNoFrontmatter"] is not None:
-    fail("writer", "replaceBody invented frontmatter for a file that has none")
-
-# The body edit asks the same fence question, and answered it separately until it
-# drifted: a BOM puck was field-editable and still refused "Edit body".
-for name, text, bom in (("body", probe["body"], False), ("bodyBom", probe["bodyBom"], True)):
-    if text is None:
-        fail("writer", f"replaceBody refused a puck{' with a BOM' if bom else ''}")
         continue
-    if bom and not text.startswith("\ufeff"):
-        fail("writer", "replaceBody dropped the BOM instead of carrying it back out")
+    if not text.startswith("\ufeff"):
+        fail("writer", f"{name} dropped the BOM instead of carrying it back out")
+    if wanted and wanted not in text:
+        fail("writer", f"{name} did not write {wanted!r} on a BOM-prefixed puck")
+    if unwanted and unwanted in text.split("---")[1]:
+        fail("writer", f"{name} left {unwanted!r} in the frontmatter of a BOM-prefixed puck")
+
+# Text that is not a puck answers null, so each caller can say so in its own words.
+for name, key in (("setField", "noFrontmatter"), ("replaceBody", "bodyNoFrontmatter")):
+    if probe[key] is not None:
+        fail("writer", f"{name} invented frontmatter for a file that has none")
+
+# The body edit asks the same fence question and has to leave the frontmatter alone.
+body = probe["body"]
+if body is None:
+    fail("writer", "replaceBody refused a puck that has frontmatter")
+else:
     try:
-        data = yaml.safe_load(text.lstrip("\ufeff").split("---")[1])
+        data = frontmatter(body)
     except yaml.YAMLError as e:
         fail("writer", f"replaceBody produced frontmatter PyYAML refuses — {type(e).__name__}")
-        continue
-    if data.get("title") != "A puck" or data.get("status") != "now":
+        data = None
+    if data is not None and (data.get("title") != "A puck" or data.get("status") != "now"):
         fail("writer", f"replaceBody disturbed the frontmatter — {data!r}")
-    if "a new body" not in text:
+    if "a new body" not in body:
         fail("writer", "replaceBody did not write the body")
 
 if failures:

@@ -25,26 +25,10 @@
 // Node builtins only, like the rest of scripts/.
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const BEGIN = "// md:begin";
-const END = "// md:end";
+import { liftRegion, ROOT } from "./lib/region.mjs";
 
 function loadRenderer() {
-  const src = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
-  const lines = src.split("\n");
-  const from = lines.findIndex((l) => l.trim() === BEGIN);
-  const to = lines.findIndex((l) => l.trim() === END);
-  if (from < 0 || to < 0 || to <= from) {
-    throw new Error(
-      `app.js no longer carries a ${BEGIN} … ${END} fence around the markdown renderer ` +
-        "(found " + (from < 0 ? "no begin" : "begin at " + (from + 1)) + ", " +
-        (to < 0 ? "no end" : "end at " + (to + 1)) + "). " +
-        "Restore the markers or this check silently stops checking anything."
-    );
-  }
-  const region = lines.slice(from + 1, to).join("\n");
+  const { region } = liftRegion("app.js", "md");
   // eslint-disable-next-line no-new-func
   return new Function(`"use strict";${region};return { renderMd: renderMd };`)().renderMd;
 }

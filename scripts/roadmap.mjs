@@ -27,8 +27,8 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
 import {
-  stripComment, stripQuotes, parseList, encodeItem, encodeScalar, encodeNumber, fieldSpan,
-  formatValue, setField as setFieldIn, removeField as removeFieldIn,
+  stripComment, stripQuotes, parseList, fieldSpan,
+  formatValue, formatLine, setField as setFieldIn, removeField as removeFieldIn,
   splitText, frontmatterRange,
 } from "./lib/frontmatter.mjs";
 
@@ -69,13 +69,10 @@ const cmd = pos.shift();
 // so every mutating command failed with "no YAML frontmatter found" on a puck the
 // board was happily showing — the editors that emit one made a puck readable but not
 // editable. The BOM is carried back out so an edit does not silently rewrite it.
-// The edit itself lives in format.js now, with the quoting rules it depends on. It was
-// here, and the board kept its own copy — which had neither this file's BOM fix nor its
-// field-type encoding. Measured against PyYAML, seven of eight fields the board wrote
-// came back as the wrong type, or as a file PyYAML refuses outright, committed to
-// somebody else's repo. A rule two surfaces have to agree on is one implementation
-// short; that is the argument format.js exists for, and the writer had been left out
-// of it. These two keep the CLI's own words for a file that is not a puck.
+// The edit itself lives in format.js now, with the quoting rules it depends on — it
+// was here, and the board kept a copy that had drifted (the story is in format.js,
+// above `formatValue`). These two wrappers keep the CLI's own words for a file that
+// is not a puck.
 function setField(text, key, value) {
   const out = setFieldIn(text, key, value);
   if (out == null) fail("no YAML frontmatter found — is this a puck?");
@@ -154,13 +151,16 @@ async function cmdNew() {
   await mkdir(DIR, { recursive: true });
   if (puckPath(slug)) fail(`a puck "${slug}" already exists`);
 
+  // Through the owner, every line. `status`, `updated` and `created` were going in raw
+  // here — safe only because STATUSES is closed and TODAY is ISO, which is the kind of
+  // "safe today" this review keeps finding on the other side of.
   const fm = [
     "---",
-    `title: ${formatValue("title", title)}`,
-    `status: ${status}`,
-    ...(tags.length ? [`tags: ${formatValue("tags", tags)}`] : []),
-    `updated: ${TODAY}`,
-    `created: ${TODAY}`,
+    formatLine("title", title),
+    formatLine("status", status),
+    ...(tags.length ? [formatLine("tags", tags)] : []),
+    formatLine("updated", TODAY),
+    formatLine("created", TODAY),
     "---",
     "",
     "## Goal",

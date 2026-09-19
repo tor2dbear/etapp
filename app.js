@@ -47,7 +47,8 @@
 
   var STATUS_LABEL = { now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" };
   // Terminal statuses: settled, hidden from the active board unless "show done" is on.
-  var TERMINAL = { done: 1, cancelled: 1 };
+  // `TERMINAL` lives inside the `q:` fence with the query grammar that reads it —
+  // see the note there. Hoisted `var`, and every read is inside a function.
   // Priority is an optional, ordered field (highest → lowest). Absence = none.
   var PRIORITIES = ["urgent", "high", "medium", "low"];
   var PRIORITY_LABEL = { urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
@@ -183,7 +184,7 @@
     if (isNaN(t)) return null;
     return Math.floor((Date.now() - t) / 86400000);
   }
-  function isFlagged(item) { return (item.signals || []).length > 0; }
+  // `isFlagged` lives inside the `q:` fence too — see the note there.
   function itemById(id) {
     for (var i = 0; i < DATA.items.length; i++) if (DATA.items[i].id === id) return DATA.items[i];
     return null;
@@ -533,11 +534,19 @@
   // to learn it, and it is the same string an agent or a saved view writes.
   // `scripts/check-query.mjs` lifts everything between the two markers below and runs
   // it in Node, so the grammar's invariants are checked against the bytes the browser
-  // runs. It supplies exactly two names from outside the fence — `isFlagged` and
-  // `TERMINAL`, both reached only from `IS_STATES` — and anything else moved out of it
-  // fails the probe loudly rather than quietly leaving the check. Whole-line markers,
-  // so they carry no prose.
+  // runs. Nothing is supplied from outside: anything moved out of the fence fails the
+  // probe loudly rather than quietly leaving the check. Whole-line markers, so they
+  // carry no prose.
+  //
+  // `TERMINAL` and `isFlagged` are in here rather than beside `STATUS_LABEL` and the
+  // signal code, which is where they read more naturally, because the probe used to
+  // hand-write them instead — and its `isFlagged` was `!!i.flagged`, a field nothing
+  // in this file ever sets. So `is:flagged` was evaluated against a predicate that
+  // could never be true, and the check would have stayed green if the real one broke.
+  // A stub is a second implementation; this file has spent six rounds on that lesson.
   // q:begin
+  var TERMINAL = { done: 1, cancelled: 1 };
+  function isFlagged(item) { return (item.signals || []).length > 0; }
   function lower(s) { return String(s).toLowerCase(); }
   function shortRepo(r) { return String(r).split("/").pop(); }
 
@@ -9545,9 +9554,9 @@
         if (DATA.items[i].repo === repo && DATA.items[i].sourcePath === path) { it = DATA.items[i]; break; }
       }
       if (!it) return "---\ntitle: Untitled\nstatus: inbox\nupdated: " + today() + "\n---\n\n";
-      // Quoted the same way `puckTemplate` quotes it — `formatValue` lives in the CLI,
-      // not here, and reaching for it threw the first time this ran.
-      var v = function (k, x) { return k + ": " + fmt().formatValue(k, x); };
+      // Every line through the owner, the same as a real write — the demo has to
+      // produce the file the product would, or it demonstrates something else.
+      var v = function (k, x) { return fmt().formatLine(k, x); };
       var fm = ["---", v("title", it.title), v("status", it.status)];
       if (it.tags && it.tags.length) fm.push(v("tags", it.tags));
       if (it.priority) fm.push(v("priority", it.priority));
@@ -9766,11 +9775,15 @@
   // token is not a CORS credential, so a board opened off the filesystem with a token
   // can reach the Contents API. It would then have had the edit controls and no rules
   // to write with.
-  var FORMAT = globalThis.__PUCK_FORMAT__;
-
+  // Read at call time, not snapshotted. A `var FORMAT = globalThis.__PUCK_FORMAT__`
+  // captured at IIFE-execution time made the *order* of the two script tags
+  // load-bearing, and the format probe had grown an assertion to guard that order.
+  // Nothing calls this before a render or a write, so there is nothing to capture too
+  // early — and one fewer property for a check to have to know about.
   function fmt() {
-    if (!FORMAT) throw new Error("format.js did not load — the page is missing its script tag");
-    return FORMAT;
+    var f = globalThis.__PUCK_FORMAT__;
+    if (!f) throw new Error("format.js did not load — the page is missing its script tag");
+    return f;
   }
 
 
@@ -9778,23 +9791,21 @@
   // any more — the same function, from format.js, which is what a mirror should have
   // been all along.
   //
-  // It was a copy, and it had drifted exactly where a copy does. The CLI encodes a
-  // value by what the *field* is (`formatValue`), and this wrote `key + ": " + value`
-  // raw; the CLI tolerates a leading BOM, and this returned null and refused the edit.
-  // Both were fixed in #1, in `scripts/` only, and #2 moved *value* spelling into
-  // format.js while leaving the field-level decision behind — so the board reached the
-  // owner for lists — through a `yamlList` helper that sat two functions up carrying a
-  // comment about exactly why encoding matters — and wrote every scalar bare. That
-  // helper is gone now: `formatValue` encodes a list as readily as a scalar, so the
-  // board no longer needs a second name for half the question.
+  // It was a copy, and it had drifted exactly where a copy does: the CLI encoded a
+  // value by what the *field* is and tolerated a leading BOM, and this did neither —
+  // seven of eight fields came back wrong to PyYAML, two of them as a file PyYAML
+  // refuses, committed to somebody else's repo. The measurements and the reason the
+  // ownership stopped halfway are written down in format.js, above `formatValue`.
   //
-  // Measured with PyYAML, seven of eight fields came back wrong: `parent: release #1`
-  // read as `release`, `agent: true` as a boolean, `owner: no` as `false`,
-  // `owner: 2026-01-01` as a date, and `priority: @urgent` and `parent: a: b` produced
-  // a file PyYAML refuses outright — committed to somebody else's repo, where the
-  // harvester and their own tooling have to read it.
+  // The null is turned into a throw here rather than at each call site: eight of them
+  // wrote `if (out == null) throw new Error("no frontmatter")` and then, on the very
+  // next line, called this again for `updated` without checking. One place to say it,
+  // and the unchecked line is covered too. (`scripts/roadmap.mjs` reached the same
+  // shape with `fail()`.)
   function editFrontmatter(text, key, value) {
-    return fmt().setField(text, key, value);
+    var out = fmt().setField(text, key, value);
+    if (out == null) throw new Error("no frontmatter");
+    return out;
   }
 
   // Write several frontmatter fields in ONE commit (a null value removes the key).
@@ -9816,7 +9827,6 @@
           // distinction `order` has. `10.5` is a number; `"10.5"` is a string that
           // PyYAML hands back as a string, beside integer neighbours.
           out = fields[k] == null ? removeFrontmatter(out, k) : editFrontmatter(out, k, fields[k]);
-          if (out == null) throw new Error("no frontmatter");
         }
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -9840,7 +9850,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = editFrontmatter(text, "status", status);
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -9993,10 +10002,13 @@
       });
   }
 
-  // Remove a frontmatter field line (no-op if absent) — mirrors roadmap.mjs
-  // removeField. Used to clear priority (absence of the field = no priority).
+  // Remove a frontmatter field line (no-op if absent) — from format.js, the same
+  // function the CLI calls. It used to mirror `roadmap.mjs`; mirroring is what
+  // drifted. Used to clear priority (absence of the field = no priority).
   function removeFrontmatter(text, key) {
-    return fmt().removeField(text, key);
+    var out = fmt().removeField(text, key);
+    if (out == null) throw new Error("no frontmatter");
+    return out;
   }
 
   // Commit a priority change via the Contents API. A null level clears the field.
@@ -10011,7 +10023,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = priority ? editFrontmatter(text, "priority", priority) : removeFrontmatter(text, "priority");
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10096,7 +10107,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = agent ? editFrontmatter(text, "agent", agent) : removeFrontmatter(text, "agent");
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10138,7 +10148,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = number ? editFrontmatter(text, "issue", number) : removeFrontmatter(text, "issue");
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10161,7 +10170,6 @@
         // The list itself, not a rendered one: `formatValue` encodes each item, and a
         // pre-rendered `[a, b]` would reach `encodeScalar` and come back quoted whole.
         var out = tags.length ? editFrontmatter(text, "tags", tags) : removeFrontmatter(text, "tags");
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10197,7 +10205,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = date ? editFrontmatter(text, "target", date) : removeFrontmatter(text, "target");
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10862,13 +10869,6 @@
     }).catch(function (err) { toast("✗ " + (err && err.message || "issue failed"), true); });
   }
 
-  // Replace the body, keeping the frontmatter byte-identical — from format.js, which
-  // owns where the frontmatter ends. This was a fourth copy of that fence and it had
-  // already gone stale: once `setField` learned to tolerate a BOM, a puck with one was
-  // field-editable and still refused "Edit body" with "no frontmatter".
-  function replaceBody(text, newBody) {
-    return fmt().replaceBody(text, newBody);
-  }
 
   // Delete a puck: remove its markdown file from the source repo (read sha →
   // DELETE). Git-native — the file is gone from the board, git history keeps it.
@@ -10920,7 +10920,9 @@
     return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
-        var out = replaceBody(b64decode(info.content), newBody);
+        // The owner's function, called directly: the one-line wrapper that used to sit
+        // here shadowed the name it delegated to and had this single caller.
+        var out = fmt().replaceBody(b64decode(info.content), newBody);
         if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -11080,7 +11082,7 @@
     // here, so a value that needs quoting needs it on the first write as much as on
     // the tenth — and `agent` and `parent` are the two the create path can carry that
     // nothing in a closed set constrains.
-    var v = function (k, x) { return k + ": " + fmt().formatValue(k, x); };
+    var v = function (k, x) { return fmt().formatLine(k, x); };
     var lines = ["---", v("title", title), v("status", status)];
     if (tags.length) lines.push(v("tags", tags));
     if (agent) lines.push(v("agent", agent));
