@@ -316,6 +316,7 @@ function materialize(copy, src) {
 }
 
 function clone(dir) {
+  const special = [];
   fs.cpSync(ROOT, dir, {
     recursive: true,
     verbatimSymlinks: true, // every one of them is replaced below, by materialize()
@@ -331,8 +332,16 @@ function clone(dir) {
       // Nothing here installs them, but a contributor's `npm i` or a local harvest
       // would otherwise be copied once per mutation. No gate reads them.
       !SKIP_COPY.has(path.basename(src)) &&
-      copyable(src),
+      (copyable(src) || (special.push(path.relative(ROOT, src)), false)),
   });
+  // A special file cannot be copied, but its *presence* is something the bundle gate
+  // reads off the disk, so an empty regular file stands in for it. Omitting it outright
+  // was wrong, and wrong in the way this whole file is about: a root-level FIFO made the
+  // real bundle gate red while the copy's baseline came back green, so the guard that
+  // exists to refuse a red tree was certifying against a tree that was not the tree.
+  // With the placeholder every gate that looks at paths answers as it does out there,
+  // including when the answer is a failure — and then nothing below runs, correctly.
+  for (const rel of special) fs.writeFileSync(inside(dir, rel), "");
   // The last step of copying, not the first step of indexing: run before `git init`, so
   // there is no `.git` in the copy for it to walk.
   materialize(dir, ROOT);
