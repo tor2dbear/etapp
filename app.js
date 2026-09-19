@@ -1,4 +1,11 @@
 /* Roadmap aggregator UI. Reads window.__ROADMAP__ (from data/roadmap.js). */
+
+// How a value is spelled in a puck — quoting, list separators, which lines a field
+// occupies. The same module the CLI and the harvester use, served to the browser for
+// this import, because the board commits pucks to other people's repos and a second
+// answer to "does this need quotes" is how it started writing files YAML rejects.
+import { encodeItem, encodeScalar, fieldSpan } from "./format.js";
+
 (function () {
   "use strict";
 
@@ -9464,15 +9471,15 @@
       if (!it) return "---\ntitle: Untitled\nstatus: inbox\nupdated: " + today() + "\n---\n\n";
       // Quoted the same way `puckTemplate` quotes it — `formatValue` lives in the CLI,
       // not here, and reaching for it threw the first time this ran.
-      var t = /[:#]/.test(it.title) ? JSON.stringify(it.title) : it.title;
+      var t = encodeScalar(it.title);
       var fm = ["---", "title: " + t, "status: " + it.status];
-      if (it.tags && it.tags.length) fm.push("tags: [" + it.tags.join(", ") + "]");
+      if (it.tags && it.tags.length) fm.push("tags: " + yamlList(it.tags));
       if (it.priority) fm.push("priority: " + it.priority);
       if (it.agent) fm.push("agent: " + it.agent);
       if (it.owner) fm.push("owner: " + it.owner);
       if (it.target) fm.push("target: " + it.target);
       if (it.parent) fm.push("parent: " + it.parent);
-      if (it.depends && it.depends.length) fm.push("depends: [" + it.depends.join(", ") + "]");
+      if (it.depends && it.depends.length) fm.push("depends: " + yamlList(it.depends));
       if (it.issue) fm.push("issue: " + it.issue);
       fm.push("updated: " + (it.updated || today()));
       if (it.created) fm.push("created: " + it.created);
@@ -9672,29 +9679,11 @@
     throw e;
   }
 
-  // How many lines a frontmatter field occupies. A block sequence is one field spread
-  // over several lines, so an edit has to take all of them. Replacing the header alone
-  // left `- alpha` / `- beta` stranded beneath a new inline value, where the parser
-  // ignores them: the blockers vanished from a puck this board had just shown them on,
-  // and the file stopped being YAML. Mirrors fieldLines in scripts/roadmap.mjs — and
-  // has to keep mirroring it, because the two writers edit the same files.
-  function fmFieldSpan(lines, end, key) {
-    for (var i = 1; i < end; i++) {
-      if (lines[i].indexOf(key + ":") !== 0) continue;
-      var v = lines[i].slice(key.length + 1).trim();
-      var last = i;
-      // Items continue a key only while its own value is empty — a comment counts as
-      // empty — and a blank or comment line between items does not end the run.
-      if (v === "" || v.charAt(0) === "#") {
-        for (var j = i + 1; j < end; j++) {
-          if (/^\s*-\s+/.test(lines[j])) { last = j; continue; }
-          if (!lines[j].trim() || lines[j].replace(/^\s+/, "").charAt(0) === "#") continue;
-          break;
-        }
-      }
-      return { index: i, count: last - i + 1 };
-    }
-    return null;
+  // A list field's line. Every item encoded, never pasted in: a tag reading
+  // `release #1` written bare turns the rest of the line into a comment, and the next
+  // harvest publishes the tag as `"[release"`.
+  function yamlList(values) {
+    return "[" + values.map(encodeItem).join(", ") + "]";
   }
 
   // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
@@ -9706,7 +9695,7 @@
     for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
     if (end < 0) return null;
     var out = key + ": " + value;
-    var at = fmFieldSpan(lines, end, key);
+    var at = fieldSpan(lines, 1, end, key);
     // The new value is the whole field, so a sequence's items go with its header.
     if (at) lines.splice(at.index, at.count, out);
     else lines.splice(end, 0, out);
@@ -9914,7 +9903,7 @@
     var end = -1;
     for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
     if (end < 0) return null;
-    var at = fmFieldSpan(lines, end, key);
+    var at = fieldSpan(lines, 1, end, key);
     if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
     return lines.join(nl);
   }
@@ -10078,7 +10067,7 @@
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
-        var out = tags.length ? editFrontmatter(text, "tags", "[" + tags.join(", ") + "]") : removeFrontmatter(text, "tags");
+        var out = tags.length ? editFrontmatter(text, "tags", yamlList(tags)) : removeFrontmatter(text, "tags");
         if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -10443,7 +10432,7 @@
     return false;
   }
   function commitDepends(item, refs, message) {
-    return commitFields(item, { depends: refs.length ? "[" + refs.join(", ") + "]" : null }, message);
+    return commitFields(item, { depends: refs.length ? yamlList(refs) : null }, message);
   }
   // `refs` is the whole new list — one field, one commit, like every other write.
   function changeDepends(item, refs, message) {
@@ -11000,9 +10989,9 @@
     return body;
   }
   function puckTemplate(title, status, tags, agent, context, parentRef) {
-    var t = /[:#]/.test(title) ? JSON.stringify(title) : title;
+    var t = encodeScalar(title);
     var lines = ["---", "title: " + t, "status: " + status];
-    if (tags.length) lines.push("tags: [" + tags.join(", ") + "]");
+    if (tags.length) lines.push("tags: " + yamlList(tags));
     if (agent) lines.push("agent: " + agent);
     // Membership is authored on the child, so a puck created *from* its parent can
     // carry the relation in the file it is born with — one write instead of two,

@@ -26,7 +26,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
-import { stripComment, stripQuotes, parseList, encodeItem, encodeScalar, encodeNumber } from "./lib/frontmatter.mjs";
+import { stripComment, stripQuotes, parseList, encodeItem, encodeScalar, encodeNumber, fieldSpan } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -85,41 +85,6 @@ function formatValue(key, value) {
   return encodeScalar(value, TYPED_FIELDS.has(key));
 }
 
-// Where a field lives, and how many lines it spans. A block sequence is one field
-// written across several lines, so every edit has to see all of them — rewriting the
-// header alone left `- alpha` / `- beta` stranded under a new inline value, which the
-// parser then ignores. The blockers vanished silently and the file was no longer
-// valid YAML either.
-//
-// Items belong to the key only while its own value is empty, which is the rule the
-// parser uses to decide the same thing — the two have to agree on where a field ends.
-function fieldLines(lines, range, key) {
-  const [start, end] = range;
-  for (let i = start; i < end; i++) {
-    if (!lines[i].startsWith(key + ":")) continue;
-    // Derived once and handed back: getField recomputed the identical expression, so
-    // where a value starts on a key line — including the offset that ties it to the
-    // prefix test above — was written in two places that had to stay in step.
-    const value = stripComment(lines[i].slice(key.length + 1));
-    let last = i;
-    if (value === "") {
-      // A blank or comment line does not end a sequence — the parser skips it and
-      // goes on collecting — so the span has to reach past it to the last item.
-      // Stopping at the first one removed the header and the items above it and left
-      // the rest stranded, which is the same silent loss one storey down.
-      // Separators only belong to the field when an item still follows: a blank line
-      // before the next key is that key's, not this one's.
-      for (let j = i + 1; j < end; j++) {
-        if (/^\s*-\s+/.test(lines[j])) { last = j; continue; }
-        if (!lines[j].trim() || lines[j].trimStart().startsWith("#")) continue;
-        break;
-      }
-    }
-    return { index: i, count: last - i + 1, value };
-  }
-  return null;
-}
-
 // The CLI reads the files the harvester reads, so it has to tolerate what the parser
 // tolerates. The parser drops a leading BOM before its fence check and this did not,
 // so every mutating command failed with "no YAML frontmatter found" on a puck the
@@ -136,7 +101,7 @@ function setField(text, key, value) {
   const range = frontmatterRange(lines);
   if (!range) fail("no YAML frontmatter found — is this a puck?");
   const line = `${key}: ${formatValue(key, value)}`;
-  const at = fieldLines(lines, range, key);
+  const at = fieldSpan(lines, range[0], range[1], key);
   // The new value is the whole field, so a sequence's items go with the header.
   if (at) lines.splice(at.index, at.count, line);
   else lines.splice(range[1], 0, line); // insert before closing fence
@@ -153,7 +118,7 @@ function getField(text, key) {
   const { lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) return null;
-  const at = fieldLines(lines, range, key);
+  const at = fieldSpan(lines, range[0], range[1], key);
   return at ? at.value : null;
 }
 
@@ -171,7 +136,7 @@ function getList(text, key) {
   const { lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) return [];
-  const at = fieldLines(lines, range, key);
+  const at = fieldSpan(lines, range[0], range[1], key);
   if (!at) return [];
   if (at.count === 1) return parseList(at.value);
   return lines
@@ -186,7 +151,7 @@ function removeField(text, key) {
   const { bom, nl, lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) fail("no YAML frontmatter found — is this a puck?");
-  const at = fieldLines(lines, range, key);
+  const at = fieldSpan(lines, range[0], range[1], key);
   if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
   return bom + lines.join(nl);
 }

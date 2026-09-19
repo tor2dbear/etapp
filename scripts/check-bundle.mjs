@@ -28,6 +28,12 @@ import { fileURLToPath } from "node:url";
 export const SERVED = {
   "index.html": /^index\.html$/,
   "app.js": /^app\.js$/,
+  // Served because the board imports it. `.js`, not `.mjs`: every other served file
+  // is `.js` and `.mjs` is the convention for the scripts/ that are not served — and
+  // one fewer extension is one fewer thing a host has to map to text/javascript. The spelling rules have to be reachable from
+  // the browser as well as from Node, and `scripts/` is excluded — which is precisely
+  // how app.js came to carry its own divergent copy of them.
+  "format.js": /^format\.js$/,
   "styles.css": /^styles\.css$/,
   _headers: /^_headers$/,
   "ROADMAP.md": /^ROADMAP\.md$/,
