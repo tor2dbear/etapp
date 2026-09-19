@@ -262,6 +262,16 @@ function fail(msg) {
   process.exit(1);
 }
 
+// A FIFO, a socket or a device node cannot be copied at all: `cpSync` dies on an internal
+// assertion — "Unreachable code", with a stack trace asking you to file a Node bug —
+// before the base tree is even built. Reproduced with `mkfifo roadmap/test.pipe`. A dev
+// server's socket inside a checkout is an ordinary thing to have, and no gate can read
+// one either, so it is left out rather than allowed to make the check unrunnable.
+function copyable(src) {
+  const st = fs.lstatSync(src, { throwIfNoEntry: false });
+  return !!st && (st.isFile() || st.isDirectory() || st.isSymbolicLink());
+}
+
 const refuse = (rel, why) =>
   fail(
     `${rel} is a symlink that ${why} — the copy cannot hold it without reaching outside itself.\n` +
@@ -316,7 +326,8 @@ function clone(dir) {
       src !== GIT_DIR &&
       // Nothing here installs them, but a contributor's `npm i` or a local harvest
       // would otherwise be copied once per mutation. No gate reads them.
-      !SKIP_COPY.has(path.basename(src)),
+      !SKIP_COPY.has(path.basename(src)) &&
+      copyable(src),
   });
   // The last step of copying, not the first step of indexing: run before `git init`, so
   // there is no `.git` in the copy for it to walk.
