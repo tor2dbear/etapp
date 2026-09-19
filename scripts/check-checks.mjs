@@ -209,7 +209,11 @@ const git = (args, cwd, input) =>
 // with "index file open failed" before a single gate runs; and `GIT_INDEX_FILE` moves
 // it again. `ls-files -s` answers through git, so every one of those is already
 // resolved by the time this reads it.
-const TRACKED = execFileSync("git", ["ls-files", "-s", "-z"], { cwd: ROOT, env: ENV, encoding: "utf8" });
+// As bytes, and handed to `update-index` as bytes: `encoding: "utf8"` turns a filename
+// byte that is not valid UTF-8 into U+FFFD, and the copy's index would then carry a path
+// naming no file. Nothing here needs to read these records, only to pass them on, so they
+// are never decoded at all — the same lesson as `-z`, one layer further down.
+const TRACKED = execFileSync("git", ["ls-files", "-s", "-z"], { cwd: ROOT, env: ENV });
 
 // Those records carry the source repository's hashes, and a copy created in the default
 // format cannot read them: in a SHA-256 checkout `git init` makes a SHA-1 repository and

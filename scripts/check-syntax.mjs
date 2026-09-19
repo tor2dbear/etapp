@@ -29,9 +29,33 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // newline in a filename splits into two bogus entries. NUL-separated output is the raw
 // path. (Written with `.split("\n")` first, in the same commit that fixed this exact
 // quoting bug one file over — which is the whole argument for the meta-check.)
-const files = execFileSync("git", ["ls-files", "-z", "*.js", "*.mjs"], { cwd: ROOT, encoding: "utf8" })
+const tracked = execFileSync("git", ["ls-files", "-z", "*.js", "*.mjs"], { cwd: ROOT })
+  .toString("binary")
   .split("\0")
-  .filter(Boolean);
+  .filter(Boolean)
+  .map((s) => Buffer.from(s, "binary"));
+
+// Read as bytes, because `encoding: "utf8"` is lossy in the same way the C-quoting was:
+// a filename byte that is not valid UTF-8 comes back as U+FFFD, and the path then names
+// no file. Measured on a tracked `bad\xff.js`: the gate reported "Cannot find module
+// bad<U+FFFD>.js" — a valid script called broken.
+//
+// Such a path cannot be handed to `node --check` at all: argv is re-encoded as UTF-8, so
+// no JavaScript string carries the byte, measured for both a lossy and a latin1 spelling.
+// It could be piped to `node --check` on stdin instead — but then *this file* would have
+// to decide whether to parse it as a module or a script, and a second implementation of
+// that rule is the exact hole this gate exists for: `export` in `format.js` went unseen
+// because only one of the two goals was ever parsed. So it is named and refused rather
+// than guessed at or silently skipped, which would be a coverage hole of the kind the
+// header above describes.
+const unpassable = tracked.filter((b) => Buffer.compare(Buffer.from(b.toString("utf8"), "utf8"), b) !== 0);
+if (unpassable.length) {
+  const show = (b) => b.toString("binary").replace(/[^\x20-\x7e]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+  console.error(`✗ ${unpassable.length} tracked file(s) have names node cannot be given\n`);
+  for (const b of unpassable) console.error(`  ${show(b)} — not valid UTF-8, so this gate cannot check it; rename it`);
+  process.exit(1);
+}
+const files = tracked.map((b) => b.toString("utf8"));
 
 // An empty answer fails rather than passing vacuously: "nothing to check" and
 // "everything checked" print the same tick otherwise.
