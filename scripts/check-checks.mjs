@@ -23,7 +23,7 @@
 //
 // Node builtins only, like the rest of scripts/. Needs PyYAML for the two Python
 // judges, the same as CI.
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -260,6 +260,31 @@ const failures = [];
 // The gates must all pass on the *unmutated* clone first. Otherwise a mutation that
 // "fails" proves nothing — the gate was already red.
 const base = clone(path.join(tmp, "base"));
+const TIMEOUT = 180000;
+function run(argv, cwd) {
+  return new Promise((resolve) => {
+    const child = spawn(argv[0], argv.slice(1), { cwd });
+    let out = "";
+    const take = (b) => { out += b; };
+    child.stdout.on("data", take);
+    child.stderr.on("data", take);
+    // `killed` is carried out separately, because `close` reports a killed child as
+    // `status: null` and null is not 0 — so a gate that printed its expected tag and
+    // *then* hung looked exactly like a gate that failed for the right reason, and the
+    // claim counted as held. Measured: tag printed, SIGKILL, `status=null`, verdict
+    // "held". `spawnSync` had carried a `signal` that made this visible; the async
+    // rewrite dropped it and nothing noticed, because a timeout is the one outcome
+    // none of the 33 cases produce.
+    let killed = false;
+    const kill = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, TIMEOUT);
+    child.on("error", (error) => { clearTimeout(kill); resolve({ error, out }); });
+    child.on("close", (status, signal) => {
+      clearTimeout(kill);
+      resolve({ status, signal, killed, out: out.trim() });
+    });
+  });
+}
+
 // `python3` missing, or a gate that hangs, is not a held claim — and `r.stdout` is
 // `null` when the spawn itself failed, so the old `r.stdout + r.stderr` was `0` and
 // `.trim()` threw a TypeError over the top of the real reason.
@@ -294,15 +319,22 @@ function named(out, expect) {
   }
   return emitted.has(wanted[1]);
 }
+// Through the same `run` the cases use. This loop had its own `spawnSync` with its own
+// hardcoded 180000 — a second spelling of the timeout, and one that never learned the
+// killed-vs-failed distinction the cases below now make.
 for (const [name, argv] of Object.entries(GATES)) {
-  const r = spawnSync(argv[0], argv.slice(1), { cwd: base, encoding: "utf8", timeout: 180000 });
+  const r = await run(argv, base);
   if (r.error) {
     console.error(`✗ ${name} could not be run at all (${argv.join(" ")}) — ${r.error.message}`);
     process.exit(1);
   }
+  if (r.killed || r.signal) {
+    console.error(`✗ ${name} did not finish on an unmutated tree (${r.killed ? `killed after ${TIMEOUT / 1000}s` : r.signal})`);
+    process.exit(1);
+  }
   if (r.status !== 0) {
     console.error(`✗ ${name} does not pass on an unmutated tree — nothing below proves anything\n`);
-    console.error(output(r) || `(no output; signal ${r.signal})`);
+    console.error(r.out || "(no output)");
     process.exit(1);
   }
 }
@@ -314,18 +346,6 @@ for (const [name, argv] of Object.entries(GATES)) {
 // event loop, so four "workers" take their turns on one thread. Measured plainly:
 // four 300ms children cost 1314ms with `spawnSync` in a loop and 344ms with `spawn`
 // awaited together. The pool was real; the thing it was pooling was not.
-function run(argv, cwd) {
-  return new Promise((resolve) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd });
-    let out = "";
-    const take = (b) => { out += b; };
-    child.stdout.on("data", take);
-    child.stderr.on("data", take);
-    const kill = setTimeout(() => child.kill("SIGKILL"), 180000);
-    child.on("error", (error) => { clearTimeout(kill); resolve({ error, out }); });
-    child.on("close", (status) => { clearTimeout(kill); resolve({ status, out: out.trim() }); });
-  });
-}
 
 async function judge(i, c) {
   const dir = clone(path.join(tmp, `m${i}`));
@@ -334,6 +354,8 @@ async function judge(i, c) {
     if (why) return `the mutation could not be applied — ${why}`;
     const r = await run(GATES[c.gate], dir);
     if (r.error) return `the gate could not be run — ${r.error.message}`;
+    if (r.killed) return `the gate did not finish in ${TIMEOUT / 1000}s — it was killed, not failed`;
+    if (r.signal) return `the gate died on ${r.signal} — that is not a failure it reported`;
     if (r.status === 0) return "the gate passed — this claim is not held";
     if (!named(r.out, c.expect)) {
       return `the gate failed but never mentioned ${JSON.stringify(c.expect)} — ` +
