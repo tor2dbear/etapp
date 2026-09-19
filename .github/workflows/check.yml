@@ -92,6 +92,16 @@ jobs:
       - name: Markdown judge
         run: python3 scripts/check-markdown.py
 
+      # `depends:` is authored once and derived twice: by the harvester for the payload,
+      # and again by the board, because one that waited for the next harvest would show
+      # `blockedBy` and `blocks` disagreeing between renders. Two implementations of one
+      # rule is what this review keeps finding, so the probe lifts both out of the files
+      # that ship and runs them on the same graphs — and the judge derives the answer a
+      # third time, in Python, so "they agree" cannot mean "they are the same mistake".
+      # It was: both counted `auth` and `me/repo#auth` as two blockers.
+      - name: Dependency graph
+        run: python3 scripts/check-dependencies.py
+
       # And can any of them fail? Two of the four above were caught claiming a property
       # they were not holding — `export` added to format.js left all five green while
       # every board write threw, and the query check hand-wrote a predicate that read a

@@ -53,7 +53,9 @@ const STATUS_LABEL = {
 };
 
 // Terminal statuses — a puck here is settled, so it's exempt from drift/staleness.
+// term:begin
 const TERMINAL = new Set(["done", "cancelled"]);
+// term:end
 
 // Auto-status thresholds (days). A now/next puck untouched past these is "quiet".
 const STALE_DAYS = { now: 21, next: 60 };
@@ -117,6 +119,7 @@ function computeSignals(item, nowMs, cycles, depCycles) {
 //
 // The separator is written escaped on purpose: a literal NUL in the source makes
 // git and ripgrep treat the whole file as binary and hide its diff.
+// dep:begin
 const SEP = "\u0000";
 function refKey(ref, fromRepo) {
   const s = String(ref || "").trim();
@@ -152,9 +155,20 @@ function resolveBlockedBy(items) {
   for (const it of items) {
     it.blocks = [];
     it.missingDepends = [];
+    // Two spellings of one reference are one edge. `auth` and `me/repo#auth` name the
+    // same puck from inside `me/repo`, and counting both put its id in `blockedBy`
+    // twice and this puck's id in its `blocks` twice — the blocker drawn twice, and
+    // every count of them off by one. The board's editor already refuses to write the
+    // second spelling; pucks are plain markdown that anything may write, so the reader
+    // has to hold the rule too. Deduped by key, which is what "the same reference"
+    // means here, so an unresolvable pair collapses the same way.
     const deps = [];
+    const seen = new Set();
     for (const dep of it.depends || []) {
-      const d = byKey.get(refKey(dep, it.repo));
+      const key = refKey(dep, it.repo);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const d = byKey.get(key);
       if (!d) it.missingDepends.push(dep);
       else deps.push(d);
     }
@@ -192,6 +206,7 @@ function resolveBlockedBy(items) {
   for (const it of items) if (!colour.has(it)) walk(it, []);
   return cycles;
 }
+// dep:end
 
 // Resolve `parent` into the derived half of the hierarchy: who my children are,
 // and how far the etapp has come. Derived, never stored — a `children:` field

@@ -171,6 +171,11 @@ roadmap depends <slug> +deploy-simplification +tor2dbear/pia-terminal#vfs
 roadmap depends <slug> -deploy-simplification      # or --clear for all
 ```
 
+`auth` and `you/repo#auth`, written from inside `you/repo`, are the **same
+reference** and count as one blocker — not two. (They were counted twice until the
+dependency gate was written: the blocker was drawn twice and every count of them was
+one too many.)
+
 A reference that resolves to nothing is flagged `depends-missing` **and keeps
 blocking** — otherwise the board would call the puck ready while its author thinks
 it is blocked. A loop flags `dependency-cycle` on every puck in it: no single link

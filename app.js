@@ -194,16 +194,27 @@
   // what I hold up. Only `depends:` is authored — `blocks` is the reverse edge.
   function blockerItems(item) { return (item.blockedBy || []).map(itemById).filter(Boolean); }
   function blockedItems(item) { return (item.blocks || []).map(itemById).filter(Boolean); }
+  // ref:begin
   // One reference form for every puck-to-puck link, mirroring refKey() in the
   // harvester: a bare slug means "in my own repo", `owner/repo#slug` names one
-  // anywhere on the board.
-  function resolveRef(from, ref) {
+  // anywhere on the board. The key is what a reference *is* before anything answers
+  // to it — the pair (repo, slug), spelled as one string — so two references with
+  // the same key are the same reference however they were written. That is what lets
+  // `recomputeDeps` count `auth` and `me/repo#auth` as one edge.
+  //
+  // Fenced because the harvester has the same function and the board cannot import
+  // it: `scripts/dep-probe.mjs` lifts these bytes and runs them against the
+  // harvester's own, so "they agree" is checked rather than asserted in a comment.
+  var REF_SEP = "\u0000";
+  function refKey(from, ref) {
     var s = String(ref || "").trim();
     var at = s.indexOf("#");
-    var repo = at === -1 ? from.repo : s.slice(0, at);
-    var slug = at === -1 ? s : s.slice(at + 1);
+    return at === -1 ? from.repo + REF_SEP + s : s.slice(0, at) + REF_SEP + s.slice(at + 1);
+  }
+  function resolveRef(from, ref) {
+    var key = refKey(from, ref);
     for (var i = 0; i < DATA.items.length; i++) {
-      if (DATA.items[i].repo === repo && DATA.items[i].slug === slug) return DATA.items[i];
+      if (DATA.items[i].repo + REF_SEP + DATA.items[i].slug === key) return DATA.items[i];
     }
     return null;
   }
@@ -213,6 +224,7 @@
   function refFor(from, target) {
     return target.repo === from.repo ? target.slug : target.repo + "#" + target.slug;
   }
+  // ref:end
   // The authored list, resolved — every declared blocker, landed ones included.
   // `blockedBy` is the *unfinished* subset, so editing has to work from this one:
   // you can't remove a dependency the board never showed you.
@@ -545,7 +557,9 @@
   // could never be true, and the check would have stayed green if the real one broke.
   // A stub is a second implementation; this file has spent six rounds on that lesson.
   // q:begin
+  // term:begin
   var TERMINAL = { done: 1, cancelled: 1 };
+  // term:end
   function isFlagged(item) { return (item.signals || []).length > 0; }
   function lower(s) { return String(s).toLowerCase(); }
   function shortRepo(r) { return String(r).split("/").pop(); }
@@ -8472,7 +8486,7 @@
     {
       key: "owner", label: "Owner",
       values: function () {
-        var seen = {};
+        var seen = Object.create(null); // keys are repo+NUL+slug, but no inherited ones
         DATA.items.forEach(function (it) { if (it.owner) seen[it.owner] = 1; });
         return Object.keys(seen).sort().map(function (o) { return { value: o, label: "@" + o }; });
       },
@@ -10483,12 +10497,20 @@
   // Only `depends:` is authored, on the blocked puck. `blockedBy` (what still
   // holds me up) and `blocks` (what I hold up) are both derived — here as well as
   // at harvest, so an optimistic edit can't leave the two directions disagreeing.
+  // dep:begin
   function recomputeDeps() {
     DATA.items.forEach(function (it) { it.blocks = []; it.missingDepends = []; it.blockedBy = []; });
     DATA.items.forEach(function (it) {
       var unresolved = [];
       var live = [];
+      var seen = {};
       (it.depends || []).forEach(function (ref) {
+        // Two spellings of one reference are one edge — see the same rule in the
+        // harvester. Counting both drew the blocker twice and made every count of
+        // them one too many.
+        var key = refKey(it, ref);
+        if (seen[key]) return;
+        seen[key] = 1;
         var d = resolveRef(it, ref);
         if (!d) { it.missingDepends.push(ref); unresolved.push(ref); return; }
         if (!TERMINAL[d.status]) live.push(d);
@@ -10518,6 +10540,7 @@
       it.signals = needs ? rest.concat([{ type: "depends-missing" }]) : rest;
     });
   }
+  // dep:end
   // Would depending on `target` close a loop? Walk the *authored* graph, since a
   // landed blocker still counts as an edge.
   function wouldDependLoop(item, target) {
