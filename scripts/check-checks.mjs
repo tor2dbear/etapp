@@ -23,7 +23,7 @@
 //
 // Node builtins only, like the rest of scripts/. Needs PyYAML for the two Python
 // judges, the same as CI.
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -170,9 +170,14 @@ const CASES = [
 // A rename's source left behind so the run validated code the tree no longer had. A
 // dangling symlink that `existsSync` calls absent. None of those are expressible here.
 //
-// Measured on this repo: 53ms against 166ms for `git clone --no-hardlinks`, ×33 runs.
-// Bigger on disk (6.3M against 2.1M — loose objects rather than a pack) and peak usage
-// is the base plus one mutant, which is nothing.
+// It is also faster than the clone it replaced — around 50ms against 160ms here — but
+// that is a side effect and not the reason, and the precise pair is the wrong thing to
+// write down: measured again under load it came out 80-96ms, which is the sort of
+// contradiction a number in a comment invites. What does not move is that a copy
+// cannot mis-enumerate a tree it did not enumerate.
+//
+// Bigger on disk (6.3M against 2.1M — loose objects rather than a pack); peak usage is
+// the base plus one mutant, which is nothing.
 const SKIP_COPY = new Set(["node_modules", ".sources", ".wrangler"]);
 function clone(dir) {
   fs.cpSync(ROOT, dir, {
@@ -240,6 +245,7 @@ const base = clone(path.join(tmp, "base"));
 // `null` when the spawn itself failed, so the old `r.stdout + r.stderr` was `0` and
 // `.trim()` threw a TypeError over the top of the real reason.
 const output = (r) => [r.stdout, r.stderr].filter(Boolean).join("").trim();
+const firstLines = (out) => out.split("\n").filter(Boolean).slice(0, 2).join(" / ").slice(0, 160);
 
 // Did the gate fail *for this claim*? Three of the judges report every failure as
 // `  [tag] detail`, so an expectation written `[tag]` is matched against the set of
@@ -282,27 +288,62 @@ for (const [name, argv] of Object.entries(GATES)) {
   }
 }
 
-for (const [i, c] of cases.entries()) {
-  const dir = clone(path.join(tmp, `m${i}`));
-  const why = apply(dir, c);
-  if (why) {
-    failures.push([c, `the mutation could not be applied — ${why}`]);
-    fs.rmSync(dir, { recursive: true, force: true });
-    continue;
-  }
-  const argv = GATES[c.gate];
-  const r = spawnSync(argv[0], argv.slice(1), { cwd: dir, encoding: "utf8", timeout: 180000 });
-  const out = output(r);
-  if (r.error) {
-    failures.push([c, `the gate could not be run — ${r.error.message}`]);
-  } else if (r.status === 0) {
-    failures.push([c, "the gate passed — this claim is not held"]);
-  } else if (!named(out, c.expect)) {
-    failures.push([c, `the gate failed but never mentioned ${JSON.stringify(c.expect)} — ` +
-      `it may be failing for an unrelated reason: ${out.trim().split("\n").filter(Boolean).slice(0, 2).join(" / ").slice(0, 160)}`]);
-  }
-  fs.rmSync(dir, { recursive: true, force: true });
+// One case, start to finish, in its own directory. Returns the reason it did not hold,
+// or null.
+// `spawn`, not `spawnSync`. The first version of the pool below used `spawnSync` and
+// bought nothing at all — 17s against 16s — because a synchronous spawn blocks the
+// event loop, so four "workers" take their turns on one thread. Measured plainly:
+// four 300ms children cost 1314ms with `spawnSync` in a loop and 344ms with `spawn`
+// awaited together. The pool was real; the thing it was pooling was not.
+function run(argv, cwd) {
+  return new Promise((resolve) => {
+    const child = spawn(argv[0], argv.slice(1), { cwd });
+    let out = "";
+    const take = (b) => { out += b; };
+    child.stdout.on("data", take);
+    child.stderr.on("data", take);
+    const kill = setTimeout(() => child.kill("SIGKILL"), 180000);
+    child.on("error", (error) => { clearTimeout(kill); resolve({ error, out }); });
+    child.on("close", (status) => { clearTimeout(kill); resolve({ status, out: out.trim() }); });
+  });
 }
+
+async function judge(i, c) {
+  const dir = clone(path.join(tmp, `m${i}`));
+  try {
+    const why = apply(dir, c);
+    if (why) return `the mutation could not be applied — ${why}`;
+    const r = await run(GATES[c.gate], dir);
+    if (r.error) return `the gate could not be run — ${r.error.message}`;
+    if (r.status === 0) return "the gate passed — this claim is not held";
+    if (!named(r.out, c.expect)) {
+      return `the gate failed but never mentioned ${JSON.stringify(c.expect)} — ` +
+        `it may be failing for an unrelated reason: ${firstLines(r.out)}`;
+    }
+    return null;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// The cases are independent — each is its own copy of the tree and its own process —
+// and the gates are the cost: about 90% of this step's wall clock, against 10% for the
+// copying the comments above spend the most words on. Running them a few at a time
+// took the whole run from roughly twenty seconds to under ten on a four-core machine.
+//
+// Sized by the machine, and the results are collected by index rather than in
+// completion order, so the report reads the same however many ran at once. Nothing
+// crosses between them: separate directories, separate processes, and the only shared
+// state is this array, written from a single-threaded event loop.
+const WIDTH = Math.max(1, Math.min(cases.length, os.availableParallelism?.() ?? 2));
+const verdicts = new Array(cases.length);
+let next = 0;
+await Promise.all(
+  Array.from({ length: WIDTH }, async () => {
+    for (let i = next++; i < cases.length; i = next++) verdicts[i] = await judge(i, cases[i]);
+  })
+);
+cases.forEach((c, i) => { if (verdicts[i]) failures.push([c, verdicts[i]]); });
 
 if (failures.length) {
   console.error(`✗ ${failures.length} of ${cases.length} claim(s) are not actually held\n`);

@@ -100,6 +100,6 @@ jobs:
       # So: each claim in each gate's own success line, paired with a mutation that must
       # break it, run against a throwaway clone. Last, because a real failure should be
       # reported by the gate that owns it — this step only answers whether the gates are
-      # worth believing. ~20s.
+      # worth believing. The cases run a few at a time, sized by the runner's cores.
       - name: The gates themselves
         run: node scripts/check-checks.mjs
