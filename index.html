@@ -204,6 +204,10 @@
 
     <!-- Generated payload, loaded as a global so the page also works from file://. -->
     <script src="data/roadmap.js" onerror="window.__ROADMAP_LOAD_ERROR__=true"></script>
+    <!-- How a puck is spelled: the file the CLI and the harvester also use. Classic,
+         like the payload above and for the same reason — a module does not load from
+         file://, and a board opened off the filesystem can still write. -->
+    <script src="format.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

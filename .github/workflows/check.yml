@@ -1,0 +1,73 @@
+name: Check
+
+# What a contributor would run before pushing, run for them — because until now
+# nothing ran on a pull request at all. `sync.yml` triggers on a schedule and on
+# pushes to main, so a branch could be reviewed, approved and merged without a single
+# automated check having looked at it. The first slice of the codebase review found
+# fourteen defects by hand for exactly that reason.
+#
+# Runs on every pull request, and on pushes to main for the same paths, so a direct
+# push is covered too. Deliberately not on `data/**`: the hourly harvest commits there
+# and its output is checked by the job that produced it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "app.js"
+      - "format.js"
+      - "index.html"
+      - "sources.json"
+      - "board.config.json"
+      - ".assetsignore"
+      - ".github/workflows/check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Cheapest gate first: a file that does not parse fails everything after it,
+      # and app.js is 11k lines that nothing else compiles.
+      - name: Syntax
+        run: |
+          set -euo pipefail
+          for f in app.js scripts/*.mjs scripts/lib/*.mjs; do
+            node --check "$f"
+          done
+          echo "✓ all JavaScript parses"
+
+      # Would anything unintended be published? The bundle is the repo root, so a new
+      # file is published unless something says otherwise. Already run from
+      # `predeploy`; running it here means the answer arrives before review, not after.
+      - name: Bundle
+        run: node scripts/check-bundle.mjs
+
+      # PyYAML is the point of this step, not an implementation detail. Our own parser
+      # accepts things no YAML parser does, so "it round-trips for us" was never
+      # evidence that a puck is valid to anyone else — and pucks are read by other
+      # people's tools in other people's repos. CI-only: nothing here ships, and a
+      # second YAML implementation in the product would defeat the purpose.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Format judge
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 scripts/check-format.py
