@@ -1,5 +1,6 @@
 # Kept out of the served static bundle (assets.directory is the repo root).
-# Only the board itself ships: index.html, app.js, styles.css, data/, ROADMAP.md.
+# Only the board itself ships: index.html, app.js, format.js, styles.css, data/,
+# fonts/, _headers and ROADMAP.md — scripts/check-bundle.mjs holds the full list.
 .git
 .gitignore
 .assetsignore

@@ -285,6 +285,14 @@
   //
   // The cost is paid here, once: block detection below runs on lines that have
   // already been escaped, so a blockquote starts with `&gt;`, not `>`.
+  //
+  // `scripts/md-probe.mjs` lifts everything between the two markers below and runs
+  // it in Node, so CONVENTION's rendering contract is checked against the bytes the
+  // browser runs rather than against a copy of them. Code moved out of the fence
+  // leaves the check; the probe exits non-zero if either marker is missing or the
+  // region stops evaluating, so it can fail but not go quiet. The markers are
+  // matched as whole lines, which is why they carry no prose.
+  // md:begin
   function esc(s) {
     return String(s)
       .replace(/\u0000/g, "") // the inline pass parks finished HTML on NUL — keep it ours
@@ -366,7 +374,16 @@
   function mdIndent(ws) { return ws.replace(/\t/g, "    ").length; }
   function renderMd(src) {
     var out = [];
-    var lines = esc(src).split("\n");
+    // Split on any line ending, not on `\n`. JS counts `\r` as a line terminator, so
+    // `.` will not match one and `$` (no `m` flag) only matches at the very end of the
+    // string — meaning `(.*)$` cannot get past a trailing `\r`, and every block rule
+    // below missed a CRLF line by one character: `## H\r` was not a heading,
+    // `- a\r` was not a list item, `&gt; q\r` was not a quote. They fell through to the
+    // paragraph buffer and were *folded into the sentence around them*, which is the
+    // one thing CONVENTION promises never happens to a line the board does not know.
+    // Both other line-by-line markdown readers here already normalize first
+    // (`frontmatter.mjs`, `adapters.mjs`); this one was the odd reader out.
+    var lines = esc(src).split(/\r\n?|\n/);
     // Open lists, innermost last: { type, indent, liOpen }. A stack rather than a
     // flag, because indentation is what tells a sub-point from a wrapped line, and
     // one flag can only ever answer "in a list, yes or no".
@@ -488,6 +505,7 @@
     if (inCode) flushCode();
     return out.join("\n");
   }
+  // md:end
 
   // ── query model ──────────────────────────────────────────────────────────────
   // What's on screen is one list of predicates. The search box, the sidebar places,
