@@ -201,10 +201,63 @@ const git = (args, cwd, input) =>
 // resolved by the time this reads it.
 const TRACKED = execFileSync("git", ["ls-files", "-s", "-z"], { cwd: ROOT, env: ENV, encoding: "utf8" });
 
+// The copy keeps no symlinks. A link is a hole in it: every write in `apply()` follows
+// one, so a contributor whose `format.js` is locally a link to a file kept elsewhere had
+// the sabotage land on that real file — measured, its bytes came back changed by a run
+// of the safety check. `cpSync` cannot close the hole by itself: `dereference: true`
+// only rewrites a relative target to an absolute one, which escapes just as well.
+// Same shape as the `.git` pointer file — a tool that mutates a copy must not be able to
+// reach the original, and "a copy is the tree" stops being true at exactly those entries
+// that are names for somewhere else.
+//
+// A link to a file becomes that file's bytes, which is what every gate meant to read
+// anyway. A link whose target is gone is dropped: reading it would have failed in the
+// real tree too. Anything else is refused by name rather than guessed at — following it
+// is precisely how the bug above worked.
+function refuse(rel, why) {
+  console.error(`\u2717 ${rel} is a symlink that ${why} — the copy cannot hold it without reaching outside itself.`);
+  console.error(`  Replace it with the file itself, or add it to SKIP_COPY above if no gate reads it.`);
+  process.exit(1);
+}
+
+function materialize(dir, root = dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      materialize(p, root);
+      continue;
+    }
+    if (!entry.isSymbolicLink()) continue;
+    // Followed from where it was written, never from the copy. `cpSync` keeps the target
+    // string verbatim, so `format.js -> ../shared/format.js` means something else
+    // entirely once the link is sitting in a temp directory: nothing, or whatever
+    // happens to occupy that spot over there. Measured — the copy lost `format.js` and
+    // the base tree came back red on a repository whose own `node --check` is clean.
+    const rel = path.relative(root, p);
+    const source = path.join(ROOT, rel);
+    let target = null;
+    try {
+      target = fs.statSync(source); // through the link, which is the point
+    } catch (err) {
+      // Only a target that is *gone* is dropped, and only because reading it would have
+      // failed in the real tree too. A link that exists and cannot be followed — EACCES,
+      // a loop — is not a question to answer by quietly deleting the file.
+      if (err.code !== "ENOENT") refuse(rel, `cannot be followed (${err.code})`);
+    }
+    if (target && !target.isFile()) refuse(rel, "points at something other than a regular file");
+    const bytes = target ? fs.readFileSync(source) : null;
+    fs.rmSync(p, { force: true }); // unlinks the link, never the file it names
+    if (bytes) {
+      fs.writeFileSync(p, bytes);
+      fs.chmodSync(p, target.mode & 0o777); // an executable stays executable
+    }
+  }
+}
+
 function clone(dir) {
   fs.cpSync(ROOT, dir, {
     recursive: true,
-    verbatimSymlinks: true, // a symlink stays a symlink, pointing where it pointed
+    verbatimSymlinks: true, // every one of them is replaced below, by materialize()
     filter: (src) =>
       // `.git` is not copied. In a linked worktree it is a *pointer file*, so copying
       // it verbatim gave every temporary copy the real repository's index — and the
@@ -223,6 +276,7 @@ function clone(dir) {
   // — the only git either gate runs — reads the index alone, so the copy sees the same
   // tracked set. A path that is tracked but absent from the working tree keeps its
   // entry, which is what makes a staged-then-deleted addition reproduce here.
+  materialize(dir);
   git(["init", "--quiet"], dir);
   git(["update-index", "-z", "--index-info"], dir, TRACKED);
   return dir;
@@ -267,7 +321,36 @@ if (!cases.length) {
   process.exit(1);
 }
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "etapp-checkcheck-"));
+// `os.tmpdir()` honours TMPDIR, and a TMPDIR pointing into the checkout —
+// `TMPDIR=$PWD/.tmp` — makes the destination a subdirectory of the source. `cpSync`
+// refuses that outright, with `ERR_FS_CP_EINVAL` raised before the filter is consulted,
+// so no skip list can rescue it: the run dies on a stack trace before a single gate has
+// been asked anything. Measured. Beside the repository is the fallback, being the one
+// place that certainly exists and is certainly outside the tree.
+function tmpRoot() {
+  const root = fs.realpathSync(ROOT);
+  for (const base of [os.tmpdir(), path.dirname(ROOT)]) {
+    let dir;
+    try {
+      dir = fs.realpathSync(base);
+    } catch {
+      continue;
+    }
+    // `startsWith("..")` alone is not the containment test it looks like: a directory
+    // named `..tmp` *inside* the checkout relativises to `..tmp`, which passes it. Then
+    // `cpSync` raises the exact ERR_FS_CP_EINVAL this function exists to prevent —
+    // reproduced with `TMPDIR=$PWD/..tmp`. Only a leading `..` component means outside.
+    const rel = path.relative(root, dir);
+    const outside = path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep);
+    if (!outside) continue;
+    try {
+      return fs.mkdtempSync(path.join(dir, "etapp-checkcheck-"));
+    } catch {}
+  }
+  console.error("✗ nowhere outside the repository to put the copies — point TMPDIR at a writable directory that is not inside it");
+  process.exit(1);
+}
+const tmp = tmpRoot();
 // Every exit, not only the happy one. The base-tree guard's `process.exit(1)` skipped
 // the cleanup at the end and left a ~2MB clone behind on each failed run.
 const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} };
