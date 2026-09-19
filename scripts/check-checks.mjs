@@ -201,6 +201,18 @@ const git = (args, cwd, input) =>
 // resolved by the time this reads it.
 const TRACKED = execFileSync("git", ["ls-files", "-s", "-z"], { cwd: ROOT, env: ENV, encoding: "utf8" });
 
+// Those records carry the source repository's hashes, and a copy created in the default
+// format cannot read them: in a SHA-256 checkout `git init` makes a SHA-1 repository and
+// `update-index --index-info` rejects every 64-character hash with "malformed index
+// info" before a single gate runs. Reproduced in a SHA-256 clone of this repo. The flag
+// and the query both arrived in git 2.29, so an older git answers neither and wants
+// neither — one format existed then.
+let OBJECT_FORMAT = "";
+try {
+  OBJECT_FORMAT = git(["rev-parse", "--show-object-format"], ROOT).trim();
+} catch {}
+const INIT = ["init", "--quiet", ...(OBJECT_FORMAT ? [`--object-format=${OBJECT_FORMAT}`] : [])];
+
 // The copy keeps no symlinks. A link is a hole in it: every write in `apply()` follows
 // one, so a contributor whose `format.js` is locally a link to a file kept elsewhere had
 // the sabotage land on that real file — measured, its bytes came back changed by a run
@@ -281,7 +293,7 @@ function clone(dir) {
   // — the only git either gate runs — reads the index alone, so the copy sees the same
   // tracked set. A path that is tracked but absent from the working tree keeps its
   // entry, which is what makes a staged-then-deleted addition reproduce here.
-  git(["init", "--quiet"], dir);
+  git(INIT, dir);
   git(["update-index", "-z", "--index-info"], dir, TRACKED);
   return dir;
 }
