@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openRepo } from "./lib/repo.mjs";
 import { harvestSource, STATUSES, slugify } from "./lib/adapters.mjs";
+import { itemKey, refKey } from "./lib/frontmatter.mjs";
 
 // Where the instance's own config and output live. Normally the repo this script
 // sits in; ROADMAP_ROOT points it at a different tree, which is how the demo board
@@ -53,7 +54,9 @@ const STATUS_LABEL = {
 };
 
 // Terminal statuses — a puck here is settled, so it's exempt from drift/staleness.
+// term:begin
 const TERMINAL = new Set(["done", "cancelled"]);
+// term:end
 
 // Auto-status thresholds (days). A now/next puck untouched past these is "quiet".
 const STALE_DAYS = { now: 21, next: 60 };
@@ -110,22 +113,20 @@ function computeSignals(item, nowMs, cycles, depCycles) {
   return out;
 }
 
-// One reference form for every puck-to-puck link. A bare slug means "in my own
-// repo"; `owner/repo#slug` names one anywhere on the board. Both `parent` and
-// `depends` resolve through here, so there is one thing to learn and one thing to
-// get right.
+// One reference form for every puck-to-puck link, and it is `format.js` that says what
+// it is — the same file that owns every other question about how a puck's values are
+// spelled, reached from Node through `lib/frontmatter.mjs` and from the browser as a
+// classic script. It used to be written out here, again in app.js, and twice more in the
+// CLI, with an argument order that did not even match between the first two.
 //
-// The separator is written escaped on purpose: a literal NUL in the source makes
-// git and ripgrep treat the whole file as binary and hide its diff.
-const SEP = "\u0000";
-function refKey(ref, fromRepo) {
-  const s = String(ref || "").trim();
-  const at = s.indexOf("#");
-  return at === -1 ? fromRepo + SEP + s : s.slice(0, at) + SEP + s.slice(at + 1);
-}
+// dep:begin
+// First wins, because the board's `resolveRef()` returns the first match and two pucks
+// with one (repo, slug) would otherwise resolve to different pucks on the two sides —
+// reachable with `roadmap/foo.md` beside `roadmap/foo/README.md`. Neither answer is
+// right; agreeing is, and the pair shows up as a duplicate slug either way.
 function indexByRef(items) {
   const byKey = new Map();
-  for (const it of items) byKey.set(it.repo + SEP + it.slug, it);
+  for (const it of items) if (!byKey.has(itemKey(it.repo, it.slug))) byKey.set(itemKey(it.repo, it.slug), it);
   return byKey;
 }
 
@@ -152,9 +153,20 @@ function resolveBlockedBy(items) {
   for (const it of items) {
     it.blocks = [];
     it.missingDepends = [];
+    // Two spellings of one reference are one edge. `auth` and `me/repo#auth` name the
+    // same puck from inside `me/repo`, and counting both put its id in `blockedBy`
+    // twice and this puck's id in its `blocks` twice — the blocker drawn twice, and
+    // every count of them off by one. The board's editor already refuses to write the
+    // second spelling; pucks are plain markdown that anything may write, so the reader
+    // has to hold the rule too. Deduped by key, which is what "the same reference"
+    // means here, so an unresolvable pair collapses the same way.
     const deps = [];
+    const seen = new Set();
     for (const dep of it.depends || []) {
-      const d = byKey.get(refKey(dep, it.repo));
+      const key = refKey(dep, it.repo);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const d = byKey.get(key);
       if (!d) it.missingDepends.push(dep);
       else deps.push(d);
     }
@@ -169,29 +181,65 @@ function resolveBlockedBy(items) {
   }
   for (const it of items) it.blocks.sort();
 
-  // Depth-first walk over the dependency edges; every puck on a back edge is in a
-  // cycle. Colour: 1 = on the current path, 2 = finished.
-  const colour = new Map();
+  // Every puck that can reach itself. This was a back-edge walk, which flags only the
+  // pucks on the path that happened to close the loop: with `r → a → u → r` and a second
+  // way round, `r → v → u`, the puck `v` waits for itself just as much and was never
+  // flagged. Measured, and the judge missed it too until it stopped being a
+  // transliteration of this.
+  //
+  // A strongly connected component is that question asked properly: a component of more
+  // than one puck is exactly a set of pucks that all wait for each other, whichever way
+  // round you enter it. A lone puck is in a loop only if it names itself.
+  //
+  // Tarjan, iterative — a chain of pucks would otherwise be a chain of stack frames, and
+  // a deep roadmap should not be able to end the harvest with an overflow.
+  const index = new Map();
+  const low = new Map();
+  const onStack = new Set();
+  const pending = [];
   const cycles = new Set();
-  const walk = (it, path) => {
-    colour.set(it, 1);
-    path.push(it);
-    for (const d of edges.get(it)) {
-      if (colour.get(d) === 1) {
-        for (let i = path.length - 1; i >= 0; i--) {
-          cycles.add(path[i]);
-          if (path[i] === d) break;
-        }
-      } else if (!colour.has(d)) {
-        walk(d, path);
+  let counter = 0;
+  for (const root of items) {
+    if (index.has(root)) continue;
+    const work = [[root, 0]];
+    while (work.length) {
+      const frame = work[work.length - 1];
+      const node = frame[0];
+      if (frame[1] === 0) {
+        index.set(node, counter);
+        low.set(node, counter);
+        counter++;
+        pending.push(node);
+        onStack.add(node);
+      }
+      const deps = edges.get(node);
+      if (frame[1] < deps.length) {
+        const d = deps[frame[1]++];
+        if (!index.has(d)) work.push([d, 0]);
+        else if (onStack.has(d)) low.set(node, Math.min(low.get(node), index.get(d)));
+        continue;
+      }
+      work.pop();
+      if (work.length) {
+        const parent = work[work.length - 1][0];
+        low.set(parent, Math.min(low.get(parent), low.get(node)));
+      }
+      if (low.get(node) === index.get(node)) {
+        const component = [];
+        let popped;
+        do {
+          popped = pending.pop();
+          onStack.delete(popped);
+          component.push(popped);
+        } while (popped !== node);
+        if (component.length > 1) for (const c of component) cycles.add(c);
+        else if (deps.includes(node)) cycles.add(node);
       }
     }
-    path.pop();
-    colour.set(it, 2);
-  };
-  for (const it of items) if (!colour.has(it)) walk(it, []);
+  }
   return cycles;
 }
+// dep:end
 
 // Resolve `parent` into the derived half of the hierarchy: who my children are,
 // and how far the etapp has come. Derived, never stored — a `children:` field
@@ -202,7 +250,7 @@ function resolveBlockedBy(items) {
 // and could hang a renderer, so it's cut here and flagged for a human.
 function resolveHierarchy(items) {
   const byKey = indexByRef(items);
-  const keyOf = (it) => it.repo + SEP + it.slug;
+  const keyOf = (it) => itemKey(it.repo, it.slug);
   const cycles = new Set(); // pucks whose link was cut, so the flag can say why
 
   for (const it of items) {

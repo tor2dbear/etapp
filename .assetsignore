@@ -3,6 +3,7 @@
 # fonts/, _headers and ROADMAP.md — scripts/check-bundle.mjs holds the full list.
 .git
 .gitignore
+__pycache__
 .assetsignore
 wrangler.jsonc
 package.json

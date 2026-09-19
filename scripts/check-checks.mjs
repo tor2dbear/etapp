@@ -38,6 +38,7 @@ const GATES = {
   query: ["node", "scripts/check-query.mjs"],
   format: ["python3", "scripts/check-format.py"],
   markdown: ["python3", "scripts/check-markdown.py"],
+  dependencies: ["python3", "scripts/check-dependencies.py"],
 };
 
 // Each entry: the claim in the gate's own words, the gate that makes it, and the edit
@@ -155,6 +156,55 @@ const CASES = [
     expect: "[fixture]" },
   { gate: "markdown", claim: "…and a fixture that is gone is noticed at all",
     remove: "tests/markdown.fixture.md", expect: "md-probe.mjs failed" },
+
+  // `depends:` is authored once and derived twice, so every claim here is really the
+  // same claim: the board and the harvester are one rule, and the rule is the one
+  // AGENTS.md documents. Each mutation breaks one of them and leaves the other
+  // standing, which is the shape the gate exists to notice.
+  { gate: "dependencies", claim: "the harvester counts one reference once",
+    edit: ["scripts/harvest.mjs", "      if (seen.has(key)) continue;\n", ""], expect: "[harvest]" },
+  { gate: "dependencies", claim: "…and so does the board",
+    edit: ["app.js", "      if (seen[key]) return;\n", ""], expect: "[duplicate]" },
+  // Same mutation as the claim above, a different consequence of it: `dependRefs` is
+  // what the modal's chips and the picker's tokens both walk, so losing the rule there
+  // has to be named twice. What this does *not* hold is the call sites — a chip loop
+  // rewritten back to `item.depends` renders wrong and passes, because the gate lifts
+  // bytes and cannot see calls. Stated rather than papered over.
+  { gate: "dependencies", claim: "…and the list the modal's chips are drawn from",
+    edit: ["app.js", "      if (seen[key]) return;\n", ""], expect: "[chips]" },
+  { gate: "dependencies", claim: "removing a blocker removes every spelling of it",
+    edit: ["app.js", "    return (item.depends || []).filter(function (r) { return refKey(item, r) !== key; });",
+      "    return (item.depends || []).filter(function (r) { return r !== ref; });"],
+    expect: "[remove]" },
+  { gate: "dependencies", claim: "the corpus is large enough to hold the claims made about it",
+    edit: ["scripts/dep-probe.mjs", "for (let i = 0; i < 1000; i++) CASES.push(randomGraph(i));\n", ""],
+    expect: "[coverage]" },
+  { gate: "dependencies", claim: "the two agree on what is settled",
+    edit: ["app.js", 'var TERMINAL = { done: 1, cancelled: 1 };', 'var TERMINAL = { done: 1 };'],
+    expect: "[agree]" },
+  { gate: "dependencies", claim: "`blocks` is the mirror of `blockedBy`",
+    edit: ["app.js", "      live.forEach(function (d) { d.blocks.push(it.id); });\n", ""],
+    expect: "[mirror]" },
+  { gate: "dependencies", claim: "a settled puck waits for nothing",
+    edit: ["app.js", "      if (TERMINAL[it.status]) return; // landed", "      if (false) return; // landed"],
+    expect: "[terminal]" },
+  { gate: "dependencies", claim: "a reference that names nothing still blocks",
+    edit: ["app.js", "it.blockedBy = live.map(function (d) { return d.id; }).concat(unresolved);",
+      "it.blockedBy = live.map(function (d) { return d.id; });"],
+    expect: "[unknown]" },
+  { gate: "dependencies", claim: "every puck in a loop is flagged",
+    edit: ["scripts/harvest.mjs", "if (component.length > 1) for (const c of component) cycles.add(c);",
+      "if (component.length > 2) for (const c of component) cycles.add(c);"],
+    expect: "[cycle]" },
+  { gate: "dependencies", claim: "…including a puck that names itself",
+    edit: ["scripts/harvest.mjs", "else if (deps.includes(node)) cycles.add(node);", "else if (false) cycles.add(node);"],
+    expect: "[cycle]" },
+  { gate: "dependencies", claim: "the note and the list it is built from move together",
+    edit: ["app.js", "      it.signals = needs ? rest.concat([{ type: \"depends-missing\" }]) : rest;",
+      "      it.signals = rest;"],
+    expect: "[signal]" },
+  { gate: "dependencies", claim: "…and the fence the board's half is lifted through",
+    edit: ["app.js", "  // dep:begin\n", ""], expect: "exactly one" },
 ];
 
 // A recursive copy of the whole directory, `.git` included. The copy *is* the working

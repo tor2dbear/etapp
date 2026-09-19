@@ -20,7 +20,10 @@ const {
   formatLine,
   formatValue,
   frontmatterRange,
+  itemKey,
   parseList,
+  refFor,
+  refKey,
   removeField,
   replaceBody,
   setField,
@@ -31,7 +34,8 @@ const {
 
 export {
   encodeItem, encodeNumber, encodeScalar, fieldSpan, formatLine, formatValue, frontmatterRange,
-  parseList, removeField, replaceBody, setField, splitText, stripComment, stripQuotes,
+  itemKey, parseList, refFor, refKey, removeField, replaceBody, setField, splitText,
+  stripComment, stripQuotes,
 };
 
 function parseScalar(raw) {

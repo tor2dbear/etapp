@@ -194,30 +194,66 @@
   // what I hold up. Only `depends:` is authored — `blocks` is the reverse edge.
   function blockerItems(item) { return (item.blockedBy || []).map(itemById).filter(Boolean); }
   function blockedItems(item) { return (item.blocks || []).map(itemById).filter(Boolean); }
-  // One reference form for every puck-to-puck link, mirroring refKey() in the
-  // harvester: a bare slug means "in my own repo", `owner/repo#slug` names one
-  // anywhere on the board.
+  // ref:begin
+  // Every puck-to-puck link is spelled the same way: a bare slug means "in my own
+  // repo", `owner/repo#slug` names one anywhere on the board. The rule lives in
+  // `format.js` — the one file the board, the harvester and the CLI all reach — because
+  // it had drifted into four implementations that disagreed about argument order and
+  // about whether the qualified spelling of the local repo counts as local. `refKey`
+  // answers what a reference *is*, so two spellings of one reference are one reference.
+  //
+  // Fenced because `recomputeDeps` below is a second derivation of the same graph the
+  // harvester derives, and those two cannot be merged: one runs after an optimistic
+  // edit, the other at harvest. `scripts/dep-probe.mjs` lifts these bytes and the
+  // harvester's own and runs them side by side, so "they agree" is checked.
+  function refKey(from, ref) {
+    return fmt().refKey(ref, from.repo);
+  }
   function resolveRef(from, ref) {
-    var s = String(ref || "").trim();
-    var at = s.indexOf("#");
-    var repo = at === -1 ? from.repo : s.slice(0, at);
-    var slug = at === -1 ? s : s.slice(at + 1);
+    // Split once, then compare fields — the same answer as comparing built keys, without
+    // a string allocated per candidate. Measured: at a thousand pucks the concatenating
+    // form cost 163ms to open the blocker picker against 33ms for this one.
+    var key = refKey(from, ref);
+    var at = key.indexOf("\u0000");
+    var repo = key.slice(0, at);
+    var slug = key.slice(at + 1);
     for (var i = 0; i < DATA.items.length; i++) {
-      if (DATA.items[i].repo === repo && DATA.items[i].slug === slug) return DATA.items[i];
+      if (DATA.items[i].slug === slug && DATA.items[i].repo === repo) return DATA.items[i];
     }
     return null;
   }
-  // How this repo would name that puck: a bare slug at home, `owner/repo#slug`
-  // across repos. Matches refKey() in the harvester, and is the one place both
+  // How this repo would name that puck — the inverse of `refKey`, and the one place both
   // `parent` and `depends` decide how a link is written.
   function refFor(from, target) {
-    return target.repo === from.repo ? target.slug : target.repo + "#" + target.slug;
+    return fmt().refFor(from.repo, target.repo, target.slug);
   }
+  // The authored list with each reference once. Everything that walks `depends:` goes
+  // through here: the derivation below, the chips in the modal, and the picker's tokens.
+  // The picker was the one that did not, so a puck listing `auth` and `me/repo#auth`
+  // showed one chip and two identical tokens, each ✕ removing both.
+  function dependRefs(item) {
+    var seen = Object.create(null);
+    var out = [];
+    (item.depends || []).forEach(function (ref) {
+      var key = refKey(item, ref);
+      if (seen[key]) return;
+      seen[key] = 1;
+      out.push(ref);
+    });
+    return out;
+  }
+  // The list a removal leaves behind: every spelling of that reference gone, not just
+  // the one the ✕ was rendered from.
+  function withoutDepend(item, ref) {
+    var key = refKey(item, ref);
+    return (item.depends || []).filter(function (r) { return refKey(item, r) !== key; });
+  }
+  // ref:end
   // The authored list, resolved — every declared blocker, landed ones included.
   // `blockedBy` is the *unfinished* subset, so editing has to work from this one:
   // you can't remove a dependency the board never showed you.
   function dependsItems(item) {
-    return (item.depends || []).map(function (r) { return resolveRef(item, r); }).filter(Boolean);
+    return dependRefs(item).map(function (r) { return resolveRef(item, r); }).filter(Boolean);
   }
   // The hierarchy, resolved. `parentRef`/`children` are ids the harvester derived
   // from the `parent:` fields — never a stored second copy, so a lookup is all the
@@ -545,7 +581,9 @@
   // could never be true, and the check would have stayed green if the real one broke.
   // A stub is a second implementation; this file has spent six rounds on that lesson.
   // q:begin
+  // term:begin
   var TERMINAL = { done: 1, cancelled: 1 };
+  // term:end
   function isFlagged(item) { return (item.signals || []).length > 0; }
   function lower(s) { return String(s).toLowerCase(); }
   function shortRepo(r) { return String(r).split("/").pop(); }
@@ -10483,12 +10521,13 @@
   // Only `depends:` is authored, on the blocked puck. `blockedBy` (what still
   // holds me up) and `blocks` (what I hold up) are both derived — here as well as
   // at harvest, so an optimistic edit can't leave the two directions disagreeing.
+  // dep:begin
   function recomputeDeps() {
     DATA.items.forEach(function (it) { it.blocks = []; it.missingDepends = []; it.blockedBy = []; });
     DATA.items.forEach(function (it) {
       var unresolved = [];
       var live = [];
-      (it.depends || []).forEach(function (ref) {
+      dependRefs(it).forEach(function (ref) {
         var d = resolveRef(it, ref);
         if (!d) { it.missingDepends.push(ref); unresolved.push(ref); return; }
         if (!TERMINAL[d.status]) live.push(d);
@@ -10518,6 +10557,7 @@
       it.signals = needs ? rest.concat([{ type: "depends-missing" }]) : rest;
     });
   }
+  // dep:end
   // Would depending on `target` close a loop? Walk the *authored* graph, since a
   // landed blocker still counts as an edge.
   function wouldDependLoop(item, target) {
@@ -10553,8 +10593,12 @@
         toast("✗ " + err.message, true);
       });
   }
+  // Removing a blocker removes every way it was written. `auth` and `me/repo#auth` are
+  // one reference and the row above draws them as one chip, so a ✕ that took only the
+  // spelling it was rendered from would leave the puck blocked by a blocker it no longer
+  // shows.
   function removeDepend(item, ref) {
-    changeDepends(item, (item.depends || []).filter(function (r) { return r !== ref; }),
+    changeDepends(item, withoutDepend(item, ref),
       "roadmap: " + item.slug + " no longer blocked by " + ref);
   }
   // Which pucks could block this one: anything but itself, what it already lists,
@@ -10571,7 +10615,7 @@
   // they can still be removed), each with a ✕ when writable, plus "Add".
   function dependsValue(item, editable) {
     var wrap = el("div", "prop-blockers");
-    (item.depends || []).forEach(function (ref) {
+    dependRefs(item).forEach(function (ref) {
       var d = resolveRef(item, ref);
       var chip = el("span", "dep-chip");
       if (d) {
@@ -10603,7 +10647,7 @@
         // Several tokens: everything this puck declared. Removing one from here is
         // the same write as the ✕ on the row behind.
         tokens: function () {
-          return (item.depends || []).map(function (ref) {
+          return dependRefs(item).map(function (ref) {
             var d = resolveRef(item, ref);
             return {
               label: d ? d.title : ref,

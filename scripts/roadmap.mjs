@@ -19,7 +19,13 @@
 //   roadmap list [--status now]                           quick overview
 //   roadmap install-hook                                  auto-bump `updated` on commit
 //
-// Options: --dir <roadmap dir> (default "roadmap"). Dependency-free.
+// Options: --dir <roadmap dir> (default "roadmap")
+//          --repo owner/repo    which repo this is, if `roadmap/README.md` does not say
+//                               (or $ROADMAP_REPO). Knowing it is what lets `depends`
+//                               and `parent` treat `you/repo#x` as local when this is
+//                               `you/repo`: without it those guards see a cross-repo
+//                               reference and leave it to the harvester.
+// Dependency-free.
 
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -29,7 +35,7 @@ import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from ".
 import {
   stripComment, stripQuotes, parseList, fieldSpan,
   formatValue, formatLine, setField as setFieldIn, removeField as removeFieldIn,
-  splitText, frontmatterRange,
+  splitText, frontmatterRange, refKey,
 } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -85,12 +91,18 @@ function setField(text, key, value) {
 // ranked 20 was one `renumber` skipped and `move` sorted among the unranked — then
 // wrote that back. It is not only `order`; every field read here had the comment on
 // it. For a list field, use getList.
+// A scalar field, decoded — the value it denotes, not the spelling it happens to carry.
+// This handed back the raw span, which is the same trap `getList` below describes for
+// lists: `repo: "acme/widgets"` came back with its quotes, so the reference rule never
+// recognised the repo as this one and every guard built on it was off. One caller had
+// already worked around it by calling `stripQuotes` on the title itself; the one reading
+// `parent` had not, so a quoted parent walked past the cycle check.
 function getField(text, key) {
   const { lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) return null;
   const at = fieldSpan(lines, range[0], range[1], key);
-  return at ? at.value : null;
+  return at ? stripQuotes(at.value) : null;
 }
 
 // A list field's items, decoded. Both spellings land here: an inline `[a, b]` through
@@ -204,6 +216,72 @@ async function cmdTag() {
   console.log(`✓ ${slug} tags: ${formatValue("tags", [...set])}  (updated ${TODAY})`);
 }
 
+// Which repo this checkout is, as the board names it — `owner/repo`. **Declared, never
+// discovered.** It matters because `auth` and `owner/repo#auth` are the same reference
+// when `owner/repo` is this repo, and without the answer three guards let the qualified
+// spelling past: the self-check, the existence check, and the loop walk.
+//
+// The first version asked `git remote get-url origin`, and that was wrong twice over.
+// It is confidently wrong rather than silent — a local-path clone answers
+// `checkouts/widgets`, a nested GitLab group answers `sub/widgets`, a fork answers the
+// fork's name while `sources.json` says the upstream's — and it is reconfigurable from
+// outside the repo: one `url.<base>.insteadOf` line rewrites the answer and the
+// self-dependency guard is off again. Measured, both. The immediately preceding change
+// to this repository spent its whole review learning that git configuration is an
+// accident surface, and then this reached for it.
+//
+// Everything else in this system declares the answer: `sources.json` carries
+// `source.repo` for the harvester, `board.config.json` carries `repoUrl` for the board.
+// So: `--repo`, `ROADMAP_REPO`, or a `repo:` line in the roadmap directory's own
+// README. No answer means no answer — the guards fall back to what they did before,
+// which is to leave a cross-repo reference to the harvester.
+let SELF_REPO;
+function selfRepo() {
+  if (SELF_REPO !== undefined) return SELF_REPO;
+  const flag = typeof opts.repo === "string" ? opts.repo.trim() : "";
+  const env = (process.env.ROADMAP_REPO || "").trim();
+  let declared = flag || env;
+  if (!declared) {
+    try {
+      declared = (getField(readFileSync(path.join(DIR, "README.md"), "utf8"), "repo") || "").trim();
+    } catch {
+      declared = "";
+    }
+  }
+  // The template ships `repo: owner/repo` for you to replace. Left as it is, it is not a
+  // declaration — believing it would have the CLI quietly convinced it is a repo called
+  // `owner/repo`, which is worse than knowing nothing.
+  if (declared === "owner/repo") declared = "";
+  // Otherwise `owner/repo` or nothing. A value that is not that shape is a typo, and
+  // guessing what it meant is how the remote version went wrong.
+  SELF_REPO = /^[^/\s#]+\/[^/\s#]+$/.test(declared) ? declared : null;
+  if (declared && !SELF_REPO) fail(`repo "${declared}" is not owner/repo`);
+  return SELF_REPO;
+}
+
+// A reference as this repo would write it: the bare slug when it names a puck here,
+// unchanged otherwise. Built on the shared `refKey`, so "the same reference" means here
+// exactly what it means to the board and the harvester.
+// Said once per run, not per reference: a qualified reference with nothing declared is
+// the case where the guards quietly do less, and a contributor who copied the template
+// without filling it in would never find that out. Cheap to say, and it names the fix.
+let WARNED = false;
+function localRef(ref) {
+  const repo = selfRepo();
+  if (!repo && String(ref).includes("#") && !WARNED) {
+    WARNED = true;
+    console.error(
+      `  (no repo declared, so "${String(ref).trim()}" is treated as another repo's —` +
+        ` set repo: in ${path.relative(process.cwd(), path.join(DIR, "README.md"))}, or pass --repo)`
+    );
+  }
+  const key = refKey(ref, repo || "\u0000none");
+  const at = key.indexOf("\u0000");
+  const owner = key.slice(0, at);
+  const slug = key.slice(at + 1);
+  return repo && owner === repo ? slug : String(ref).trim();
+}
+
 // Dependencies. Same `+add -remove` shape as `tag`, because it's the same kind of
 // edit — a list field on one puck. A reference is a slug in this repo or
 // `owner/repo#slug` anywhere on the board (the form `parent` already uses).
@@ -211,16 +289,20 @@ async function cmdDepends() {
   const slug = pos.shift();
   if (!slug) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
   const { path: p, text } = await readPuckOrFail(slug);
-  const set = new Set(getList(text, "depends"));
+  // Stored as written, but matched by what the reference *is*: a puck listing
+  // `owner/repo#auth` is blocked by `auth`, so `-auth` has to reach it.
+  const stored = getList(text, "depends");
+  const set = new Map(stored.map((r) => [localRef(r), r]));
 
   if (opts.clear) {
     set.clear();
   } else {
     if (pos.length === 0) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
     for (const op of pos) {
-      if (op.startsWith("-")) { set.delete(op.slice(1)); continue; }
-      const ref = op.replace(/^\+/, "").trim();
-      if (!ref) continue;
+      if (op.startsWith("-")) { set.delete(localRef(op.slice(1))); continue; }
+      const written = op.replace(/^\+/, "").trim();
+      if (!written) continue;
+      const ref = localRef(written);
       if (ref === slug) fail("a puck can't depend on itself");
       // A same-repo reference is checked here; a cross-repo one can only be verified
       // at harvest, where the whole board is in hand (it flags one that misses).
@@ -231,16 +313,17 @@ async function cmdDepends() {
         const loop = await dependencyPath(ref, slug);
         if (loop) fail(`that would make a dependency loop (${[slug, ...loop].join(" → ")})`);
       }
-      set.add(ref);
+      set.set(ref, ref);
     }
   }
+  const refs = [...set.values()];
 
-  let out = set.size ? setField(text, "depends", [...set]) : removeField(text, "depends");
+  let out = refs.length ? setField(text, "depends", refs) : removeField(text, "depends");
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
   console.log(
-    set.size
-      ? `✓ ${slug} depends: ${formatValue("depends", [...set])}  (updated ${TODAY})`
+    refs.length
+      ? `✓ ${slug} depends: ${formatValue("depends", refs)}  (updated ${TODAY})`
       : `✓ ${slug} depends cleared  (updated ${TODAY})`,
   );
 }
@@ -255,7 +338,12 @@ async function dependencyPath(from, target, seen) {
   if (from === target) return [from];
   const p = puckPath(from);
   if (!p) return null;
-  const deps = getList(await readFile(p, "utf8"), "depends").filter((x) => !x.includes("#"));
+  // Every reference that lands in this repo, however it was spelled. A `#` used to stop
+  // the walk unconditionally, so a loop that went out through the qualified name of this
+  // very repo came back unseen.
+  const deps = getList(await readFile(p, "utf8"), "depends")
+    .map(localRef)
+    .filter((x) => !x.includes("#"));
   for (const d of deps) {
     const rest = await dependencyPath(d, target, seen);
     if (rest) return [from, ...rest];
@@ -330,7 +418,13 @@ async function cmdParent() {
   if (clearing) {
     out = removeField(text, "parent");
   } else {
-    const v = String(ref || "").trim();
+    // `parent` uses the same reference grammar as `depends`, so it goes through the same
+    // `localRef`. It did not until now, and the three guards below had the identical
+    // hole: `roadmap parent x owner/repo#x` from inside `owner/repo` wrote a puck that
+    // is its own etapp — which the harvester then flags and silently cuts. The fix for
+    // `depends` sat 130 lines up, and this is what it means to fix a call site rather
+    // than give the rule an owner.
+    const v = localRef(String(ref || "").trim());
     if (!v) fail("usage: roadmap parent <slug> <parent-slug|owner/repo#slug>   (--clear to remove)");
     if (v === slug) fail("a puck can't be its own etapp");
     // Same-repo references are checked here; a cross-repo one can only be verified
@@ -346,7 +440,7 @@ async function cmdParent() {
         seen.add(cur);
         const path2 = puckPath(cur);
         if (!path2) break;
-        cur = getField(await readFile(path2, "utf8"), "parent");
+        cur = localRef(getField(await readFile(path2, "utf8"), "parent") || "");
       }
     }
     out = setField(text, "parent", v);
@@ -463,7 +557,7 @@ async function listPucks() {
     const text = await readFile(file, "utf8");
     pucks.push({
       slug,
-      title: stripQuotes(getField(text, "title") || slug),
+      title: getField(text, "title") || slug,
       status: getField(text, "status") || "inbox",
       updated: getField(text, "updated") || "",
     });
@@ -716,6 +810,9 @@ function printHelp() {
   roadmap install-hook                                auto-bump updated on commit
 
   --dir <path>   roadmap directory (default: roadmap)
+  --repo owner/repo   which repo this is, if roadmap/README.md does not say
+                      (or $ROADMAP_REPO). Without it, you/repo#x is treated as
+                      another repo's even when this is you/repo.
   statuses: ${STATUSES.join(", ")}
   priorities: ${PRIORITIES.join(", ")}`);
 }

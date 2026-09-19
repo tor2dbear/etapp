@@ -23,6 +23,7 @@
 // so what is checked is the bytes the browser runs. A missing marker is a hard failure.
 //
 // Node builtins only, like the rest of scripts/.
+import { lcg } from "./lib/fuzz.mjs";
 import { liftRegion } from "./lib/region.mjs";
 
 // The whole app.js source, read once — section 6 below scans it for unguarded URL
@@ -75,12 +76,6 @@ const CORPUS = [
   'say "hi" now', "a:b:c", "Hello, world", "\t", "  ", "",
 ];
 
-// A deterministic fuzz. Seeded, so a CI failure is reproducible from the seed alone
-// rather than being a story about a run nobody can repeat.
-function lcg(seed) {
-  let x = seed >>> 0;
-  return () => ((x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 4294967296);
-}
 const ATOMS = [
   "status", "is", "has", "tag", "repo", "parent", "updated", "target", "priority",
   "owner", "agent", "issue", "label", "prio", "epic", "orphan", "ready", "now",

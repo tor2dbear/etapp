@@ -1,12 +1,18 @@
 // Lift a marked region out of a file, or fail loudly.
 //
-// Two checks evaluate a fenced part of `app.js` in Node — the markdown renderer and
-// the query grammar — so that what is judged is the bytes the browser runs rather than
-// a copy of them. Both wrote this out: read the file, find the two whole-line markers,
-// the same three-clause validity test, the same error sentence. The copies had already
-// started to differ cosmetically, which is the first symptom of the failure this whole
-// review keeps finding. Here instead, in `scripts/lib/` beside the other shared Node
-// code — not in `format.js`, which needs no `fs` and ships to every visitor.
+// Three checks evaluate a fenced region in Node — the markdown renderer, the query
+// grammar, and the dependency graph, which lifts from `scripts/harvest.mjs` as well as
+// from `app.js` — so that what is judged is the bytes that ship rather than a copy of
+// them. The caller supplies the region's free names, and supplying the *real* ones (the
+// dependency probe hands in `format.js`'s own reference rule) is the difference between
+// a sandbox and a stub.
+//
+// The lifting itself is here because the first two checks had each written it out: read
+// the file, find the two whole-line markers, the same three-clause validity test, the
+// same error sentence. The copies had already started to differ cosmetically, which is
+// the first symptom of the failure this whole review keeps finding. In `scripts/lib/`
+// beside the other shared Node code — not in `format.js`, which needs no `fs` and ships
+// to every visitor.
 //
 // Each caller keeps its own `new Function`: which names a region hands back is the
 // probe's business, and the fence's business is only where the region begins and ends.
