@@ -85,12 +85,18 @@ function setField(text, key, value) {
 // ranked 20 was one `renumber` skipped and `move` sorted among the unranked — then
 // wrote that back. It is not only `order`; every field read here had the comment on
 // it. For a list field, use getList.
+// A scalar field, decoded — the value it denotes, not the spelling it happens to carry.
+// This handed back the raw span, which is the same trap `getList` below describes for
+// lists: `repo: "acme/widgets"` came back with its quotes, so the reference rule never
+// recognised the repo as this one and every guard built on it was off. One caller had
+// already worked around it by calling `stripQuotes` on the title itself; the one reading
+// `parent` had not, so a quoted parent walked past the cycle check.
 function getField(text, key) {
   const { lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) return null;
   const at = fieldSpan(lines, range[0], range[1], key);
-  return at ? at.value : null;
+  return at ? stripQuotes(at.value) : null;
 }
 
 // A list field's items, decoded. Both spellings land here: an inline `[a, b]` through
@@ -530,7 +536,7 @@ async function listPucks() {
     const text = await readFile(file, "utf8");
     pucks.push({
       slug,
-      title: stripQuotes(getField(text, "title") || slug),
+      title: getField(text, "title") || slug,
       status: getField(text, "status") || "inbox",
       updated: getField(text, "updated") || "",
     });
