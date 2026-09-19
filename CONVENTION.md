@@ -123,7 +123,8 @@ Outside that subset — raw HTML, images, `---` rules, footnotes — nothing is
 interpreted: **the line is shown as you typed it, on its own line.** It is never
 folded into the paragraph around it, which is the one promise that matters when
 you write something the board does not know. `tests/markdown.fixture.md` is the
-text that holds all of this to it.
+text that holds all of this to it: CI renders it with the board's own renderer on
+every pull request and judges the result with a real HTML parser.
 
 ---
 

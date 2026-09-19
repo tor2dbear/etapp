@@ -285,6 +285,14 @@
   //
   // The cost is paid here, once: block detection below runs on lines that have
   // already been escaped, so a blockquote starts with `&gt;`, not `>`.
+  //
+  // `scripts/md-probe.mjs` lifts everything between the two markers below and runs
+  // it in Node, so CONVENTION's rendering contract is checked against the bytes the
+  // browser runs rather than against a copy of them. Code moved out of the fence
+  // leaves the check; the probe exits non-zero if either marker is missing or the
+  // region stops evaluating, so it can fail but not go quiet. The markers are
+  // matched as whole lines, which is why they carry no prose.
+  // md:begin
   function esc(s) {
     return String(s)
       .replace(/\u0000/g, "") // the inline pass parks finished HTML on NUL — keep it ours
@@ -335,11 +343,20 @@
       .replace(/(^|[\s(>])(https?:\/\/[^\s<>()]*[^\s<>().,;:!?])/g, function (_, pre, u) { return pre + hold(mdLink(u, u)); });
     out = mdEmphasis(out);
     // A held link's label can itself hold a code span, so one pass is not enough.
-    // Indices only ever point backwards, so this terminates.
-    while (out.indexOf("\u0000") >= 0) {
+    // Indices only ever point backwards, so each pass strictly shrinks the work.
+    //
+    // The loop used to run `while` a NUL was left, which terminates only as long as
+    // every NUL in the string is one of ours. That is `esc()`'s job one function
+    // away, and if it ever stopped stripping them a body carrying a bare NUL would
+    // spin here forever — a hung tab, and a CI step that hangs instead of failing.
+    // Verified: with the strip removed, the old loop never returns. Stopping when a
+    // pass changes nothing costs one comparison and cannot spin whatever arrives.
+    var prev;
+    do {
+      prev = out;
       out = out.replace(/\u0000(\d+)\u0000/g, function (_, i) { return held[+i]; });
-    }
-    return out;
+    } while (out !== prev);
+    return out.replace(/\u0000/g, "");
   }
 
   // A table is recognised only as a *pair*: a `|…|` row followed by a `|---|` rule
@@ -354,7 +371,15 @@
   // not interpreted, and "not interpreted" has to mean *shown on its own line* rather
   // than folded into the neighbouring sentence. Without them the guarantee held for
   // tables and stopped exactly where the documentation kept going.
-  var BLOCKISH = /^\s*(?:\||&gt;|&lt;|!\[|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$)/;
+  // `#+\s` and `[^` arrived late, and they are the reason this list is worth
+  // re-reading against CONVENTION rather than against itself. The documented subset
+  // is `##`–`####`, so a `#` or `#####` heading is outside it — but the heading rule
+  // above has already taken every line the subset covers, which leaves exactly the
+  // unsupported ones here. Footnotes are named in CONVENTION's own list of what is
+  // not interpreted. Both were being folded into the neighbouring sentence, which is
+  // the one thing the promise forbids; they only looked right in the fixture because
+  // a blank line happened to sit under them.
+  var BLOCKISH = /^\s*(?:\||&gt;|&lt;|!\[|\[\^|#+\s|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$)/;
   function mdCells(line) {
     return TABLE_ROW.exec(line)[1].split("|").map(function (c) { return c.trim(); });
   }
@@ -366,7 +391,16 @@
   function mdIndent(ws) { return ws.replace(/\t/g, "    ").length; }
   function renderMd(src) {
     var out = [];
-    var lines = esc(src).split("\n");
+    // Split on any line ending, not on `\n`. JS counts `\r` as a line terminator, so
+    // `.` will not match one and `$` (no `m` flag) only matches at the very end of the
+    // string — meaning `(.*)$` cannot get past a trailing `\r`, and every block rule
+    // below missed a CRLF line by one character: `## H\r` was not a heading,
+    // `- a\r` was not a list item, `&gt; q\r` was not a quote. They fell through to the
+    // paragraph buffer and were *folded into the sentence around them*, which is the
+    // one thing CONVENTION promises never happens to a line the board does not know.
+    // Both other line-by-line markdown readers here already normalize first
+    // (`frontmatter.mjs`, `adapters.mjs`); this one was the odd reader out.
+    var lines = esc(src).split(/\r\n?|\n/);
     // Open lists, innermost last: { type, indent, liOpen }. A stack rather than a
     // flag, because indentation is what tells a sub-point from a wrapped line, and
     // one flag can only ever answer "in a list, yes or no".
@@ -488,6 +522,7 @@
     if (inCode) flushCode();
     return out.join("\n");
   }
+  // md:end
 
   // ── query model ──────────────────────────────────────────────────────────────
   // What's on screen is one list of predicates. The search box, the sidebar places,

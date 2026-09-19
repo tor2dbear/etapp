@@ -19,6 +19,7 @@ on:
       - "app.js"
       - "format.js"
       - "index.html"
+      - "tests/**"
       - "sources.json"
       - "board.config.json"
       - ".assetsignore"
@@ -42,15 +43,27 @@ jobs:
           node-version: 20
 
       # Cheapest gate first: a file that does not parse fails everything after it,
-      # and app.js is 11k lines that nothing else compiles. Globbed rather than listed:
-      # the list was written in the same commit that added format.js and left it out.
+      # and app.js is 11k lines that nothing else compiles.
+      #
+      # Asked of git rather than globbed. A hand-written list left format.js out in the
+      # commit that added it; the glob that replaced the list left out anything one
+      # directory deeper, and `data/roadmap.js` — which is generated, is served, and is
+      # the one JavaScript file here nobody writes by hand — was never in either. Both
+      # versions printed "✓ all JavaScript parses" while skipping a file. `git ls-files`
+      # cannot omit a tracked file, and an empty answer fails rather than passing
+      # vacuously.
       - name: Syntax
         run: |
           set -euo pipefail
-          for f in *.js scripts/*.mjs scripts/lib/*.mjs; do
+          files=$(git ls-files '*.js' '*.mjs')
+          if [ -z "$files" ]; then
+            echo "✗ no JavaScript found — this check just stopped checking anything"
+            exit 1
+          fi
+          for f in $files; do
             node --check "$f"
           done
-          echo "✓ all JavaScript parses"
+          echo "✓ all JavaScript parses ($(printf '%s\n' "$files" | wc -l) files)"
 
       # Would anything unintended be published? The bundle is the repo root, so a new
       # file is published unless something says otherwise. Already run from
@@ -58,11 +71,15 @@ jobs:
       - name: Bundle
         run: node scripts/check-bundle.mjs
 
-      # PyYAML is the point of this step, not an implementation detail. Our own parser
-      # accepts things no YAML parser does, so "it round-trips for us" was never
+      # Both judges below read the product's own output with a parser that has never
+      # heard of this codebase. That is the only arrangement that can answer "is this
+      # valid to anyone else", and both are CI-only: nothing here ships, and a second
+      # implementation of either format inside the product would defeat the purpose.
+      #
+      # PyYAML is the point of the format step, not an implementation detail. Our own
+      # parser accepts things no YAML parser does, so "it round-trips for us" was never
       # evidence that a puck is valid to anyone else — and pucks are read by other
-      # people's tools in other people's repos. CI-only: nothing here ships, and a
-      # second YAML implementation in the product would defeat the purpose.
+      # people's tools in other people's repos.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -72,3 +89,12 @@ jobs:
           set -euo pipefail
           pip install --quiet pyyaml
           python3 scripts/check-format.py
+
+      # The renderer's safety property is that it escapes first and emits a fixed
+      # whitelist of tags, and the thing that decides whether it held is a *parser*,
+      # not our own reading of the output. html.parser is stdlib, so this installs
+      # nothing. It also holds the renderer to CONVENTION's documented subset and to
+      # its one promise about everything outside it — `tests/markdown.fixture.md` has
+      # been named there as the text that does this since before the file existed.
+      - name: Markdown judge
+        run: python3 scripts/check-markdown.py
