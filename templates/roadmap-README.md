@@ -1,5 +1,14 @@
+---
+# Which repo this is, as the board names it. Fill this in: it is what lets the tools
+# know that `auth` and `you/repo#auth` are the same reference when `you/repo` is this
+# repo, so `roadmap depends`/`parent` can refuse a self-reference and catch a loop
+# before it reaches the board. Leave it out and those guards stay off for qualified
+# references. `--repo` or `ROADMAP_REPO` override it.
+repo: owner/repo
+---
+
 <!--
-Copy this file to your project as roadmap/README.md.
+Copy this file to your project as roadmap/README.md, and set `repo:` above.
 It documents the shared roadmap convention for this repo and points contributors
 (and agents) at the canonical spec. Do not edit the field/status names — they are
 the interface the cross-repo aggregator reads.

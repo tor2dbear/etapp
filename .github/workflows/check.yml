@@ -23,6 +23,10 @@ on:
       - "sources.json"
       - "board.config.json"
       - ".assetsignore"
+      # Read by check-bundle: every ignored pattern has to be excluded from the bundle
+      # too. Left out of this list, a direct push touching only this file skips the one
+      # gate that compares them, and the two lists drift on main unwatched.
+      - ".gitignore"
       - ".github/workflows/check.yml"
 
 permissions:

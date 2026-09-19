@@ -19,7 +19,13 @@
 //   roadmap list [--status now]                           quick overview
 //   roadmap install-hook                                  auto-bump `updated` on commit
 //
-// Options: --dir <roadmap dir> (default "roadmap"). Dependency-free.
+// Options: --dir <roadmap dir> (default "roadmap")
+//          --repo owner/repo    which repo this is, if `roadmap/README.md` does not say
+//                               (or $ROADMAP_REPO). Knowing it is what lets `depends`
+//                               and `parent` treat `you/repo#x` as local when this is
+//                               `you/repo`: without it those guards see a cross-repo
+//                               reference and leave it to the harvester.
+// Dependency-free.
 
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -242,8 +248,12 @@ function selfRepo() {
       declared = "";
     }
   }
-  // `owner/repo` or nothing. A value that is not that shape is a typo, and guessing what
-  // it meant is how the remote version went wrong.
+  // The template ships `repo: owner/repo` for you to replace. Left as it is, it is not a
+  // declaration — believing it would have the CLI quietly convinced it is a repo called
+  // `owner/repo`, which is worse than knowing nothing.
+  if (declared === "owner/repo") declared = "";
+  // Otherwise `owner/repo` or nothing. A value that is not that shape is a typo, and
+  // guessing what it meant is how the remote version went wrong.
   SELF_REPO = /^[^/\s#]+\/[^/\s#]+$/.test(declared) ? declared : null;
   if (declared && !SELF_REPO) fail(`repo "${declared}" is not owner/repo`);
   return SELF_REPO;
@@ -252,8 +262,19 @@ function selfRepo() {
 // A reference as this repo would write it: the bare slug when it names a puck here,
 // unchanged otherwise. Built on the shared `refKey`, so "the same reference" means here
 // exactly what it means to the board and the harvester.
+// Said once per run, not per reference: a qualified reference with nothing declared is
+// the case where the guards quietly do less, and a contributor who copied the template
+// without filling it in would never find that out. Cheap to say, and it names the fix.
+let WARNED = false;
 function localRef(ref) {
   const repo = selfRepo();
+  if (!repo && String(ref).includes("#") && !WARNED) {
+    WARNED = true;
+    console.error(
+      `  (no repo declared, so "${String(ref).trim()}" is treated as another repo's —` +
+        ` set repo: in ${path.relative(process.cwd(), path.join(DIR, "README.md"))}, or pass --repo)`
+    );
+  }
   const key = refKey(ref, repo || "\u0000none");
   const at = key.indexOf("\u0000");
   const owner = key.slice(0, at);
@@ -789,6 +810,9 @@ function printHelp() {
   roadmap install-hook                                auto-bump updated on commit
 
   --dir <path>   roadmap directory (default: roadmap)
+  --repo owner/repo   which repo this is, if roadmap/README.md does not say
+                      (or $ROADMAP_REPO). Without it, you/repo#x is treated as
+                      another repo's even when this is you/repo.
   statuses: ${STATUSES.join(", ")}
   priorities: ${PRIORITIES.join(", ")}`);
 }
