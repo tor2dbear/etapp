@@ -531,6 +531,13 @@
   // it. A term is { field, op, values, neg }: AND between terms, OR within a term's
   // values (`status:now,next` = now or next). Grammar is GitHub-shaped so nobody has
   // to learn it, and it is the same string an agent or a saved view writes.
+  // `scripts/check-query.mjs` lifts everything between the two markers below and runs
+  // it in Node, so the grammar's invariants are checked against the bytes the browser
+  // runs. It supplies exactly two names from outside the fence — `isFlagged` and
+  // `TERMINAL`, both reached only from `IS_STATES` — and anything else moved out of it
+  // fails the probe loudly rather than quietly leaving the check. Whole-line markers,
+  // so they carry no prose.
+  // q:begin
   function lower(s) { return String(s).toLowerCase(); }
   function shortRepo(r) { return String(r).split("/").pop(); }
 
@@ -600,12 +607,23 @@
   function isStandalone(i) { return !i.parentRef && !(i.children || []).length; }
 
   // Split on whitespace, but keep "quoted phrases" whole so free text can contain spaces.
+  //
+  // Only `"` opens one. `'` used to as well, which meant an apostrophe opened a phrase
+  // that never closed: `don't ship` became the single token `dont ship` — the quote
+  // deleted, the space swallowed — and the board searched for a substring no body can
+  // contain. Measured against a puck titled "don't ship on friday": zero results, with
+  // nothing on screen to say why. English is full of apostrophes and `"` already does
+  // the job; AGENTS.md documents only `"grep context"`, so `'` was buying nothing.
+  // It also cost the round trip. Every chip toggle and URL write goes parse → serialize,
+  // and a quote is stripped on the way in but never written back, so a query holding one
+  // lost a character per pass. No token can carry a `"` now, which is what lets `quoted()`
+  // re-add one without escaping and makes serialize∘parse a fixed point.
   function tokenize(str) {
     var out = [], cur = "", quote = null;
     for (var i = 0; i < str.length; i++) {
       var c = str.charAt(i);
       if (quote) { if (c === quote) quote = null; else cur += c; continue; }
-      if (c === '"' || c === "'") { quote = c; continue; }
+      if (c === '"') { quote = c; continue; }
       if (/\s/.test(c)) { if (cur) { out.push(cur); cur = ""; } continue; }
       cur += c;
     }
@@ -653,7 +671,13 @@
         }
         if (FIELDS[name] && rest) {
           if (FIELDS[name].dateOf) {
-            var m = /^(>=|<=|>|<|=)?(.+)$/.exec(rest);
+            // `[\s\S]+`, not `.+`: `.` does not match a line terminator, so a date value
+            // that is one made `exec` return null and the next line threw reading `m[1]`
+            // — inside `parseQuery`, which every render calls. `\s` splits those characters
+            // into separate tokens, but a quote shields them: `target:'\n` is the minimal
+            // case, reachable from a hand-written link or a saved view committed by hand.
+            // `rest` is non-empty here by the guard above, so this can no longer be null.
+            var m = /^(>=|<=|>|<|=)?([\s\S]+)$/.exec(rest);
             terms.push({ field: name, op: m[1] || "=", values: [m[2]], neg: neg });
           } else {
             terms.push({ field: name, op: "in", values: rest.split(",").map(lower).filter(Boolean), neg: neg });
@@ -673,7 +697,13 @@
       if (t.field === "text") return p + quoted(t.values[0]);
       if (t.field === "is") return p + "is:" + t.values.join(",");
       if (t.field === "has") return p + "has:" + t.values[0];
-      if (t.op !== "in" && t.op !== "=") return p + t.field + ":" + t.op + t.values[0];
+      // `quoted` here too, and not only on the branches below. A date value is the one
+      // the writer handed back raw, so a value carrying whitespace came apart on the way
+      // in: `target:>=` + a newline serialized to a literal newline, which `tokenize`
+      // then split on, and the term was gone by the next pass. Found by the fixed-point
+      // check rather than by reading — an ordinary date has no whitespace, so `quoted`
+      // returns it untouched and nothing about a real query changes.
+      if (t.op !== "in" && t.op !== "=") return p + t.field + ":" + t.op + quoted(t.values[0]);
       return p + t.field + ":" + t.values.map(quoted).join(",");
     }).join(" ");
   }
@@ -713,6 +743,7 @@
     for (var i = 0; i < terms.length; i++) if (!termMatches(item, terms[i])) return false;
     return true;
   }
+  // q:end
 
   // The sidebar views are queries, not special cases in the filter — the same
   // strings a saved view or an agent would write. ("all" = the committed board;
@@ -1218,11 +1249,27 @@
     });
     return hit;
   }
+  // `decodeURIComponent` throws on a malformed escape, and every caller below reads a
+  // string a person can hand-edit. Unguarded, `?q=50%` took the whole board down: the
+  // throw escaped `readUrl`, which runs before the first paint, so the IIFE never
+  // finished and the page kept only the static shell — measured at 16k of DOM against
+  // 24k, one board column instead of nine. `#50%` was quieter and no better: it threw
+  // past the render, so the board looked right while Back/Forward went unwired and the
+  // scrollport was never resolved.
+  //
+  // Every other fragile read in this file is already wrapped — localStorage, JSON.parse,
+  // history, the clipboard. These three were the exception, and they read the least
+  // trustworthy input of the lot. Falling back to the raw text is also the right answer
+  // rather than merely a safe one: `%` is an ordinary character in a search, and a hash
+  // that names no puck already has a path.
+  function safeDecode(v) {
+    try { return decodeURIComponent(v); } catch (e) { return v; }
+  }
   function readUrl() {
     var s = location.search.replace(/^\?/, ""), got = {};
     if (s) s.split("&").forEach(function (kv) {
       var i = kv.indexOf("=");
-      got[i < 0 ? kv : kv.slice(0, i)] = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
+      got[i < 0 ? kv : kv.slice(0, i)] = i < 0 ? "" : safeDecode(kv.slice(i + 1).replace(/\+/g, " "));
     });
     // Where the three levels are ordered: the view's memory over the board's defaults,
     // and the link over both. The view has to be read first — *which* memory to restore
@@ -2243,7 +2290,7 @@
   function setHash(id) {
     var base = location.pathname + location.search;
     var url = id ? base + "#" + id : base;
-    var curId = decodeURIComponent(location.hash.replace(/^#/, ""));
+    var curId = safeDecode(location.hash.replace(/^#/, ""));
     // Mark entries we push so boot can tell a reload of an app-opened puck (state
     // set) from a genuine direct deep link (no state) and not duplicate the board.
     var st = id ? { puck: id } : null;
@@ -2253,7 +2300,7 @@
     } catch (e) {}
   }
   function itemFromHash() {
-    var h = decodeURIComponent(location.hash.replace(/^#/, ""));
+    var h = safeDecode(location.hash.replace(/^#/, ""));
     if (!h) return null;
     for (var i = 0; i < DATA.items.length; i++) if (DATA.items[i].id === h) return DATA.items[i];
     return null;
