@@ -146,74 +146,43 @@ const CASES = [
     edit: ["app.js", "|\\[\\^|#+\\s|-{3,}", "|-{3,}"], expect: "[own-line]" },
   { gate: "markdown", claim: "a line ending is not a dialect",
     edit: ["app.js", "esc(src).split(/\\r\\n?|\\n/)", 'esc(src).split("\\n")'], expect: "[line-endings]" },
-  { gate: "markdown", claim: "the fixture is what the contract points at",
-    remove: ["tests/markdown.fixture.md"], expect: "markdown.fixture.md" },
+  // Not `remove: the fixture`. That killed the probe with an unhandled ENOENT, and the
+  // expectation matched the absolute path in the *stack trace* while the `[fixture]`
+  // check never ran at all — a claim certified by a crash. Editing one needled line
+  // out of the fixture is the mutation that reaches the check the claim names.
+  { gate: "markdown", claim: "the fixture is held to what CONVENTION promises",
+    edit: ["tests/markdown.fixture.md", "##### A fifth-level heading is outside the subset", "A fifth-level heading"],
+    expect: "[fixture]" },
+  { gate: "markdown", claim: "…and a fixture that is gone is noticed at all",
+    remove: "tests/markdown.fixture.md", expect: "md-probe.mjs failed" },
 ];
 
+// A recursive copy of the whole directory, `.git` included. The copy *is* the working
+// tree by construction — uncommitted edits, staged adds, renames, deletions, untracked
+// files, symlinks and the index, exactly as they are — so there is nothing to
+// enumerate and therefore nothing to enumerate wrongly.
+//
+// That matters more than the tidiness. This function used to `git clone` (which gets
+// HEAD, the wrong tree) and then reconstruct the working tree on top by decoding
+// `git status --porcelain`. Four of the defects this file has needed fixing were in
+// that reconstruction, every one of them the same shape: a summary format read as a
+// list of files. An untracked directory arriving as `?? dir/`. A quoted `"odd \"name\""`.
+// A rename's source left behind so the run validated code the tree no longer had. A
+// dangling symlink that `existsSync` calls absent. None of those are expressible here.
+//
+// Measured on this repo: 53ms against 166ms for `git clone --no-hardlinks`, ×33 runs.
+// Bigger on disk (6.3M against 2.1M — loose objects rather than a pack) and peak usage
+// is the base plus one mutant, which is nothing.
+const SKIP_COPY = new Set(["node_modules", ".sources", ".wrangler"]);
 function clone(dir) {
-  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", ROOT, dir], { stdio: "ignore" });
-  // The clone has HEAD, not the working tree — copy over anything uncommitted so this
-  // checks the code in front of you rather than the last commit.
-  //
-  // `-uall` and `-z`, both for the same reason: the plain porcelain format is a
-  // summary, not a list of files. It collapses an untracked directory into one entry
-  // (`?? new-fixtures/`), which `copyFileSync` then hit with EISDIR before a single
-  // gate ran — so adding a fixtures directory silently disabled the working-tree half
-  // of this check. And it *quotes* a path containing a space or a quote character
-  // (`"odd \"name\".md"`), which would have been copied to a filename with the quotes
-  // still in it. `-z` emits raw NUL-separated paths; a rename carries its old path as
-  // the following field, which is consumed rather than mistaken for a file.
-  const entries = execFileSync("git", ["status", "--porcelain", "-z", "-uall"], { cwd: ROOT, encoding: "utf8" })
-    .split("\0").filter(Boolean);
-  const dirty = [];
-  const untracked = new Set();
-  for (let i = 0; i < entries.length; i++) {
-    const code = entries[i].slice(0, 2);
-    const rel = entries[i].slice(3);
-    if (code[0] === "?") untracked.add(rel);
-    dirty.push(rel);
-    // A rename or copy carries its source as the following field. Both go on the list
-    // rather than being skipped: the loop below copies a path that exists in the
-    // working tree and deletes one that does not, which is exactly right for each —
-    // a rename's source is gone and has to be removed from the clone, a copy's source
-    // is still there and is re-copied harmlessly.
-    //
-    // Skipping it meant the clone kept HEAD's copy of the old path beside the new one.
-    // Measured: with `tests/markdown.fixture.md` renamed away, the markdown gate — which
-    // reads that exact path — passed on the base clone and the whole run went green on
-    // a tree where the fixture no longer exists. The meta-check was validating stale
-    // code, which is the one failure it is built to be incapable of.
-    if (code[0] === "R" || code[0] === "C") dirty.push(entries[++i]);
-  }
-  for (const rel of dirty) {
-    const from = path.join(ROOT, rel);
-    const to = path.join(dir, rel);
-    // `lstat`, not `existsSync`: a dangling symlink "does not exist" and would have
-    // been silently skipped, leaving the base clone green on a tree the real gate
-    // rejects. A symlink is recreated as one rather than dereferenced, and anything
-    // that is neither a file nor a symlink — a submodule gitlink, a typechange — is
-    // reported rather than handed to `copyFileSync`, which is the enumeration class
-    // the untracked-directory bug already came from.
-    let st = null;
-    try { st = fs.lstatSync(from); } catch { st = null; }
-    if (st && !st.isFile() && !st.isSymbolicLink()) {
-      throw new Error(`cannot mirror ${rel} into the clone — it is not a regular file or symlink`);
-    }
-    if (st) {
-      fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.rmSync(to, { force: true });
-      if (st.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(from), to);
-      else fs.copyFileSync(from, to);
-      // Only what git already considers tracked. `git add -f` on everything made an
-      // untracked file tracked in the clone, which changes what both `git ls-files`
-      // and check-bundle see — measured: an untracked `probe.tmp.js` with a syntax
-      // error is invisible to the real gate and aborted this one on the base tree.
-      if (!untracked.has(rel)) execFileSync("git", ["add", "-f", rel], { cwd: dir, stdio: "ignore" });
-    } else if (fs.existsSync(to) || fs.lstatSync(to, { throwIfNoEntry: false })) {
-      fs.rmSync(to, { force: true });
-      execFileSync("git", ["rm", "--cached", "-q", rel], { cwd: dir, stdio: "ignore" });
-    }
-  }
+  fs.cpSync(ROOT, dir, {
+    recursive: true,
+    verbatimSymlinks: true, // a symlink stays a symlink, pointing where it pointed
+    // Nothing here installs them, but a contributor's `npm i` or a local harvest would
+    // otherwise be copied once per mutation. They are in `.assetsignore` and
+    // `.gitignore`; no gate reads them.
+    filter: (src) => !SKIP_COPY.has(path.basename(src)),
+  });
   return dir;
 }
 
@@ -236,7 +205,7 @@ function apply(dir, c) {
     if (c.track) execFileSync("git", ["add", "-f", rel], { cwd: dir, stdio: "ignore" });
   }
   if (c.remove) {
-    fs.rmSync(path.join(dir, c.remove[0]), { force: true });
+    fs.rmSync(path.join(dir, c.remove), { force: true });
   }
   return null;
 }
@@ -247,9 +216,10 @@ if (only && !GATES[only]) {
   process.exit(1);
 }
 const cases = only ? CASES.filter((c) => c.gate === only) : CASES;
-// `check-checks.mjs fomat` used to print "✓ every gate can fail — 0 claims" and exit 0.
-// The same vacuous pass `check-syntax.mjs` refuses for an empty file list, in the file
-// whose entire subject is checks that cannot fail.
+// A typo'd gate name is caught above. What is left for this to catch is a gate in
+// `GATES` with no case in `CASES` — which would otherwise print a tick for a gate
+// nothing had tried to break. The same vacuous pass `check-syntax.mjs` refuses for an
+// empty file list.
 if (!cases.length) {
   console.error("✗ no claims selected — this check just stopped checking anything");
   process.exit(1);
@@ -262,7 +232,6 @@ const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); 
 process.on("exit", cleanup);
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { cleanup(); process.exit(130); });
 const failures = [];
-let ran = 0;
 
 // The gates must all pass on the *unmutated* clone first. Otherwise a mutation that
 // "fails" proves nothing — the gate was already red.
@@ -271,6 +240,35 @@ const base = clone(path.join(tmp, "base"));
 // `null` when the spawn itself failed, so the old `r.stdout + r.stderr` was `0` and
 // `.trim()` threw a TypeError over the top of the real reason.
 const output = (r) => [r.stdout, r.stderr].filter(Boolean).join("").trim();
+
+// Did the gate fail *for this claim*? Three of the judges report every failure as
+// `  [tag] detail`, so an expectation written `[tag]` is matched against the set of
+// tags the run actually emitted — exactly, not as a substring of the whole output.
+//
+// Substring matching over stdout+stderr certified a claim with a crash. The fixture
+// case deletes `tests/markdown.fixture.md`; the probe then dies with an unhandled
+// ENOENT whose stack trace contains the absolute path, so `expect:
+// "markdown.fixture.md"` matched — while the `[fixture]` check that reads CONVENTION's
+// promised needles was never reached. Zero `[fixture]` lines in the output, and the
+// claim counted as held. Two earlier expectations went the same way: `"num"` matched
+// `[writer]`, and `"reads"` matched the judge's fixed epilogue, printed on every
+// failure.
+//
+// A crash emits no tags, so a crash now fails the case, which is the right answer: a
+// gate that died did not demonstrate anything about the claim it makes. The two gates
+// that report in prose rather than tags keep prose expectations, and those are matched
+// as substrings — noted rather than hidden.
+const TAGGED = /^\s*\[([a-z0-9/-]+)\]/;
+function named(out, expect) {
+  const wanted = /^\[([a-z0-9/-]+)\]$/.exec(expect);
+  if (!wanted) return out.toLowerCase().includes(expect.toLowerCase());
+  const emitted = new Set();
+  for (const line of out.split("\n")) {
+    const m = TAGGED.exec(line);
+    if (m) emitted.add(m[1]);
+  }
+  return emitted.has(wanted[1]);
+}
 for (const [name, argv] of Object.entries(GATES)) {
   const r = spawnSync(argv[0], argv.slice(1), { cwd: base, encoding: "utf8", timeout: 180000 });
   if (r.error) {
@@ -295,12 +293,11 @@ for (const [i, c] of cases.entries()) {
   const argv = GATES[c.gate];
   const r = spawnSync(argv[0], argv.slice(1), { cwd: dir, encoding: "utf8", timeout: 180000 });
   const out = output(r);
-  ran++;
   if (r.error) {
     failures.push([c, `the gate could not be run — ${r.error.message}`]);
   } else if (r.status === 0) {
     failures.push([c, "the gate passed — this claim is not held"]);
-  } else if (!out.toLowerCase().includes(c.expect.toLowerCase())) {
+  } else if (!named(out, c.expect)) {
     failures.push([c, `the gate failed but never mentioned ${JSON.stringify(c.expect)} — ` +
       `it may be failing for an unrelated reason: ${out.trim().split("\n").filter(Boolean).slice(0, 2).join(" / ").slice(0, 160)}`]);
   }
@@ -308,12 +305,12 @@ for (const [i, c] of cases.entries()) {
 }
 
 if (failures.length) {
-  console.error(`✗ ${failures.length} of ${ran} claim(s) are not actually held\n`);
+  console.error(`✗ ${failures.length} of ${cases.length} claim(s) are not actually held\n`);
   for (const [c, why] of failures) console.error(`  [${c.gate}] ${c.claim}\n      ${why}\n`);
   process.exit(1);
 }
 const byGate = cases.reduce((a, c) => ({ ...a, [c.gate]: (a[c.gate] || 0) + 1 }), {});
 console.log(
-  `✓ every gate can fail — ${ran} claims, each broken on purpose and each named by the gate that makes it ` +
+  `✓ ${cases.length} claims broken on purpose, each one caught and named by the gate that makes it ` +
     `(${Object.entries(byGate).map(([g, n]) => `${g} ${n}`).join(", ")})`
 );

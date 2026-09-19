@@ -42,16 +42,10 @@ jobs:
         with:
           node-version: 20
 
-      # Cheapest gate first: a file that does not parse fails everything after it,
-      # and app.js is 11k lines that nothing else compiles.
-      #
-      # Asked of git rather than globbed. A hand-written list left format.js out in the
-      # commit that added it; the glob that replaced the list left out anything one
-      # directory deeper, and `data/roadmap.js` — which is generated, is served, and is
-      # the one JavaScript file here nobody writes by hand — was never in either. Both
-      # versions printed "✓ all JavaScript parses" while skipping a file. `git ls-files`
-      # cannot omit a tracked file, and an empty answer fails rather than passing
-      # vacuously.
+      # Cheapest gate first: a file that does not parse fails everything after it. Why
+      # it asks git rather than globbing, and what each earlier version left out, is in
+      # the script — this comment used to restate it and the two copies had already
+      # started to drift.
       - name: Syntax
         run: node scripts/check-syntax.mjs
 

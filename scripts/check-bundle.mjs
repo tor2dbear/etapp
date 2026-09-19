@@ -132,9 +132,15 @@ export async function auditBundle(root) {
     // stderr ignored, not inherited: an unzipped copy of the product is not a git
     // checkout, and `fatal: not a git repository` printed in the middle of a deploy
     // reads like the deploy broke. The on-disk reading answers there anyway.
-    tracked = execFileSync("git", ["ls-files"],
+    // `-z`: `git ls-files` C-quotes a path containing a quote, a backslash or a
+    // non-ASCII byte, so `odd "name".txt` arrived as `"odd \\"name\\".txt"` and matched
+    // neither its `SERVED` pattern nor its `.assetsignore` entry — reported as loose,
+    // under a spelling the on-disk reading spells differently. It errs toward
+    // reporting rather than toward publishing, so it blocked a deploy rather than
+    // leaking a file, but it is the same defect `check-syntax.mjs` documents.
+    tracked = execFileSync("git", ["ls-files", "-z"],
       { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-      .split("\n").filter(Boolean);
+      .split("\0").filter(Boolean);
   } catch { /* not a git checkout — the on-disk reading still answers */ }
 
   const gitignore = await read(root + ".gitignore");
