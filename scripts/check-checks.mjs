@@ -324,9 +324,38 @@ function materialize(copy, src, dropped = []) {
   return dropped;
 }
 
-// Relative, so it resolves beside the link and therefore inside the copy, and named so
-// that nothing plausibly exists at it.
+// The skip is an optimisation, so it must not change a single answer: one of these
+// directories holding a *tracked* file means `git ls-files` hands that path to the gates
+// while the copy has no such file. Measured on a tracked `.wrangler/vendor.js` — the real
+// syntax gate green, the copy's baseline red, the guard refusing to run on a tree that
+// was perfectly fine. Skipped only when nothing tracked lives underneath, which is the
+// case that made it worth skipping.
+const TRACKED_PATHS = TRACKED.toString("utf8")
+  .split("\0")
+  .filter(Boolean)
+  .map((rec) => rec.slice(rec.indexOf("\t") + 1));
+
+function skipped(src) {
+  if (!SKIP_COPY.has(path.basename(src))) return false;
+  const rel = path.relative(ROOT, src).split(path.sep).join("/") + "/";
+  return !TRACKED_PATHS.some((t) => t.startsWith(rel));
+}
+
+// Relative, so it resolves beside the link and therefore inside the copy. The name is not
+// assumed to be free: a tracked file sitting at it made the stand-in *resolve*, so a
+// tracked dangling `collision.js` read as that file's contents and the copy reported four
+// claims held while the real syntax gate was red. Measured. So the name is tried until
+// the link demonstrably dangles, and asked of the result rather than of the odds.
 const MISSING = ".etapp-entry-that-could-not-be-copied";
+
+function standIn(p) {
+  for (let n = 0; n < 100; n++) {
+    fs.symlinkSync(n ? `${MISSING}-${n}` : MISSING, p);
+    if (!fs.existsSync(p)) return; // follows the link: false means it dangles, which is the point
+    fs.unlinkSync(p);
+  }
+  fail(`cannot place a stand-in for ${path.relative(ROOT, p)} that does not resolve to something`);
+}
 
 function clone(dir) {
   const special = [];
@@ -344,7 +373,7 @@ function clone(dir) {
       src !== GIT_DIR &&
       // Nothing here installs them, but a contributor's `npm i` or a local harvest
       // would otherwise be copied once per mutation. No gate reads them.
-      !SKIP_COPY.has(path.basename(src)) &&
+      !skipped(src) &&
       (copyable(src) || (special.push(path.relative(ROOT, src)), false)),
   });
   // The last step of copying, not the first step of indexing: run before `git init`, so
@@ -362,7 +391,7 @@ function clone(dir) {
   // where every gate can see it and keeps it unreadable, which is what the original is.
   // An empty file would have parsed cleanly as a tracked `.js` that is really a broken
   // link — green here, red out there, the same lie one layer down.
-  for (const rel of special.concat(dropped)) fs.symlinkSync(MISSING, inside(dir, rel));
+  for (const rel of special.concat(dropped)) standIn(inside(dir, rel));
   // A repository of its own, with an index built from those records rather than copied.
   // `update-index --index-info` does not need the objects they name, and `git ls-files`
   // — the only git either gate runs — reads the index alone, so the copy sees the same
@@ -489,7 +518,7 @@ function fingerprint() {
   const walk = (dir, rel) => {
     const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1));
     for (const entry of entries) {
-      if (entry.name === ".git" || SKIP_COPY.has(entry.name)) continue;
+      if (entry.name === ".git" || skipped(path.join(dir, entry.name))) continue;
       const here = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         walk(path.join(dir, entry.name), here);
