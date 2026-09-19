@@ -25,7 +25,8 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { STATUSES, PRIORITIES, slugify, normalizeDate } from "./lib/adapters.mjs";
+import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
+import { stripComment, stripQuotes, parseList, encodeItem, encodeScalar, encodeNumber } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -64,52 +65,130 @@ function frontmatterRange(lines) {
   return null;
 }
 
+// The fields whose schema is not a string: a number for the first two, a date for the
+// rest. Only these may write a digit string bare — everywhere else `123` is text.
+const TYPED_FIELDS = new Set(["order", "issue", "updated", "created", "target"]);
+
 function formatValue(key, value) {
-  // Inline arrays (tags, depends) — one shape for every list field.
-  if (Array.isArray(value)) return `[${value.join(", ")}]`;
+  // Inline arrays (tags, depends) — one shape for every list field. Each item is
+  // encoded rather than pasted in, so a value that needs quoting gets it back on the
+  // way out instead of being written bare and read as something else next time.
+  if (Array.isArray(value)) return `[${value.map(encodeItem).join(", ")}]`;
   if (key === "tags") return "[]";
-  const s = String(value);
-  if (key === "title" && /[:#]/.test(s)) return JSON.stringify(s);
-  return s;
+  // A number is written as a number, without a detour through a string that something
+  // then has to recognise as numeric again.
+  if (typeof value === "number" && Number.isFinite(value)) return encodeNumber(value);
+  // Otherwise by what the value is, not by which field it happens to be. The old rule
+  // asked `key === "title" && /[:#]/` — so `roadmap new "@frontend refactor"` wrote a
+  // title that no YAML parser accepts, because @ is not : or #, and it quoted
+  // `C# tips` that needed nothing.
+  return encodeScalar(value, TYPED_FIELDS.has(key));
+}
+
+// Where a field lives, and how many lines it spans. A block sequence is one field
+// written across several lines, so every edit has to see all of them — rewriting the
+// header alone left `- alpha` / `- beta` stranded under a new inline value, which the
+// parser then ignores. The blockers vanished silently and the file was no longer
+// valid YAML either.
+//
+// Items belong to the key only while its own value is empty, which is the rule the
+// parser uses to decide the same thing — the two have to agree on where a field ends.
+function fieldLines(lines, range, key) {
+  const [start, end] = range;
+  for (let i = start; i < end; i++) {
+    if (!lines[i].startsWith(key + ":")) continue;
+    // Derived once and handed back: getField recomputed the identical expression, so
+    // where a value starts on a key line — including the offset that ties it to the
+    // prefix test above — was written in two places that had to stay in step.
+    const value = stripComment(lines[i].slice(key.length + 1));
+    let last = i;
+    if (value === "") {
+      // A blank or comment line does not end a sequence — the parser skips it and
+      // goes on collecting — so the span has to reach past it to the last item.
+      // Stopping at the first one removed the header and the items above it and left
+      // the rest stranded, which is the same silent loss one storey down.
+      // Separators only belong to the field when an item still follows: a blank line
+      // before the next key is that key's, not this one's.
+      for (let j = i + 1; j < end; j++) {
+        if (/^\s*-\s+/.test(lines[j])) { last = j; continue; }
+        if (!lines[j].trim() || lines[j].trimStart().startsWith("#")) continue;
+        break;
+      }
+    }
+    return { index: i, count: last - i + 1, value };
+  }
+  return null;
+}
+
+// The CLI reads the files the harvester reads, so it has to tolerate what the parser
+// tolerates. The parser drops a leading BOM before its fence check and this did not,
+// so every mutating command failed with "no YAML frontmatter found" on a puck the
+// board was happily showing — the editors that emit one made a puck readable but not
+// editable. The BOM is carried back out so an edit does not silently rewrite it.
+function splitText(text) {
+  const bom = text.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  return { bom, nl, lines: text.slice(bom.length).replace(/\r\n/g, "\n").split("\n") };
 }
 
 function setField(text, key, value) {
-  const nl = text.includes("\r\n") ? "\r\n" : "\n";
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const { bom, nl, lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) fail("no YAML frontmatter found — is this a puck?");
-  const [start, end] = range;
   const line = `${key}: ${formatValue(key, value)}`;
-  let replaced = false;
-  for (let i = start; i < end; i++) {
-    if (new RegExp(`^${key}:`).test(lines[i])) { lines[i] = line; replaced = true; break; }
-  }
-  if (!replaced) lines.splice(end, 0, line); // insert before closing fence
-  return lines.join(nl);
+  const at = fieldLines(lines, range, key);
+  // The new value is the whole field, so a sequence's items go with the header.
+  if (at) lines.splice(at.index, at.count, line);
+  else lines.splice(range[1], 0, line); // insert before closing fence
+  return bom + lines.join(nl);
 }
 
+// A scalar field's value, through the parser's own comment rule so the CLI and the
+// harvester read a field the same way. They did not: `order: 20 # after a` reached
+// normalizeNumber as the whole string, went to null, and the puck the board shows as
+// ranked 20 was one `renumber` skipped and `move` sorted among the unranked — then
+// wrote that back. It is not only `order`; every field read here had the comment on
+// it. For a list field, use getList.
 function getField(text, key) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const { lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) return null;
-  for (let i = range[0]; i < range[1]; i++) {
-    const m = new RegExp(`^${key}:\\s*(.*)$`).exec(lines[i]);
-    if (m) return m[1].trim();
-  }
-  return null;
+  const at = fieldLines(lines, range, key);
+  return at ? at.value : null;
+}
+
+// A list field's items, decoded. Both spellings land here: an inline `[a, b]` through
+// parseList, a block sequence through its own lines.
+//
+// This used to go the long way round — flatten the sequence back into `[a, b]` text,
+// hand that to the caller, and have the caller parseList it apart again. The shape in
+// the middle had no reader: all three callers undid it on the next line. It cost two
+// rounds of review to make that round trip lossless (quote-aware splitting so the
+// join survived, re-encoding so the split did), and `- ui, api` — one tag, because a
+// sequence item owns its whole line — was two tags until the second of them. A shape
+// invented to be dismantled is worth neither.
+function getList(text, key) {
+  const { lines } = splitText(text);
+  const range = frontmatterRange(lines);
+  if (!range) return [];
+  const at = fieldLines(lines, range, key);
+  if (!at) return [];
+  if (at.count === 1) return parseList(at.value);
+  return lines
+    .slice(at.index + 1, at.index + at.count)
+    .map((l) => stripQuotes(stripComment(l.replace(/^\s*-\s+/, ""))))
+    .filter(Boolean);
 }
 
 // Delete a frontmatter field line (no-op if absent). Keeps everything else
 // byte-identical, same as setField.
 function removeField(text, key) {
-  const nl = text.includes("\r\n") ? "\r\n" : "\n";
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const { bom, nl, lines } = splitText(text);
   const range = frontmatterRange(lines);
   if (!range) fail("no YAML frontmatter found — is this a puck?");
-  for (let i = range[0]; i < range[1]; i++) {
-    if (new RegExp(`^${key}:`).test(lines[i])) { lines.splice(i, 1); break; }
-  }
-  return lines.join(nl);
+  const at = fieldLines(lines, range, key);
+  if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
+  return bom + lines.join(nl);
 }
 
 // ── locate a puck file by slug: roadmap/<slug>.md | roadmap/<slug>/README.md ──
@@ -141,9 +220,9 @@ async function cmdNew() {
 
   const fm = [
     "---",
-    `title: ${/[:#]/.test(title) ? JSON.stringify(title) : title}`,
+    `title: ${formatValue("title", title)}`,
     `status: ${status}`,
-    ...(tags.length ? [`tags: [${tags.join(", ")}]`] : []),
+    ...(tags.length ? [`tags: ${formatValue("tags", tags)}`] : []),
     `updated: ${TODAY}`,
     `created: ${TODAY}`,
     "---",
@@ -178,10 +257,7 @@ async function cmdTag() {
   const slug = pos.shift();
   if (!slug || pos.length === 0) fail("usage: roadmap tag <slug> +add -remove …");
   const { path: p, text } = await readPuckOrFail(slug);
-  const cur = getField(text, "tags");
-  const set = new Set(
-    (cur ? cur.replace(/^\[|\]$/g, "").split(",") : []).map((s) => s.trim()).filter(Boolean),
-  );
+  const set = new Set(getList(text, "tags"));
   for (const op of pos) {
     if (op.startsWith("-")) set.delete(slugify(op.slice(1)));
     else set.add(slugify(op.replace(/^\+/, "")));
@@ -189,7 +265,7 @@ async function cmdTag() {
   let out = setField(text, "tags", [...set]);
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
-  console.log(`✓ ${slug} tags: [${[...set].join(", ")}]  (updated ${TODAY})`);
+  console.log(`✓ ${slug} tags: ${formatValue("tags", [...set])}  (updated ${TODAY})`);
 }
 
 // Dependencies. Same `+add -remove` shape as `tag`, because it's the same kind of
@@ -199,11 +275,7 @@ async function cmdDepends() {
   const slug = pos.shift();
   if (!slug) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
   const { path: p, text } = await readPuckOrFail(slug);
-  const cur = getField(text, "depends");
-  const list = (cur ? cur.replace(/^\[|\]$/g, "").split(",") : [])
-    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
-    .filter(Boolean);
-  const set = new Set(list);
+  const set = new Set(getList(text, "depends"));
 
   if (opts.clear) {
     set.clear();
@@ -232,7 +304,7 @@ async function cmdDepends() {
   await writeFile(p, out);
   console.log(
     set.size
-      ? `✓ ${slug} depends: [${[...set].join(", ")}]  (updated ${TODAY})`
+      ? `✓ ${slug} depends: ${formatValue("depends", [...set])}  (updated ${TODAY})`
       : `✓ ${slug} depends cleared  (updated ${TODAY})`,
   );
 }
@@ -247,10 +319,7 @@ async function dependencyPath(from, target, seen) {
   if (from === target) return [from];
   const p = puckPath(from);
   if (!p) return null;
-  const raw = getField(await readFile(p, "utf8"), "depends") || "";
-  const deps = raw.replace(/^\[|\]$/g, "").split(",")
-    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
-    .filter((x) => x && !x.includes("#"));
+  const deps = getList(await readFile(p, "utf8"), "depends").filter((x) => !x.includes("#"));
   for (const d of deps) {
     const rest = await dependencyPath(d, target, seen);
     if (rest) return [from, ...rest];
@@ -262,11 +331,16 @@ async function cmdIssue() {
   const slug = pos.shift();
   const num = pos.shift();
   if (!slug || !num) fail("usage: roadmap issue <slug> <number>");
+  // Validated here rather than left to Number(), which turns a typo into NaN — and
+  // `issue: NaN` is written, reported as a success, and then read back as null by
+  // the harvester. The link and both drift signals disappear with nothing said.
+  const n = normalizeNumber(num);
+  if (n == null) fail(`issue must be a number — got "${num}"`);
   const { path: p, text } = await readPuckOrFail(slug);
-  let out = setField(text, "issue", Number(num));
+  let out = setField(text, "issue", n);
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
-  console.log(`✓ ${slug} issue #${num}  (updated ${TODAY})`);
+  console.log(`✓ ${slug} issue #${n}  (updated ${TODAY})`);
 }
 
 // The horizon. A calendar date so it sorts and compares without a period parser;
@@ -453,7 +527,7 @@ async function listPucks() {
     const text = await readFile(file, "utf8");
     pucks.push({
       slug,
-      title: (getField(text, "title") || slug).replace(/^["']|["']$/g, ""),
+      title: stripQuotes(getField(text, "title") || slug),
       status: getField(text, "status") || "inbox",
       updated: getField(text, "updated") || "",
     });
@@ -505,15 +579,20 @@ async function allPucks() {
       text,
       status: getField(text, "status") || "inbox",
       updated: getField(text, "updated") || "",
-      order: raw == null || raw === "" ? null : Number(raw),
+      // Finite-or-null, the same rule the harvester reads this field by. A bare
+      // `Number()` yields NaN for a hand-typed `order: high`, and NaN is falsy, so
+      // `rankSort`'s `ao - bo || …` quietly fell through to the tiebreak — making the
+      // bad puck compare equal to *every* other one. That is an intransitive
+      // comparator, and `renumber` writes its result back into the files.
+      order: normalizeNumber(raw),
     });
   }
   return out;
 }
 // The board's own ordering: `order` first, then freshest, then slug.
 function rankSort(a, b) {
-  const ao = a.order == null ? Infinity : a.order;
-  const bo = b.order == null ? Infinity : b.order;
+  const ao = Number.isFinite(a.order) ? a.order : Infinity;
+  const bo = Number.isFinite(b.order) ? b.order : Infinity;
   return ao - bo || b.updated.localeCompare(a.updated) || a.slug.localeCompare(b.slug);
 }
 
@@ -529,7 +608,7 @@ async function rankColumn(pucks, status, all) {
   for (let i = 0; i < column.length; i++) {
     const want = (i + 1) * 10;
     if (column[i].order === want) continue;
-    let out = setField(column[i].text, "order", String(want));
+    let out = setField(column[i].text, "order", want);
     out = setField(out, "updated", TODAY);
     await writeFile(column[i].path, out);
     changed.push(`${column[i].slug} ${column[i].order == null ? "—" : column[i].order} → ${want}`);
@@ -582,7 +661,7 @@ async function cmdMove() {
   }
   // Keep it an integer when the gap allows; decimals are legal but ugly in git.
   if (Number.isInteger(a) && Number.isInteger(b) && Math.abs(b - a) >= 2) value = Math.round(value);
-  let out = setField(me.text, "order", String(value));
+  let out = setField(me.text, "order", value);
   out = setField(out, "updated", TODAY);
   await writeFile(me.path, out);
   console.log(`✓ ${slug} order ${value} (${opts.before ? "before" : "after"} ${anchor})  (updated ${TODAY})`);

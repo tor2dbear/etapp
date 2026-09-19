@@ -9672,6 +9672,31 @@
     throw e;
   }
 
+  // How many lines a frontmatter field occupies. A block sequence is one field spread
+  // over several lines, so an edit has to take all of them. Replacing the header alone
+  // left `- alpha` / `- beta` stranded beneath a new inline value, where the parser
+  // ignores them: the blockers vanished from a puck this board had just shown them on,
+  // and the file stopped being YAML. Mirrors fieldLines in scripts/roadmap.mjs — and
+  // has to keep mirroring it, because the two writers edit the same files.
+  function fmFieldSpan(lines, end, key) {
+    for (var i = 1; i < end; i++) {
+      if (lines[i].indexOf(key + ":") !== 0) continue;
+      var v = lines[i].slice(key.length + 1).trim();
+      var last = i;
+      // Items continue a key only while its own value is empty — a comment counts as
+      // empty — and a blank or comment line between items does not end the run.
+      if (v === "" || v.charAt(0) === "#") {
+        for (var j = i + 1; j < end; j++) {
+          if (/^\s*-\s+/.test(lines[j])) { last = j; continue; }
+          if (!lines[j].trim() || lines[j].replace(/^\s+/, "").charAt(0) === "#") continue;
+          break;
+        }
+      }
+      return { index: i, count: last - i + 1 };
+    }
+    return null;
+  }
+
   // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
   function editFrontmatter(text, key, value) {
     var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
@@ -9680,11 +9705,11 @@
     var end = -1;
     for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
     if (end < 0) return null;
-    var out = key + ": " + value, done = false;
-    for (var j = 1; j < end; j++) {
-      if (new RegExp("^" + key + ":").test(lines[j])) { lines[j] = out; done = true; break; }
-    }
-    if (!done) lines.splice(end, 0, out);
+    var out = key + ": " + value;
+    var at = fmFieldSpan(lines, end, key);
+    // The new value is the whole field, so a sequence's items go with its header.
+    if (at) lines.splice(at.index, at.count, out);
+    else lines.splice(end, 0, out);
     return lines.join(nl);
   }
 
@@ -9889,9 +9914,8 @@
     var end = -1;
     for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
     if (end < 0) return null;
-    for (var j = 1; j < end; j++) {
-      if (new RegExp("^" + key + ":").test(lines[j])) { lines.splice(j, 1); break; }
-    }
+    var at = fmFieldSpan(lines, end, key);
+    if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
     return lines.join(nl);
   }
 

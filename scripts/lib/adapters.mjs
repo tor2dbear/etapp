@@ -35,6 +35,22 @@ export function normalizeDate(raw) {
   return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v ? v : null;
 }
 
+// A real number, or null. `Number()` turns anything unparseable into NaN, and NaN
+// then passes every `!= null` guard downstream instead of being caught by one:
+// `issue: #123` — a form the frontmatter parser preserves on purpose — became a
+// request to `/issues/NaN` and serialized back as `"issue": null`, losing the link
+// and both drift signals. `order: high` was worse: a NaN comparand makes sortItems
+// return NaN, which sort reads as 0, so *unrelated* pucks swapped places depending
+// on the order they happened to arrive in.
+// Same rule as normalizeDate two fields over: what doesn't survive the round trip is
+// absent, never a wrong value. It does not round: `order` is only ever compared, and
+// truncating it here would collapse a rank someone placed between two others.
+export function normalizeNumber(raw) {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function slugify(s) {
   return s
     .normalize("NFKD")
@@ -107,8 +123,8 @@ async function pucksAdapter(repo, branch, source) {
       // `owner/repo#slug` reference. A puck with children *is* the etapp — no new
       // file type, no second store; the harvester derives `children`/`progress`.
       parent: data.parent ? String(data.parent).trim() : null,
-      issue: data.issue != null && data.issue !== "" ? Number(data.issue) : null,
-      order: data.order != null && data.order !== "" ? Number(data.order) : null,
+      issue: normalizeNumber(data.issue),
+      order: normalizeNumber(data.order),
       // Same-repo slugs this puck is blocked by; the harvester resolves them.
       depends: Array.isArray(data.depends)
         ? data.depends.map(String)
