@@ -288,12 +288,12 @@ const refuse = (rel, why) =>
 // once the link is sitting in a temp directory: nothing, or whatever happens to occupy
 // that spot over there. Measured — the copy lost `format.js` and the base tree came back
 // red on a repository whose own `node --check` is clean.
-function materialize(copy, src) {
+function materialize(copy, src, dropped = []) {
   for (const entry of fs.readdirSync(copy, { withFileTypes: true })) {
     const p = path.join(copy, entry.name);
     const source = path.join(src, entry.name);
     if (entry.isDirectory()) {
-      materialize(p, source);
+      materialize(p, source, dropped);
       continue;
     }
     if (!entry.isSymbolicLink()) continue;
@@ -308,12 +308,25 @@ function materialize(copy, src) {
     }
     if (target && !target.isFile()) refuse(path.relative(ROOT, source), "points at something other than a regular file");
     fs.unlinkSync(p); // unlinks the link, never the file it names
+    // A link whose target is gone leaves its path behind for the stand-in below, because
+    // dropping it was a second way to make the baseline lie: `check-bundle` reads the
+    // directory entry, not the target, so a root-level `loose-link -> /definitely/not/here`
+    // was red out there and green in here. Measured.
+    if (!target) {
+      dropped.push(path.relative(ROOT, source));
+      continue;
+    }
     // `copyFileSync` reads through the link kernel-side and, the destination having just
     // been removed, creates it with the source's mode — 755 stays 755 under a 077 umask,
     // measured. No whole file through the heap and no separate chmod to forget.
-    if (target) fs.copyFileSync(source, p);
+    fs.copyFileSync(source, p);
   }
+  return dropped;
 }
+
+// Relative, so it resolves beside the link and therefore inside the copy, and named so
+// that nothing plausibly exists at it.
+const MISSING = ".etapp-entry-that-could-not-be-copied";
 
 function clone(dir) {
   const special = [];
@@ -334,17 +347,22 @@ function clone(dir) {
       !SKIP_COPY.has(path.basename(src)) &&
       (copyable(src) || (special.push(path.relative(ROOT, src)), false)),
   });
-  // A special file cannot be copied, but its *presence* is something the bundle gate
-  // reads off the disk, so an empty regular file stands in for it. Omitting it outright
-  // was wrong, and wrong in the way this whole file is about: a root-level FIFO made the
-  // real bundle gate red while the copy's baseline came back green, so the guard that
-  // exists to refuse a red tree was certifying against a tree that was not the tree.
-  // With the placeholder every gate that looks at paths answers as it does out there,
-  // including when the answer is a failure — and then nothing below runs, correctly.
-  for (const rel of special) fs.writeFileSync(inside(dir, rel), "");
   // The last step of copying, not the first step of indexing: run before `git init`, so
   // there is no `.git` in the copy for it to walk.
-  materialize(dir, ROOT);
+  const dropped = materialize(dir, ROOT);
+  // Two kinds of entry cannot be brought over — one that cannot be copied at all, and a
+  // link with nothing at the end of it — and both get the same stand-in, because the
+  // mistake was the same both times: leaving the path out. `check-bundle` reads directory
+  // entries off the disk, so a root-level FIFO, and then a root-level dangling link, each
+  // made the real gate red while the copy's baseline came back green — the guard that
+  // exists to refuse a red tree certifying against a tree that was not the tree. Measured
+  // both times, both reported by review rather than by this file.
+  //
+  // A link that dangles *inside* the copy, rather than an empty file: it keeps the path
+  // where every gate can see it and keeps it unreadable, which is what the original is.
+  // An empty file would have parsed cleanly as a tracked `.js` that is really a broken
+  // link — green here, red out there, the same lie one layer down.
+  for (const rel of special.concat(dropped)) fs.symlinkSync(MISSING, inside(dir, rel));
   // A repository of its own, with an index built from those records rather than copied.
   // `update-index --index-info` does not need the objects they name, and `git ls-files`
   // — the only git either gate runs — reads the index alone, so the copy sees the same
