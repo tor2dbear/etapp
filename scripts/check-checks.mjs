@@ -179,15 +179,34 @@ const CASES = [
 // Bigger on disk (6.3M against 2.1M — loose objects rather than a pack); peak usage is
 // the base plus one mutant, which is nothing.
 const SKIP_COPY = new Set(["node_modules", ".sources", ".wrangler"]);
+const GIT_DIR = path.join(ROOT, ".git");
+// The index, resolved through git rather than assumed to be `.git/index`: in a linked
+// worktree it is not.
+const INDEX = path.resolve(ROOT, execFileSync("git", ["rev-parse", "--git-path", "index"],
+  { cwd: ROOT, encoding: "utf8" }).trim());
+
 function clone(dir) {
   fs.cpSync(ROOT, dir, {
     recursive: true,
     verbatimSymlinks: true, // a symlink stays a symlink, pointing where it pointed
-    // Nothing here installs them, but a contributor's `npm i` or a local harvest would
-    // otherwise be copied once per mutation. They are in `.assetsignore` and
-    // `.gitignore`; no gate reads them.
-    filter: (src) => !SKIP_COPY.has(path.basename(src)),
+    filter: (src) =>
+      // `.git` is not copied. In a linked worktree it is a *pointer file*, so copying
+      // it verbatim gave every temporary copy the real repository's index — and the
+      // tracked-file mutation's `git add -f secrets.txt` then wrote into the user's own
+      // worktree, which came back `AD secrets.txt` in their `git status`. Measured, in
+      // a throwaway worktree, before this line existed. A tool that mutates a copy has
+      // no business reaching the original, and "a copy is the tree" stops being true at
+      // exactly the file that says where the tree's metadata lives.
+      src !== GIT_DIR &&
+      // Nothing here installs them, but a contributor's `npm i` or a local harvest
+      // would otherwise be copied once per mutation. No gate reads them.
+      !SKIP_COPY.has(path.basename(src)),
   });
+  // A repository of its own, carrying the real one's index. `git ls-files` — the only
+  // git either gate runs — reads the index and nothing else, so the copy sees the same
+  // tracked set; and any write the mutations make lands here rather than over there.
+  execFileSync("git", ["init", "--quiet"], { cwd: dir });
+  fs.copyFileSync(INDEX, path.join(dir, ".git", "index"));
   return dir;
 }
 
