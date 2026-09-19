@@ -17,6 +17,7 @@ on:
     paths:
       - "scripts/**"
       - "app.js"
+      - "format.js"
       - "index.html"
       - "sources.json"
       - "board.config.json"

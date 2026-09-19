@@ -1,11 +1,5 @@
 /* Roadmap aggregator UI. Reads window.__ROADMAP__ (from data/roadmap.js). */
 
-// How a value is spelled in a puck — quoting, list separators, which lines a field
-// occupies. The same module the CLI and the harvester use, served to the browser for
-// this import, because the board commits pucks to other people's repos and a second
-// answer to "does this need quotes" is how it started writing files YAML rejects.
-import { encodeItem, encodeScalar, fieldSpan } from "./format.js";
-
 (function () {
   "use strict";
 
@@ -9471,7 +9465,7 @@ import { encodeItem, encodeScalar, fieldSpan } from "./format.js";
       if (!it) return "---\ntitle: Untitled\nstatus: inbox\nupdated: " + today() + "\n---\n\n";
       // Quoted the same way `puckTemplate` quotes it — `formatValue` lives in the CLI,
       // not here, and reaching for it threw the first time this ran.
-      var t = encodeScalar(it.title);
+      var t = fmt().encodeScalar(it.title);
       var fm = ["---", "title: " + t, "status: " + it.status];
       if (it.tags && it.tags.length) fm.push("tags: " + yamlList(it.tags));
       if (it.priority) fm.push("priority: " + it.priority);
@@ -9679,11 +9673,40 @@ import { encodeItem, encodeScalar, fieldSpan } from "./format.js";
     throw e;
   }
 
+  // How a value is spelled in a puck — quoting, list separators, which lines a field
+  // occupies. The same module the CLI and the harvester use, because the board commits
+  // pucks to other people's repos and a second answer to "does this need quotes" is
+  // how it came to write files YAML rejects.
+  //
+  // Fetched with a dynamic import rather than a static one, so that index.html can
+  // stay a classic script. A module script does not load from `file://` at all — the
+  // board would render blank — and rendering off the filesystem is a property this
+  // page is built for, which is why the payload above it is a global too.
+  //
+  // Only the write path needs these rules, and that path cannot run from `file://`
+  // regardless: the Contents API rejects an opaque origin. On a served board the
+  // import settles in milliseconds, long before a token has been entered and anything
+  // clicked. If it somehow has not, `fmt()` says so rather than writing a puck by
+  // rules it does not have.
+  var FORMAT = null;
+  import("./format.js").then(
+    function (m) { FORMAT = m; },
+    function () { /* file://: the board is read-only here anyway */ },
+  );
+
+  function fmt() {
+    if (!FORMAT) {
+      throw new Error("puck format rules unavailable — a board opened from file:// cannot write");
+    }
+    return FORMAT;
+  }
+
   // A list field's line. Every item encoded, never pasted in: a tag reading
   // `release #1` written bare turns the rest of the line into a comment, and the next
   // harvest publishes the tag as `"[release"`.
   function yamlList(values) {
-    return "[" + values.map(encodeItem).join(", ") + "]";
+    var f = fmt();
+    return "[" + values.map(function (v) { return f.encodeItem(v); }).join(", ") + "]";
   }
 
   // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
@@ -9695,7 +9718,7 @@ import { encodeItem, encodeScalar, fieldSpan } from "./format.js";
     for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
     if (end < 0) return null;
     var out = key + ": " + value;
-    var at = fieldSpan(lines, 1, end, key);
+    var at = fmt().fieldSpan(lines, 1, end, key);
     // The new value is the whole field, so a sequence's items go with its header.
     if (at) lines.splice(at.index, at.count, out);
     else lines.splice(end, 0, out);
@@ -9903,7 +9926,7 @@ import { encodeItem, encodeScalar, fieldSpan } from "./format.js";
     var end = -1;
     for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
     if (end < 0) return null;
-    var at = fieldSpan(lines, 1, end, key);
+    var at = fmt().fieldSpan(lines, 1, end, key);
     if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
     return lines.join(nl);
   }
@@ -10989,7 +11012,7 @@ import { encodeItem, encodeScalar, fieldSpan } from "./format.js";
     return body;
   }
   function puckTemplate(title, status, tags, agent, context, parentRef) {
-    var t = encodeScalar(title);
+    var t = fmt().encodeScalar(title);
     var lines = ["---", "title: " + t, "status: " + status];
     if (tags.length) lines.push("tags: " + yamlList(tags));
     if (agent) lines.push("agent: " + agent);

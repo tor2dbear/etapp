@@ -204,9 +204,9 @@
 
     <!-- Generated payload, loaded as a global so the page also works from file://. -->
     <script src="data/roadmap.js" onerror="window.__ROADMAP_LOAD_ERROR__=true"></script>
-    <!-- A module, so it can import format.js — the spelling rules the CLI and the
-         harvester use. Deferred by definition, which is why the data script above
-         stays classic: it must have set window.__ROADMAP__ before this runs. -->
-    <script type="module" src="app.js"></script>
+    <!-- Classic, like the payload above and for the same reason: a module script
+         cannot load from file:// at all, and the board would render blank there.
+         app.js reaches format.js with a dynamic import instead — see `fmt()`. -->
+    <script src="app.js"></script>
   </body>
 </html>
