@@ -8,6 +8,12 @@
 // went on writing it, because `scripts/` is not published and app.js could not reach
 // the answer. One served module is what stops that recurring.
 //
+// No `export`, and that is deliberate. The board must keep rendering from `file://`,
+// where a module script does not load at all — so index.html takes this as a classic
+// script, which cannot carry exports. A file of plain statements assigning to
+// globalThis is *both*: a classic script to a browser, and an ES module with no
+// exports to Node, which imports it for the side effect and reads the same global.
+//
 // Node builtins only, no imports, nothing browser-specific: it has to load in both.
 
 // Strip a trailing YAML comment. Quote-aware, and it runs *before* anything asks
@@ -30,7 +36,7 @@
 // start: at the beginning, or after an array's `[` or `,`. Anywhere else it is an
 // apostrophe in a bare scalar (`Torbjörn's board`), which must not swallow the
 // comment that follows it.
-export function stripComment(raw) {
+function stripComment(raw) {
   const v = raw.trim();
   let quote = "";
   let prev = ""; // last non-space character seen outside a quoted run
@@ -69,7 +75,7 @@ export function stripComment(raw) {
 // belongs to the value, and both readers went straight past it. The CLI shares this
 // so a list means the same thing whichever of them reads it.
 
-export function splitList(inner) {
+function splitList(inner) {
   const out = [];
   let cur = "";
   let quote = "";
@@ -97,7 +103,7 @@ export function splitList(inner) {
 
 // Used for the items inside an inline array, which are quoted by the same writer and
 // so need the same decoding as a scalar.
-export function stripQuotes(s) {
+function stripQuotes(s) {
   if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
     try { return JSON.parse(s); } catch { return s.slice(1, -1); }
   }
@@ -114,7 +120,7 @@ export function stripQuotes(s) {
 // it happens to carry: `- "ui"` and `- ui` are the same tag, and a set that held the
 // quotes let `roadmap tag x -ui` report success while removing nothing, and
 // `+ui` write the tag a second time for the board to show twice.
-export function parseList(raw) {
+function parseList(raw) {
   const inner = String(raw == null ? "" : raw).trim().replace(/^\[|\]$/g, "");
   return splitList(inner).map((s) => stripQuotes(s.trim())).filter((s) => s !== "");
 }
@@ -157,7 +163,7 @@ const YAML_WORD = /^(?:y|n|yes|no|true|false|on|off|null|~)$/i;
 // the point. The pattern below has now been extended twice, once per spelling it had
 // not anticipated — integers, then decimals, then this. A number does not need to be
 // recognised; it needs to be written.
-export function encodeNumber(n) {
+function encodeNumber(n) {
   const s = String(n);
   const exp = /^(-?)(\d+)(e[+-]\d+)$/.exec(s);
   return exp ? `${exp[1]}${exp[2]}.0${exp[3]}` : s;
@@ -179,7 +185,7 @@ function bareIsSafe(s, plain, typed) {
 // brace would open something else.
 // A list item. `tags` and `depends` hold strings and nothing else, so no field here
 // ever wants the number-or-date reading.
-export function encodeItem(value) {
+function encodeItem(value) {
   const s = String(value);
   return bareIsSafe(s, ITEM_PLAIN, false) ? s : JSON.stringify(s);
 }
@@ -189,7 +195,7 @@ export function encodeItem(value) {
 // A scalar after `key:`, where a comma is ordinary text — `title: Hello, world` needs
 // no quotes. `typed` says the field's schema is a number or a date rather than a
 // string; see bareIsSafe.
-export function encodeScalar(value, typed = false) {
+function encodeScalar(value, typed = false) {
   const s = String(value);
   return bareIsSafe(s, SCALAR_PLAIN, typed) ? s : JSON.stringify(s);
 }
@@ -204,7 +210,7 @@ export function encodeScalar(value, typed = false) {
 // begun to differ in how they tested emptiness; app.js still carried the older answer
 // after the CLI learned the newer one. `lines` is the file split on newlines, `start`
 // and `end` bound the frontmatter block, exclusive of the fences.
-export function fieldSpan(lines, start, end, key) {
+function fieldSpan(lines, start, end, key) {
   for (let i = start; i < end; i++) {
     if (lines[i].indexOf(key + ":") !== 0) continue;
     // Items continue a key only while its own value is empty, which is the rule the
@@ -226,3 +232,16 @@ export function fieldSpan(lines, start, end, key) {
   }
   return null;
 }
+
+// The one name both sides reach for. `__ROADMAP__` next to it on the page is the
+// same idea: a global is what a classic script can offer.
+globalThis.__PUCK_FORMAT__ = {
+  stripComment,
+  splitList,
+  stripQuotes,
+  parseList,
+  encodeNumber,
+  encodeItem,
+  encodeScalar,
+  fieldSpan,
+};

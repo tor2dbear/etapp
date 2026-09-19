@@ -7,7 +7,12 @@
 // bare — lives in format.js at the repo root, because the board needs those answers
 // too and `scripts/` is not published. This file is the reader built on top, and it
 // re-exports what it imports so existing callers need not know where the line falls.
-import {
+import "../../format.js";
+
+// Imported for its side effect, not for named exports: format.js carries none, so
+// that index.html can load the same file as a classic script and the board keeps
+// working from file://. See the header there.
+const {
   encodeItem,
   encodeNumber,
   encodeScalar,
@@ -15,7 +20,7 @@ import {
   parseList,
   stripComment,
   stripQuotes,
-} from "../../format.js";
+} = globalThis.__PUCK_FORMAT__;
 
 export { encodeItem, encodeNumber, encodeScalar, fieldSpan, parseList, stripComment, stripQuotes };
 

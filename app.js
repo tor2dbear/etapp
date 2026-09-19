@@ -9674,30 +9674,20 @@
   }
 
   // How a value is spelled in a puck — quoting, list separators, which lines a field
-  // occupies. The same module the CLI and the harvester use, because the board commits
-  // pucks to other people's repos and a second answer to "does this need quotes" is
-  // how it came to write files YAML rejects.
+  // occupies. The same rules the CLI and the harvester use, from the same file, which
+  // index.html loads as a classic script just before this one.
   //
-  // Fetched with a dynamic import rather than a static one, so that index.html can
-  // stay a classic script. A module script does not load from `file://` at all — the
-  // board would render blank — and rendering off the filesystem is a property this
-  // page is built for, which is why the payload above it is a global too.
-  //
-  // Only the write path needs these rules, and that path cannot run from `file://`
-  // regardless: the Contents API rejects an opaque origin. On a served board the
-  // import settles in milliseconds, long before a token has been entered and anything
-  // clicked. If it somehow has not, `fmt()` says so rather than writing a puck by
-  // rules it does not have.
-  var FORMAT = null;
-  import("./format.js").then(
-    function (m) { FORMAT = m; },
-    function () { /* file://: the board is read-only here anyway */ },
-  );
+  // A classic script, not a module, because the board has to keep rendering from
+  // `file://` and a module does not load there at all. A dynamic import would have
+  // kept this file classic but fails on that origin too — and writing from `file://`
+  // is not hypothetical: GitHub answers `Access-Control-Allow-Origin: *`, and a bearer
+  // token is not a CORS credential, so a board opened off the filesystem with a token
+  // can reach the Contents API. It would then have had the edit controls and no rules
+  // to write with.
+  var FORMAT = globalThis.__PUCK_FORMAT__;
 
   function fmt() {
-    if (!FORMAT) {
-      throw new Error("puck format rules unavailable — a board opened from file:// cannot write");
-    }
+    if (!FORMAT) throw new Error("format.js did not load — the page is missing its script tag");
     return FORMAT;
   }
 
