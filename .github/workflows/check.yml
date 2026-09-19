@@ -42,11 +42,12 @@ jobs:
           node-version: 20
 
       # Cheapest gate first: a file that does not parse fails everything after it,
-      # and app.js is 11k lines that nothing else compiles.
+      # and app.js is 11k lines that nothing else compiles. Globbed rather than listed:
+      # the list was written in the same commit that added format.js and left it out.
       - name: Syntax
         run: |
           set -euo pipefail
-          for f in app.js scripts/*.mjs scripts/lib/*.mjs; do
+          for f in *.js scripts/*.mjs scripts/lib/*.mjs; do
             node --check "$f"
           done
           echo "✓ all JavaScript parses"

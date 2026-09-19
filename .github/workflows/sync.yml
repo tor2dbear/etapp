@@ -25,6 +25,7 @@ on:
       - "scripts/**"
       - "index.html"
       - "app.js"
+      - "format.js"
       - "styles.css"
       - ".github/workflows/sync.yml"
 
