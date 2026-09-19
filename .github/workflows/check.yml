@@ -43,15 +43,27 @@ jobs:
           node-version: 20
 
       # Cheapest gate first: a file that does not parse fails everything after it,
-      # and app.js is 11k lines that nothing else compiles. Globbed rather than listed:
-      # the list was written in the same commit that added format.js and left it out.
+      # and app.js is 11k lines that nothing else compiles.
+      #
+      # Asked of git rather than globbed. A hand-written list left format.js out in the
+      # commit that added it; the glob that replaced the list left out anything one
+      # directory deeper, and `data/roadmap.js` — which is generated, is served, and is
+      # the one JavaScript file here nobody writes by hand — was never in either. Both
+      # versions printed "✓ all JavaScript parses" while skipping a file. `git ls-files`
+      # cannot omit a tracked file, and an empty answer fails rather than passing
+      # vacuously.
       - name: Syntax
         run: |
           set -euo pipefail
-          for f in *.js scripts/*.mjs scripts/lib/*.mjs; do
+          files=$(git ls-files '*.js' '*.mjs')
+          if [ -z "$files" ]; then
+            echo "✗ no JavaScript found — this check just stopped checking anything"
+            exit 1
+          fi
+          for f in $files; do
             node --check "$f"
           done
-          echo "✓ all JavaScript parses"
+          echo "✓ all JavaScript parses ($(printf '%s\n' "$files" | wc -l) files)"
 
       # Would anything unintended be published? The bundle is the repo root, so a new
       # file is published unless something says otherwise. Already run from

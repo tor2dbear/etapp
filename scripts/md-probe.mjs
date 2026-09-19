@@ -53,32 +53,35 @@ const renderMd = loadRenderer();
 
 // Things a body might say that are *meant* as text. Every one of these has to come
 // back out of a real HTML parser with no element the renderer did not write.
-const HOSTILE = [
-  "<img src=x onerror=alert(1)>",
-  "<script>alert(1)</script>",
-  "<svg onload=1>",
-  "<!-- hidden -->",
-  '[x](https://a"onmouseover="alert(1))',
-  "[x](javascript:alert(1))",
-  "[x](JaVaScRiPt:alert(1))",
-  "[x](https:javascript:alert(1))",
-  'https://x.com/a"onmouseover="alert(1)',
-  '[x](https://x.com/#" style="position:fixed;inset:0)',
-  "`</code><img onerror=1>`",
-  "&lt;img src=x onerror=1&gt;",
-  "&#x3c;img onerror=1&#x3e;",
-  "> <img onerror=1>",
-  "- <img onerror=1>",
-  "## <svg onload=1>",
-  "| <img onerror=1> | b |\n|---|---|\n| c | d |",
-  "```\n<img onerror=1>\n```",
-  "[a](https://x.com)<!--",
+// Keyed by the *kind* of hostility, not by position, so the judge can say which kind
+// stopped being covered. A bare list lets a deletion narrow the check while the count
+// in the success line moves quietly along with it.
+const HOSTILE = {
+  "raw tag": "<img src=x onerror=alert(1)>",
+  "script element": "<script>alert(1)</script>",
+  "svg event handler": "<svg onload=1>",
+  "html comment": "<!-- hidden -->",
+  "attribute break-out in a link href": '[x](https://a"onmouseover="alert(1))',
+  "javascript: scheme": "[x](javascript:alert(1))",
+  "javascript: scheme, mixed case": "[x](JaVaScRiPt:alert(1))",
+  "javascript: behind a permitted scheme": "[x](https:javascript:alert(1))",
+  "attribute break-out in a bare URL": 'https://x.com/a"onmouseover="alert(1)',
+  "style injection": '[x](https://x.com/#" style="position:fixed;inset:0)',
+  "inside a code span": "`</code><img onerror=1>`",
+  "entity-encoded tag": "&lt;img src=x onerror=1&gt;",
+  "numeric-entity tag": "&#x3c;img onerror=1&#x3e;",
+  "inside a blockquote": "> <img onerror=1>",
+  "inside a list item": "- <img onerror=1>",
+  "inside a heading": "## <svg onload=1>",
+  "inside a table cell": "| <img onerror=1> | b |\n|---|---|\n| c | d |",
+  "inside a fence": "```\n<img onerror=1>\n```",
+  "unterminated comment after a link": "[a](https://x.com)<!--",
   // The renderer parks finished HTML on NUL while it works. A body that carries one
   // must not be able to reach into that hold.
-  "\u0000 0 \u0000",
-  "[x](https://x.com)\u00000\u0000",
-  "\u00000\u0000<img onerror=1>",
-];
+  "a bare NUL placeholder": "\u0000 0 \u0000",
+  "a NUL placeholder aimed at a real hold": "[x](https://x.com)\u00000\u0000",
+  "a NUL placeholder in front of a tag": "\u00000\u0000<img onerror=1>",
+};
 
 // Structure the judge asserts one by one: [name, markdown].
 const SUBSET = [
@@ -112,6 +115,13 @@ const UNSUPPORTED = [
   ["rule", "before\n---\nafter"],
   ["stars-rule", "before\n***\nafter"],
   ["lone-pipe", "before\n| not | a table |\nafter"],
+  // CONVENTION's subset is `##`–`####`, so these two headings are outside it, and
+  // footnotes are in its list by name. All three were folding into the neighbouring
+  // sentence until the block-break set learned them — which this list missed because
+  // every case in it happened to be one that already worked.
+  ["h1", "before\n# Title\nafter"],
+  ["h5", "before\n##### Five\nafter"],
+  ["footnote", "before\n[^1]: a footnote\nafter"],
 ];
 
 const fixture = fs.readFileSync(path.join(ROOT, "tests", "markdown.fixture.md"), "utf8");
@@ -129,7 +139,7 @@ const ENDINGS = {
 process.stdout.write(
   JSON.stringify(
     {
-      hostile: HOSTILE.map((src) => ({ src, html: renderMd(src) })),
+      hostile: Object.entries(HOSTILE).map(([kind, src]) => ({ kind, src, html: renderMd(src) })),
       subset: SUBSET.map(([name, src]) => ({ name, src, html: renderMd(src) })),
       unsupported: UNSUPPORTED.map(([name, src]) => ({ name, src, html: renderMd(src) })),
       endings: Object.fromEntries(Object.entries(ENDINGS).map(([k, v]) => [k, renderMd(v)])),

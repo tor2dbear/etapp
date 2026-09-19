@@ -97,6 +97,18 @@ Before the lone pipe.
 | a row with no delimiter row is not a table |
 After the lone pipe.
 
+Before the `#` heading.
+# A first-level heading is outside the subset
+After the `#` heading.
+
+Before the `#####` heading.
+##### A fifth-level heading is outside the subset
+After the `#####` heading.
+
+Before the footnote.
+[^1]: A footnote definition is not interpreted.
+After the footnote.
+
 ## Text that is meant as text
 
 A body comes from someone else's repo, and an issue body from anyone who can comment.

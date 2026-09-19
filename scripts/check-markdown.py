@@ -116,18 +116,44 @@ def check_whitelist(where, src, html):
 
 
 def main():
-    probe = subprocess.run(
-        ["node", str(HERE / "md-probe.mjs")],
-        capture_output=True, text=True,
-    )
+    # A timeout, because the failure this guards against is not an exception. The
+    # renderer's placeholder pass used to spin forever if `esc()` ever stopped
+    # stripping NUL, and a CI step that hangs reads as "still running", not as a
+    # defect: the job dies on the runner's own limit, minutes later, with no name on
+    # it. Reproduced before the loop was bounded.
+    try:
+        probe = subprocess.run(
+            ["node", str(HERE / "md-probe.mjs")],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print("✗ md-probe.mjs did not finish in 120s — the renderer is not terminating")
+        return 1
     if probe.returncode != 0:
         print("✗ md-probe.mjs failed:\n" + (probe.stderr.strip() or "(no output)"))
         return 1
     data = json.loads(probe.stdout)
 
     # ── 1. Nothing a body says becomes markup ────────────────────────────────────
+    # Anchored by kind, not by count. A list of cases the judge merely iterates can be
+    # shortened without anything saying so, and the success line's "N hostile bodies"
+    # moves along with the deletion — the check narrows and still reads as a pass.
+    HOSTILE_KINDS = {
+        "raw tag", "script element", "svg event handler", "html comment",
+        "attribute break-out in a link href", "attribute break-out in a bare URL",
+        "javascript: scheme", "javascript: scheme, mixed case",
+        "javascript: behind a permitted scheme", "style injection",
+        "inside a code span", "inside a blockquote", "inside a list item",
+        "inside a heading", "inside a table cell", "inside a fence",
+        "entity-encoded tag", "numeric-entity tag",
+        "unterminated comment after a link", "a bare NUL placeholder",
+        "a NUL placeholder aimed at a real hold", "a NUL placeholder in front of a tag",
+    }
     for case in data["hostile"]:
-        check_whitelist("hostile", case["src"], case["html"])
+        check_whitelist("hostile/" + case["kind"], case["src"], case["html"])
+    covered = {c["kind"] for c in data["hostile"]}
+    for kind in sorted(HOSTILE_KINDS - covered):
+        fail("hostile", f"the probe no longer covers {kind!r}")
 
     # ── 2. The documented subset renders ─────────────────────────────────────────
     # `must` is what has to appear in the output; the point is that each named piece
@@ -167,6 +193,11 @@ def main():
     # The probe feeds "before / <the unsupported line> / after". CONVENTION's promise
     # is that the middle line is shown as typed and never folded into its neighbours,
     # so the three have to land in three different top-level blocks.
+    UNSUPPORTED_NAMES = {
+        "raw-html", "image", "rule", "stars-rule", "lone-pipe", "h1", "h5", "footnote",
+    }
+    for name in sorted(UNSUPPORTED_NAMES - {c["name"] for c in data["unsupported"]}):
+        fail("own-line", f"the probe no longer feeds an unsupported {name!r} line")
     for case in data["unsupported"]:
         w = check_whitelist("unsupported/" + case["name"], case["src"], case["html"])
         blocks = w.blocks
@@ -205,6 +236,12 @@ def main():
         ('<th style="text-align:right">right</th>', "a right-aligned table cell"),
         ("<p># The board", "an `#` heading shown as typed, outside the subset"),
         ("<p>##### Fifth level is outside the subset</p>", "an `#####` heading shown as typed"),
+        ("<p># A first-level heading is outside the subset</p>",
+         "an `#` heading on its own line, with prose immediately above and below it"),
+        ("<p>##### A fifth-level heading is outside the subset</p>",
+         "an `#####` heading on its own line, with prose immediately around it"),
+        ("<p>[^1]: A footnote definition is not interpreted.</p>",
+         "a footnote definition on its own line, with prose immediately around it"),
         ("https://example.com/a*b*c</a>", "a URL with asterisks in its path, linked whole"),
     ]:
         if needle not in html:
