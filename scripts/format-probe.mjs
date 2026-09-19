@@ -11,7 +11,57 @@
 // over there, by something that has never heard of this codebase.
 //
 // Node builtins only, like the rest of scripts/.
-import { encodeItem, encodeScalar, encodeNumber, parseFrontmatter, setField, removeField } from "./lib/frontmatter.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+import { fileURLToPath } from "node:url";
+import { encodeItem, encodeScalar, encodeNumber, parseFrontmatter, setField, removeField, replaceBody } from "./lib/frontmatter.mjs";
+
+// format.js has to be two things at once, and only one of them was ever checked.
+//
+// Node reads it as an ES module — `package.json` says `type: module`, so `node --check`
+// parses it in the module goal, where `export` is perfectly legal. index.html reads the
+// same bytes as a *classic* script, where a top-level `export` is a SyntaxError. Add one
+// and: `node --check` passes, check-bundle passes, the query and markdown judges pass,
+// the board renders byte-identically — and `globalThis.__PUCK_FORMAT__` is undefined, so
+// every write throws "format.js did not load". Measured, all five gates green.
+//
+// That dual nature is the entire argument the file exists on (see its header, and #2).
+// It was the one property nothing held it to.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function assertServedAsClassicScript() {
+  const src = fs.readFileSync(path.join(ROOT, "format.js"), "utf8");
+  // The real test: does a classic-script parser accept it? `vm.Script` uses the script
+  // goal, which is what a browser uses for `<script src>`.
+  try {
+    new vm.Script(src, { filename: "format.js" });
+  } catch (e) {
+    throw new Error(
+      "format.js no longer parses as a classic script — a browser would refuse it and " +
+        "every board write would throw. " + e.message
+    );
+  }
+  const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
+  const tag = /<script\b[^>]*\bsrc=["']format\.js["'][^>]*>/i.exec(html);
+  if (!tag) {
+    throw new Error("index.html no longer loads format.js — the board would have no spelling rules");
+  }
+  if (/\btype\s*=\s*["']module["']/i.test(tag[0])) {
+    throw new Error("index.html loads format.js as a module — it does not load at all from file://");
+  }
+  // The script *tags*, not the first mention of each name: app.js is named in three
+  // comments above the tags, so comparing `indexOf` on the filenames said the order was
+  // wrong on a file whose order is right. Checking a proxy for the thing is how this
+  // check would have failed for a reason that has nothing to do with the property.
+  const appTag = /<script\b[^>]*\bsrc=["']app\.js["'][^>]*>/i.exec(html);
+  if (!appTag) throw new Error("index.html no longer loads app.js");
+  if (tag.index > appTag.index) {
+    throw new Error("index.html loads format.js after app.js — the global is read before it is written");
+  }
+}
+
+assertServedAsClassicScript();
 
 // Strings. Every one of these must come back from a YAML parser as the *same
 // string* — the type matters as much as the characters, which is how `true` and
@@ -96,4 +146,8 @@ console.log(JSON.stringify({
   bom: setField(BOM + BASE, "status", "next"),
   bomRemoved: removeField(BOM + BASE, "status"),
   noFrontmatter: setField("just a body\n", "status", "next"),
+  // The body edit, which asks the same fence question and used to answer it alone.
+  body: replaceBody(BASE, "a new body"),
+  bodyBom: replaceBody(BOM + BASE, "a new body"),
+  bodyNoFrontmatter: replaceBody("just a body\n", "x"),
 }, null, 2));

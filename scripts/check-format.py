@@ -48,10 +48,22 @@ def normalize(x):
     return str(x)
 
 
-probe = json.loads(subprocess.run(
+# The probe asserts format.js's own contract before it emits anything — that the file
+# still parses as a classic script and that index.html still loads it as one. Reported
+# by name rather than as a Python traceback: the failure it guards against is a board
+# where every write throws while all five gates stay green, and that deserves a
+# sentence, not a stack.
+_run = subprocess.run(
     ["node", str(HERE / "format-probe.mjs")],
-    capture_output=True, text=True, check=True,
-).stdout)
+    capture_output=True, text=True, timeout=120,
+)
+if _run.returncode != 0:
+    msg = next((l for l in _run.stderr.splitlines() if l.startswith("Error:")), "")
+    print("✗ format-probe.mjs failed" + (f" — {msg[len('Error: '):]}" if msg else ":"), file=sys.stderr)
+    if not msg:
+        print(_run.stderr.strip(), file=sys.stderr)
+    sys.exit(1)
+probe = json.loads(_run.stdout)
 
 # 1. Every string must come back a string, with the same characters, in both the
 #    scalar position and inside a flow array. The type is half the check: a bare
@@ -202,6 +214,19 @@ with tempfile.TemporaryDirectory() as tmp:
 # as a file PyYAML refuses, committed to somebody else's repo. Asked of PyYAML rather
 # than of our own reader, because "the wrong type" is exactly what our reader was
 # lenient about.
+# Anchored by key, the way check-markdown.py anchors its case sets. A list the judge
+# merely iterates can be shortened without anything saying so, and the success line's
+# count moves along with the deletion — the check narrows and still reads as a pass.
+WRITER_KEYS = {"parent", "agent", "owner", "priority", "title", "status",
+               "order", "issue", "target", "updated", "tags", "depends"}
+MINIMUMS = {"strings": 48, "numbers": 11, "dates": 2, "lines": 22, "writes": 20}
+for name, least in MINIMUMS.items():
+    if len(probe[name]) < least:
+        fail("coverage", f"the probe now emits {len(probe[name])} {name}, down from {least}")
+missing = WRITER_KEYS - {w["key"] for w in probe["writes"]}
+for key in sorted(missing):
+    fail("coverage", f"the probe no longer writes {key!r}")
+
 EXPECT = {
     "str": lambda v, m: isinstance(v, str) and v == m,
     "num": lambda v, m: isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) == float(m),
@@ -243,6 +268,26 @@ if probe["bomRemoved"] and "status:" in probe["bomRemoved"].split("---")[1]:
 # Text that is not a puck answers null, so each caller can say so in its own words.
 if probe["noFrontmatter"] is not None:
     fail("writer", "setField invented frontmatter for a file that has none")
+if probe["bodyNoFrontmatter"] is not None:
+    fail("writer", "replaceBody invented frontmatter for a file that has none")
+
+# The body edit asks the same fence question, and answered it separately until it
+# drifted: a BOM puck was field-editable and still refused "Edit body".
+for name, text, bom in (("body", probe["body"], False), ("bodyBom", probe["bodyBom"], True)):
+    if text is None:
+        fail("writer", f"replaceBody refused a puck{' with a BOM' if bom else ''}")
+        continue
+    if bom and not text.startswith("\ufeff"):
+        fail("writer", "replaceBody dropped the BOM instead of carrying it back out")
+    try:
+        data = yaml.safe_load(text.lstrip("\ufeff").split("---")[1])
+    except yaml.YAMLError as e:
+        fail("writer", f"replaceBody produced frontmatter PyYAML refuses — {type(e).__name__}")
+        continue
+    if data.get("title") != "A puck" or data.get("status") != "now":
+        fail("writer", f"replaceBody disturbed the frontmatter — {data!r}")
+    if "a new body" not in text:
+        fail("writer", "replaceBody did not write the body")
 
 if failures:
     print(f"✗ {len(failures)} format check(s) failed\n", file=sys.stderr)

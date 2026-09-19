@@ -29,6 +29,7 @@ import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from ".
 import {
   stripComment, stripQuotes, parseList, encodeItem, encodeScalar, encodeNumber, fieldSpan,
   formatValue, setField as setFieldIn, removeField as removeFieldIn,
+  splitText, frontmatterRange,
 } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -62,23 +63,12 @@ const cmd = pos.shift();
 // ── frontmatter-aware, format-preserving field edits ──
 // We edit the raw text line-by-line inside the first `---` block so the body and
 // any other fields stay byte-identical.
-function frontmatterRange(lines) {
-  if (lines[0] !== "---") return null;
-  for (let i = 1; i < lines.length; i++) if (lines[i] === "---") return [1, i];
-  return null;
-}
 
 // The CLI reads the files the harvester reads, so it has to tolerate what the parser
 // tolerates. The parser drops a leading BOM before its fence check and this did not,
 // so every mutating command failed with "no YAML frontmatter found" on a puck the
 // board was happily showing — the editors that emit one made a puck readable but not
 // editable. The BOM is carried back out so an edit does not silently rewrite it.
-function splitText(text) {
-  const bom = text.startsWith("\uFEFF") ? "\uFEFF" : "";
-  const nl = text.includes("\r\n") ? "\r\n" : "\n";
-  return { bom, nl, lines: text.slice(bom.length).replace(/\r\n/g, "\n").split("\n") };
-}
-
 // The edit itself lives in format.js now, with the quoting rules it depends on. It was
 // here, and the board kept its own copy — which had neither this file's BOM fix nor its
 // field-type encoding. Measured against PyYAML, seven of eight fields the board wrote

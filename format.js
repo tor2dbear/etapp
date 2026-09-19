@@ -310,6 +310,21 @@
     return bom + lines.join(nl);
   }
 
+  // Replace the body, keeping the frontmatter byte-identical. Here rather than in the
+  // board because it asks the same question `setField` does — where does the
+  // frontmatter end, and what is the file's BOM and line ending — and it answered it
+  // separately for exactly as long as it took `setField` to move: a puck with a BOM
+  // became field-editable and still refused "Edit body". The body is normalised the
+  // way the board has always normalised it, so this is the same edit, not a new one.
+  function replaceBody(text, newBody) {
+    const { bom, nl, lines } = splitText(text);
+    const range = frontmatterRange(lines);
+    if (!range) return null;
+    const head = lines.slice(0, range[1] + 1);
+    const body = String(newBody).replace(/\r\n/g, "\n").replace(/\s+$/, "").split("\n");
+    return bom + head.concat([""], body, [""]).join(nl);
+  }
+
   globalThis.__PUCK_FORMAT__ = {
     stripComment,
     splitList,
@@ -322,5 +337,14 @@
     formatValue,
     setField,
     removeField,
+    // Exported because the readers need the same fence the writers use. They had
+    // private copies — `roadmap.mjs` for `getField`/`getList`, app.js for
+    // `replaceBody` — and a copy of a rule is a rule that will disagree. It already
+    // did: `replaceBody` kept the BOM-blind fence, so once `setField` learned to
+    // tolerate one, a puck with a BOM became field-editable and still refused
+    // "Edit body".
+    splitText,
+    frontmatterRange,
+    replaceBody,
   };
 })();

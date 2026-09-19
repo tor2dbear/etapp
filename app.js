@@ -9547,18 +9547,18 @@
       if (!it) return "---\ntitle: Untitled\nstatus: inbox\nupdated: " + today() + "\n---\n\n";
       // Quoted the same way `puckTemplate` quotes it — `formatValue` lives in the CLI,
       // not here, and reaching for it threw the first time this ran.
-      var t = fmt().encodeScalar(it.title);
-      var fm = ["---", "title: " + t, "status: " + it.status];
-      if (it.tags && it.tags.length) fm.push("tags: " + yamlList(it.tags));
-      if (it.priority) fm.push("priority: " + it.priority);
-      if (it.agent) fm.push("agent: " + it.agent);
-      if (it.owner) fm.push("owner: " + it.owner);
-      if (it.target) fm.push("target: " + it.target);
-      if (it.parent) fm.push("parent: " + it.parent);
-      if (it.depends && it.depends.length) fm.push("depends: " + yamlList(it.depends));
-      if (it.issue) fm.push("issue: " + it.issue);
-      fm.push("updated: " + (it.updated || today()));
-      if (it.created) fm.push("created: " + it.created);
+      var v = function (k, x) { return k + ": " + fmt().formatValue(k, x); };
+      var fm = ["---", v("title", it.title), v("status", it.status)];
+      if (it.tags && it.tags.length) fm.push(v("tags", it.tags));
+      if (it.priority) fm.push(v("priority", it.priority));
+      if (it.agent) fm.push(v("agent", it.agent));
+      if (it.owner) fm.push(v("owner", it.owner));
+      if (it.target) fm.push(v("target", it.target));
+      if (it.parent) fm.push(v("parent", it.parent));
+      if (it.depends && it.depends.length) fm.push(v("depends", it.depends));
+      if (it.issue) fm.push(v("issue", it.issue));
+      fm.push(v("updated", it.updated || today()));
+      if (it.created) fm.push(v("created", it.created));
       fm.push("---", "");
       return fm.join("\n") + "\n" + (it.body || "");
     }
@@ -9773,13 +9773,6 @@
     return FORMAT;
   }
 
-  // A list field's line. Every item encoded, never pasted in: a tag reading
-  // `release #1` written bare turns the rest of the line into a comment, and the next
-  // harvest publishes the tag as `"[release"`.
-  function yamlList(values) {
-    var f = fmt();
-    return "[" + values.map(function (v) { return f.encodeItem(v); }).join(", ") + "]";
-  }
 
   // Format-preserving frontmatter edit. Not a mirror of `scripts/roadmap.mjs setField`
   // any more — the same function, from format.js, which is what a mirror should have
@@ -9790,8 +9783,10 @@
   // raw; the CLI tolerates a leading BOM, and this returned null and refused the edit.
   // Both were fixed in #1, in `scripts/` only, and #2 moved *value* spelling into
   // format.js while leaving the field-level decision behind — so the board reached the
-  // owner for lists (`yamlList`, two functions up, with a comment explaining exactly
-  // why encoding matters) and wrote every scalar bare.
+  // owner for lists — through a `yamlList` helper that sat two functions up carrying a
+  // comment about exactly why encoding matters — and wrote every scalar bare. That
+  // helper is gone now: `formatValue` encodes a list as readily as a scalar, so the
+  // board no longer needs a second name for half the question.
   //
   // Measured with PyYAML, seven of eight fields came back wrong: `parent: release #1`
   // read as `release`, `agent: true` as a boolean, `owner: no` as `false`,
@@ -10867,18 +10862,12 @@
     }).catch(function (err) { toast("✗ " + (err && err.message || "issue failed"), true); });
   }
 
-  // Replace the body (everything after the frontmatter fence), keeping the
-  // frontmatter byte-identical.
+  // Replace the body, keeping the frontmatter byte-identical — from format.js, which
+  // owns where the frontmatter ends. This was a fourth copy of that fence and it had
+  // already gone stale: once `setField` learned to tolerate a BOM, a puck with one was
+  // field-editable and still refused "Edit body" with "no frontmatter".
   function replaceBody(text, newBody) {
-    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
-    var lines = text.replace(/\r\n/g, "\n").split("\n");
-    if (lines[0] !== "---") return null;
-    var end = -1;
-    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
-    if (end < 0) return null;
-    var fm = lines.slice(0, end + 1);
-    var b = newBody.replace(/\r\n/g, "\n").replace(/\s+$/, "").split("\n");
-    return fm.concat([""], b, [""]).join(nl);
+    return fmt().replaceBody(text, newBody);
   }
 
   // Delete a puck: remove its markdown file from the source repo (read sha →
@@ -11087,15 +11076,19 @@
     return body;
   }
   function puckTemplate(title, status, tags, agent, context, parentRef) {
-    var t = fmt().encodeScalar(title);
-    var lines = ["---", "title: " + t, "status: " + status];
-    if (tags.length) lines.push("tags: " + yamlList(tags));
-    if (agent) lines.push("agent: " + agent);
+    // Every value through the owner, not only the title and the tags. A puck is born
+    // here, so a value that needs quoting needs it on the first write as much as on
+    // the tenth — and `agent` and `parent` are the two the create path can carry that
+    // nothing in a closed set constrains.
+    var v = function (k, x) { return k + ": " + fmt().formatValue(k, x); };
+    var lines = ["---", v("title", title), v("status", status)];
+    if (tags.length) lines.push(v("tags", tags));
+    if (agent) lines.push(v("agent", agent));
     // Membership is authored on the child, so a puck created *from* its parent can
     // carry the relation in the file it is born with — one write instead of two,
     // and no window where the puck exists outside the parent it was made for.
-    if (parentRef) lines.push("parent: " + parentRef);
-    lines.push("updated: " + today(), "created: " + today(), "---", "");
+    if (parentRef) lines.push(v("parent", parentRef));
+    lines.push(v("updated", today()), v("created", today()), "---", "");
     var body = puckBody(context);
     return lines.join("\n") + (body ? "\n" + body : "");
   }

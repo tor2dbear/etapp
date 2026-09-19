@@ -18,16 +18,19 @@ const {
   encodeScalar,
   fieldSpan,
   formatValue,
+  frontmatterRange,
   parseList,
   removeField,
+  replaceBody,
   setField,
+  splitText,
   stripComment,
   stripQuotes,
 } = globalThis.__PUCK_FORMAT__;
 
 export {
-  encodeItem, encodeNumber, encodeScalar, fieldSpan, formatValue,
-  parseList, removeField, setField, stripComment, stripQuotes,
+  encodeItem, encodeNumber, encodeScalar, fieldSpan, formatValue, frontmatterRange,
+  parseList, removeField, replaceBody, setField, splitText, stripComment, stripQuotes,
 };
 
 function parseScalar(raw) {
