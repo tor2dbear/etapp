@@ -14,6 +14,10 @@
 // cannot mean "they are the same mistake".
 //
 // Node builtins only, like the rest of scripts/.
+// For the side effect: `format.js` assigns `globalThis.__PUCK_FORMAT__`, which is what
+// both lifted regions reach for. Supplying the real one is not a stub — it is the same
+// object the browser gets from the same file.
+import "../format.js";
 import { lcg } from "./lib/fuzz.mjs";
 import { liftRegion } from "./lib/region.mjs";
 
@@ -25,23 +29,34 @@ import { liftRegion } from "./lib/region.mjs";
 // certified a predicate that could not fire.
 function board() {
   const parts = ["term", "ref", "dep"].map((n) => liftRegion("app.js", n).region).join("\n");
+  // `"use strict"` because app.js declares it on its first line. Without it the lifted
+  // bytes run in sloppy mode here and strict mode there, so an undeclared assignment or
+  // a duplicate parameter would pass this gate and throw in the browser — the gate would
+  // be judging the right bytes under the wrong rules.
   const make = new Function(
     "DATA",
-    `${parts}\nreturn { recomputeDeps: recomputeDeps, refKey: refKey, resolveRef: resolveRef, refFor: refFor };`
+    "fmt",
+    `"use strict";\n${parts}\nreturn { recomputeDeps, dependRefs, withoutDepend, resolveRef, refFor };`
   );
   return (items) => {
-    const DATA = { items };
-    const api = make(DATA);
+    const api = make({ items }, () => globalThis.__PUCK_FORMAT__);
     api.recomputeDeps();
-    return items;
+    return { items, api };
   };
 }
 
 // The harvester's half, the same way.
+// The harvester's half, the same way. It is an ES module, so its bytes are strict too,
+// and the reference rule it now imports is handed in from the same `format.js`.
 function harvester() {
   const parts = ["term", "dep"].map((n) => liftRegion("scripts/harvest.mjs", n).region).join("\n");
-  const make = new Function(`${parts}\nreturn { resolveBlockedBy: resolveBlockedBy, refKey: refKey };`);
-  const api = make();
+  const make = new Function(
+    "refKey",
+    "itemKey",
+    `"use strict";\n${parts}\nreturn { resolveBlockedBy };`
+  );
+  const fmt = globalThis.__PUCK_FORMAT__;
+  const api = make(fmt.refKey, fmt.itemKey);
   return (items) => {
     const cycles = api.resolveBlockedBy(items);
     return { items, cycles: items.filter((it) => cycles.has(it)).map((it) => it.id) };
@@ -53,7 +68,10 @@ const runHarvest = harvester();
 
 // A case is the authored graph alone: repo, slug, status and the `depends:` list as
 // written. Everything else is what the two implementations are asked to derive.
-const mk = (repo, slug, status, depends) => ({ repo, slug, id: `${repo}#${slug}`, status, depends });
+// `id` as the harvester spells it: the repo's last segment and the slug, which is not
+// the reference form and is what every consumer of the payload sees.
+const mk = (repo, slug, status, depends) =>
+  ({ repo, slug, id: `${repo.split("/").pop()}/${slug}`, status, depends });
 const clone = (items) => items.map((it) => ({ ...it, depends: it.depends.slice() }));
 
 const A = "me/board", B = "them/other";
@@ -103,6 +121,17 @@ const CASES = [
 const next = lcg(20260919);
 const rnd = (n) => Math.floor(next() * n);
 const STATUS = ["now", "next", "later", "inbox", "done", "cancelled"];
+// Every reference form, including the ones a human writes only by mistake. Written as a
+// list because the ladder this replaced had two arms spelling the same thing, which
+// weighted the qualified form twice without saying so.
+const asWritten = (t, it) => (t.repo === it.repo ? t.slug : `${t.repo}#${t.slug}`);
+const FORMS = [
+  (t) => `${t.repo}#${t.slug}`,            // qualified, even at home
+  asWritten,                                // what a person would write
+  (t, it) => `  ${asWritten(t, it)}  `,     // padded
+  () => `missing-${rnd(3)}`,                // names nothing
+  () => "",                                 // a blank entry
+];
 function randomGraph(i) {
   const n = 2 + rnd(5);
   const items = [];
@@ -111,16 +140,7 @@ function randomGraph(i) {
     const edges = rnd(4);
     for (let e = 0; e < edges; e++) {
       const t = items[rnd(items.length)];
-      // Every reference form, including the ones a human would only write by mistake:
-      // the qualified spelling of a puck at home, a name nothing answers to, padding.
-      const how = rnd(5);
-      it.depends.push(
-        how === 0 ? `${t.repo}#${t.slug}`
-        : how === 1 ? (t.repo === it.repo ? t.slug : `${t.repo}#${t.slug}`)
-        : how === 2 ? `  ${t.repo === it.repo ? t.slug : `${t.repo}#${t.slug}`}  `
-        : how === 3 ? `${t.repo}#${t.slug}`
-        : `missing-${rnd(3)}`
-      );
+      it.depends.push(FORMS[rnd(FORMS.length)](t, it));
     }
   }
   return [`random graph ${i}`, items];
@@ -140,22 +160,29 @@ const derived = (it) => ({
 // compared on it: the judge holds the board to its own list instead. Pucks arrive
 // carrying signals, so the corpus hands it some to keep and one stale note to drop.
 const seeded = (items, i) =>
-  items.map((it, k) => ({
-    ...it,
-    depends: it.depends.slice(),
-    signals: k % 3 === 0 ? [{ type: "stale" }] : k % 3 === 1 && i % 2 === 0 ? [{ type: "depends-missing" }] : [],
-  }));
+  clone(items).map((it, k) => {
+    if (k % 3 === 0) it.signals = [{ type: "stale" }];            // one to keep
+    else if (k % 3 === 1 && i % 2 === 0) it.signals = [{ type: "depends-missing" }]; // one to drop
+    else it.signals = [];
+    return it;
+  });
 
 const out = [];
 CASES.forEach(([name, items], i) => {
   const b = seeded(items, i);
-  runBoard(b);
+  const { api } = runBoard(b);
   const h = runHarvest(clone(items));
   out.push({
     name,
     items: items.map((it) => ({ repo: it.repo, slug: it.slug, id: it.id, status: it.status, depends: it.depends })),
     board: b.map(derived),
     boardSignals: b.map((it) => (it.signals || []).map((g) => g.type).sort()),
+    // The two render-path answers, taken from the same lifted bytes. Without them the
+    // gate checked the derivation and nothing else, so the chips could go back to one
+    // per line of `depends:` and the ✕ back to removing a single spelling with every
+    // gate still green — measured, by reverting both.
+    dependRefs: b.map((it) => api.dependRefs(it)),
+    afterRemovingFirst: b.map((it) => (it.depends.length ? api.withoutDepend(it, it.depends[0]) : [])),
     harvest: h.items.map(derived),
     cycles: h.cycles.sort(),
   });

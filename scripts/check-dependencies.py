@@ -67,7 +67,8 @@ def derive(items):
             if k in seen:
                 continue
             seen.add(k)
-            (deps if k in by_key else gone).append(by_key[k] if k in by_key else ref)
+            d = by_key.get(k)
+            (deps if d else gone).append(d if d else ref)
         edges[it["id"]], missing[it["id"]] = deps, gone
 
     out = {it["id"]: {"id": it["id"], "blockedBy": [], "blocks": [], "missingDepends": missing[it["id"]]}
@@ -160,36 +161,28 @@ def main():
         print("✗ the probe produced no cases — this check just stopped checking anything")
         return 1
 
-    # Anti-vacuity: the shapes this judge exists for have to be in the corpus. A run that
-    # never saw a loop, or a reference written two ways, would pass on nothing at all —
-    # the same failure the gates it sits beside were built to catch.
+    # Anti-vacuity: the shapes this judge exists for have to be in the corpus, and a
+    # count of cases so a corpus that collapses is a failure rather than a quiet pass.
+    # Counted from this file's own derivation, inside the loop that already has it — the
+    # first version was a second pass that rebuilt the resolution rule and drifted from
+    # it the moment ids changed shape, which is the defect this whole gate is about.
     shapes = {"loop": 0, "two-spellings": 0, "unknown": 0, "settled-blocker": 0, "cross-repo": 0}
-    for case in cases:
-        items, _ = case["items"], None
-        by_id = {it["id"]: it for it in items}
-        if case["cycles"]:
-            shapes["loop"] += 1
-        for it in items:
-            keys = [key(r, it["repo"]) for r in it["depends"]]
-            if len(keys) != len(set(keys)):
-                shapes["two-spellings"] += 1
-            for r, k in zip(it["depends"], keys):
-                repo, slug = k.split(SEP, 1)
-                target = repo + "#" + slug
-                if target not in by_id:
-                    shapes["unknown"] += 1
-                elif by_id[target]["status"] in TERMINAL:
-                    shapes["settled-blocker"] += 1
-                if repo != it["repo"]:
-                    shapes["cross-repo"] += 1
-    for shape, n in shapes.items():
-        if n == 0:
-            fail("coverage", f"no case in the corpus has {shape} — that claim is being made about nothing")
 
     for case in cases:
         name = case["name"]
         expected, edges = derive(case["items"])
         by_id = {it["id"]: it for it in case["items"]}
+
+        for it, row in zip(case["items"], expected):
+            keys = [key(r, it["repo"]) for r in it["depends"]]
+            if len(keys) != len(set(keys)):
+                shapes["two-spellings"] += 1
+            if row["missingDepends"]:
+                shapes["unknown"] += 1
+            if any(d["status"] in TERMINAL for d in edges[it["id"]]):
+                shapes["settled-blocker"] += 1
+            if any(k.split(SEP, 1)[0] != it["repo"] for k in keys):
+                shapes["cross-repo"] += 1
 
         for side in ("board", "harvest"):
             got = case[side]
@@ -204,7 +197,7 @@ def main():
         if case["board"] != case["harvest"]:
             fail("agree", f"{name}: the board and the harvester derive different graphs")
 
-        for row in case["board"]:
+        for row, signals in zip(case["board"], case["boardSignals"]):
             item = by_id[row["id"]]
             if len(set(row["blockedBy"])) != len(row["blockedBy"]):
                 fail("duplicate", f"{name}: {row['id']}.blockedBy repeats itself: {row['blockedBy']!r}")
@@ -222,17 +215,51 @@ def main():
             for ref in row["missingDepends"]:
                 if ref not in row["blockedBy"] and item["status"] not in TERMINAL:
                     fail("unknown", f"{name}: {row['id']} dropped the unresolved {ref!r} from blockedBy")
-
-        want_loops = loops(case["items"], edges)
-        if set(case["cycles"]) != want_loops:
-            fail("cycle", f"{name}: flagged {sorted(case['cycles'])}, expected {sorted(want_loops)}")
-
-        for row, signals in zip(case["board"], case["boardSignals"]):
+            # The board's own note, which the harvester decides elsewhere: it has to move
+            # with the list it is built from, or the puck says "depends on , which
+            # doesn't exist" with the name missing from the complaint.
             has = "depends-missing" in signals
             if has != bool(row["missingDepends"]):
                 fail("signal", f"{name}: {row['id']} says depends-missing={has} with {row['missingDepends']!r}")
             if signals.count("depends-missing") > 1:
                 fail("signal", f"{name}: {row['id']} carries the note twice")
+
+        # What the modal draws and what the ✕ leaves behind, held to the same rule as the
+        # derivation: one entry per reference, and a removal that reaches every spelling.
+        for it, shown, after in zip(case["items"], case["dependRefs"], case["afterRemovingFirst"]):
+            keys = [key(r, it["repo"]) for r in it["depends"]]
+            drawn = [key(r, it["repo"]) for r in shown]
+            if len(drawn) != len(set(drawn)):
+                fail("chips", f"{name}: {it['id']} would draw {len(drawn)} chips for {len(set(drawn))} blockers")
+            if set(drawn) != set(keys):
+                fail("chips", f"{name}: {it['id']} draws {sorted(set(drawn))}, declared {sorted(set(keys))}")
+            if it["depends"]:
+                gone = key(it["depends"][0], it["repo"])
+                left = [key(r, it["repo"]) for r in after]
+                if gone in left:
+                    fail("remove", f"{name}: {it['id']} still lists {it['depends'][0]!r} after removing it")
+                if set(left) != set(keys) - {gone}:
+                    fail("remove", f"{name}: {it['id']} lost more than the one reference removed")
+
+        want_loops = loops(case["items"], edges)
+        if want_loops:
+            shapes["loop"] += 1
+        if set(case["cycles"]) != want_loops:
+            fail("cycle", f"{name}: flagged {sorted(case['cycles'])}, expected {sorted(want_loops)}")
+
+
+    # After the loop, not before it: the shapes are counted from the same derivation the
+    # comparisons use. A floor rather than "more than none", because the fuzz is what
+    # catches the cross-edge loop this gate was written for and it catches it in five
+    # graphs out of a thousand — a corpus trimmed to a couple of hundred would have
+    # shipped that bug green, and nothing but a floor would have said so.
+    if len(cases) < 500:
+        fail("coverage", f"only {len(cases)} graphs in the corpus — the rare shapes need the fuzz")
+    for shape, n in shapes.items():
+        if n == 0:
+            fail("coverage", f"no case in the corpus has {shape} — that claim is being made about nothing")
+    if shapes["loop"] < 50:
+        fail("coverage", f"only {shapes['loop']} graphs contain a loop — too few to hold the cycle claim")
 
     if failures:
         print(f"✗ dependencies: {len(failures)} failure(s)\n")

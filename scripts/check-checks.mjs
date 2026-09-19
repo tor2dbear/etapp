@@ -164,7 +164,21 @@ const CASES = [
   { gate: "dependencies", claim: "the harvester counts one reference once",
     edit: ["scripts/harvest.mjs", "      if (seen.has(key)) continue;\n", ""], expect: "[harvest]" },
   { gate: "dependencies", claim: "…and so does the board",
-    edit: ["app.js", "        if (seen[key]) return;\n", ""], expect: "[duplicate]" },
+    edit: ["app.js", "      if (seen[key]) return;\n", ""], expect: "[duplicate]" },
+  // Same mutation as the claim above, a different consequence of it: `dependRefs` is
+  // what the modal's chips and the picker's tokens both walk, so losing the rule there
+  // has to be named twice. What this does *not* hold is the call sites — a chip loop
+  // rewritten back to `item.depends` renders wrong and passes, because the gate lifts
+  // bytes and cannot see calls. Stated rather than papered over.
+  { gate: "dependencies", claim: "…and the list the modal's chips are drawn from",
+    edit: ["app.js", "      if (seen[key]) return;\n", ""], expect: "[chips]" },
+  { gate: "dependencies", claim: "removing a blocker removes every spelling of it",
+    edit: ["app.js", "    return (item.depends || []).filter(function (r) { return refKey(item, r) !== key; });",
+      "    return (item.depends || []).filter(function (r) { return r !== ref; });"],
+    expect: "[remove]" },
+  { gate: "dependencies", claim: "the corpus is large enough to hold the claims made about it",
+    edit: ["scripts/dep-probe.mjs", "for (let i = 0; i < 1000; i++) CASES.push(randomGraph(i));\n", ""],
+    expect: "[coverage]" },
   { gate: "dependencies", claim: "the two agree on what is settled",
     edit: ["app.js", 'var TERMINAL = { done: 1, cancelled: 1 };', 'var TERMINAL = { done: 1 };'],
     expect: "[agree]" },

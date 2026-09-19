@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openRepo } from "./lib/repo.mjs";
 import { harvestSource, STATUSES, slugify } from "./lib/adapters.mjs";
+import { itemKey, refKey } from "./lib/frontmatter.mjs";
 
 // Where the instance's own config and output live. Normally the repo this script
 // sits in; ROADMAP_ROOT points it at a different tree, which is how the demo board
@@ -112,27 +113,20 @@ function computeSignals(item, nowMs, cycles, depCycles) {
   return out;
 }
 
-// One reference form for every puck-to-puck link. A bare slug means "in my own
-// repo"; `owner/repo#slug` names one anywhere on the board. Both `parent` and
-// `depends` resolve through here, so there is one thing to learn and one thing to
-// get right.
+// One reference form for every puck-to-puck link, and it is `format.js` that says what
+// it is — the same file that owns every other question about how a puck's values are
+// spelled, reached from Node through `lib/frontmatter.mjs` and from the browser as a
+// classic script. It used to be written out here, again in app.js, and twice more in the
+// CLI, with an argument order that did not even match between the first two.
 //
-// The separator is written escaped on purpose: a literal NUL in the source makes
-// git and ripgrep treat the whole file as binary and hide its diff.
 // dep:begin
-const SEP = "\u0000";
-function refKey(ref, fromRepo) {
-  const s = String(ref || "").trim();
-  const at = s.indexOf("#");
-  return at === -1 ? fromRepo + SEP + s : s.slice(0, at) + SEP + s.slice(at + 1);
-}
 // First wins, because the board's `resolveRef()` returns the first match and two pucks
 // with one (repo, slug) would otherwise resolve to different pucks on the two sides —
 // reachable with `roadmap/foo.md` beside `roadmap/foo/README.md`. Neither answer is
 // right; agreeing is, and the pair shows up as a duplicate slug either way.
 function indexByRef(items) {
   const byKey = new Map();
-  for (const it of items) if (!byKey.has(it.repo + SEP + it.slug)) byKey.set(it.repo + SEP + it.slug, it);
+  for (const it of items) if (!byKey.has(itemKey(it.repo, it.slug))) byKey.set(itemKey(it.repo, it.slug), it);
   return byKey;
 }
 
@@ -256,7 +250,7 @@ function resolveBlockedBy(items) {
 // and could hang a renderer, so it's cut here and flagged for a human.
 function resolveHierarchy(items) {
   const byKey = indexByRef(items);
-  const keyOf = (it) => it.repo + SEP + it.slug;
+  const keyOf = (it) => itemKey(it.repo, it.slug);
   const cycles = new Set(); // pucks whose link was cut, so the flag can say why
 
   for (const it of items) {

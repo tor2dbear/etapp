@@ -29,7 +29,7 @@ import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from ".
 import {
   stripComment, stripQuotes, parseList, fieldSpan,
   formatValue, formatLine, setField as setFieldIn, removeField as removeFieldIn,
-  splitText, frontmatterRange,
+  splitText, frontmatterRange, refKey,
 } from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -204,40 +204,55 @@ async function cmdTag() {
   console.log(`✓ ${slug} tags: ${formatValue("tags", [...set])}  (updated ${TODAY})`);
 }
 
-// Which repo this checkout is, as the board would name it — `owner/repo`. Asked of the
-// origin remote, and best-effort: outside a checkout, without a remote, or with one
-// spelled some way this does not recognise, the answer is null and every check below
-// falls back to what it did before.
+// Which repo this checkout is, as the board names it — `owner/repo`. **Declared, never
+// discovered.** It matters because `auth` and `owner/repo#auth` are the same reference
+// when `owner/repo` is this repo, and without the answer three guards let the qualified
+// spelling past: the self-check, the existence check, and the loop walk.
 //
-// It matters because `auth` and `owner/repo#auth` are the *same reference* when
-// `owner/repo` is this repo, and until this existed the qualified spelling walked past
-// all three guards: `roadmap depends x +owner/repo#x` wrote the self-dependency the
-// next line refuses, the loop walk skipped every `#` hop including the ones that come
-// straight home, and `-auth` could not remove a blocker stored as `owner/repo#auth`.
+// The first version asked `git remote get-url origin`, and that was wrong twice over.
+// It is confidently wrong rather than silent — a local-path clone answers
+// `checkouts/widgets`, a nested GitLab group answers `sub/widgets`, a fork answers the
+// fork's name while `sources.json` says the upstream's — and it is reconfigurable from
+// outside the repo: one `url.<base>.insteadOf` line rewrites the answer and the
+// self-dependency guard is off again. Measured, both. The immediately preceding change
+// to this repository spent its whole review learning that git configuration is an
+// accident surface, and then this reached for it.
+//
+// Everything else in this system declares the answer: `sources.json` carries
+// `source.repo` for the harvester, `board.config.json` carries `repoUrl` for the board.
+// So: `--repo`, `ROADMAP_REPO`, or a `repo:` line in the roadmap directory's own
+// README. No answer means no answer — the guards fall back to what they did before,
+// which is to leave a cross-repo reference to the harvester.
 let SELF_REPO;
 function selfRepo() {
   if (SELF_REPO !== undefined) return SELF_REPO;
-  SELF_REPO = null;
-  try {
-    const url = execFileSync("git", ["remote", "get-url", "origin"], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    // `https://host/owner/repo(.git)`, `git@host:owner/repo(.git)`, `ssh://…/owner/repo`.
-    const m = url.replace(/\.git$/, "").match(/[/:]([^/:]+\/[^/:]+)$/);
-    if (m) SELF_REPO = m[1];
-  } catch {}
+  const flag = typeof opts.repo === "string" ? opts.repo.trim() : "";
+  const env = (process.env.ROADMAP_REPO || "").trim();
+  let declared = flag || env;
+  if (!declared) {
+    try {
+      declared = (getField(readFileSync(path.join(DIR, "README.md"), "utf8"), "repo") || "").trim();
+    } catch {
+      declared = "";
+    }
+  }
+  // `owner/repo` or nothing. A value that is not that shape is a typo, and guessing what
+  // it meant is how the remote version went wrong.
+  SELF_REPO = /^[^/\s#]+\/[^/\s#]+$/.test(declared) ? declared : null;
+  if (declared && !SELF_REPO) fail(`repo "${declared}" is not owner/repo`);
   return SELF_REPO;
 }
 
 // A reference as this repo would write it: the bare slug when it names a puck here,
-// unchanged otherwise. One place, so the add, the remove and the loop walk cannot
-// disagree about what "the same reference" means.
+// unchanged otherwise. Built on the shared `refKey`, so "the same reference" means here
+// exactly what it means to the board and the harvester.
 function localRef(ref) {
-  const s = String(ref).trim();
-  const at = s.indexOf("#");
-  if (at === -1) return s;
   const repo = selfRepo();
-  return repo && s.slice(0, at) === repo ? s.slice(at + 1) : s;
+  const key = refKey(ref, repo || "\u0000none");
+  const at = key.indexOf("\u0000");
+  const owner = key.slice(0, at);
+  const slug = key.slice(at + 1);
+  return repo && owner === repo ? slug : String(ref).trim();
 }
 
 // Dependencies. Same `+add -remove` shape as `tag`, because it's the same kind of
@@ -376,7 +391,13 @@ async function cmdParent() {
   if (clearing) {
     out = removeField(text, "parent");
   } else {
-    const v = String(ref || "").trim();
+    // `parent` uses the same reference grammar as `depends`, so it goes through the same
+    // `localRef`. It did not until now, and the three guards below had the identical
+    // hole: `roadmap parent x owner/repo#x` from inside `owner/repo` wrote a puck that
+    // is its own etapp — which the harvester then flags and silently cuts. The fix for
+    // `depends` sat 130 lines up, and this is what it means to fix a call site rather
+    // than give the rule an owner.
+    const v = localRef(String(ref || "").trim());
     if (!v) fail("usage: roadmap parent <slug> <parent-slug|owner/repo#slug>   (--clear to remove)");
     if (v === slug) fail("a puck can't be its own etapp");
     // Same-repo references are checked here; a cross-repo one can only be verified
@@ -392,7 +413,7 @@ async function cmdParent() {
         seen.add(cur);
         const path2 = puckPath(cur);
         if (!path2) break;
-        cur = getField(await readFile(path2, "utf8"), "parent");
+        cur = localRef(getField(await readFile(path2, "utf8"), "parent") || "");
       }
     }
     out = setField(text, "parent", v);

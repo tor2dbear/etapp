@@ -325,6 +325,39 @@
     return bom + head.concat([""], body, [""]).join(nl);
   }
 
+  // ── references between pucks ──────────────────────────────────────────────────
+  // `depends:` and `parent:` both name another puck, and they name it the same way: a
+  // bare slug means "in my own repo", `owner/repo#slug` names one anywhere on the board.
+  // Which spelling a value may take is what this file is for, and this one had drifted
+  // into four implementations — the board, the harvester, the CLI, and the CLI again for
+  // `parent` — that did not agree on argument order, on whether the qualified spelling
+  // of the local repo counts as local, or on whether two spellings are one reference.
+  // They are one reference; `refKey` is what says so.
+  //
+  // The separator is written escaped on purpose: a literal NUL in the source makes git
+  // and ripgrep treat the whole file as binary and hide its diff.
+  const REF_SEP = "\u0000";
+
+  // What a reference *is*, before asking whether anything answers to it: the pair
+  // (repo, slug), spelled as one string. Two references with the same key are the same
+  // reference however they were written.
+  function refKey(ref, fromRepo) {
+    const s = String(ref == null ? "" : ref).trim();
+    const at = s.indexOf("#");
+    return at === -1 ? itemKey(fromRepo, s) : itemKey(s.slice(0, at), s.slice(at + 1));
+  }
+
+  // The same key, for a puck that is already resolved. Nobody builds it by hand.
+  function itemKey(repo, slug) {
+    return String(repo == null ? "" : repo) + REF_SEP + String(slug == null ? "" : slug);
+  }
+
+  // And back the other way: how `fromRepo` would write a reference to that puck. The
+  // inverse of `refKey`, so `refKey(refFor(r, …), r)` is the key it came from.
+  function refFor(fromRepo, repo, slug) {
+    return repo === fromRepo ? slug : repo + "#" + slug;
+  }
+
   // The one name both sides reach for. `__ROADMAP__` next to it on the page is the
   // same idea: a global is what a classic script can offer. (This caption had drifted
   // 85 lines up, where it read as a heading for the section below it.)
@@ -347,5 +380,8 @@
     splitText,
     frontmatterRange,
     replaceBody,
+    refKey,
+    itemKey,
+    refFor,
   };
 })();
