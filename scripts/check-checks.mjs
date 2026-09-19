@@ -188,7 +188,17 @@ const GIT_DIR = path.join(ROOT, ".git");
 // index untouched. The gates run `git ls-files`, so they need the same treatment or
 // they read the caller's tracked set instead of the copy's. Nothing here wants any of
 // them, so the whole prefix goes.
-const ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
+// The config files are the same sentence in a different spelling, and stripping `GIT_*`
+// is what forecloses saying it: sealing them means *setting* two of these variables, not
+// removing them. `init.templateDir` pointing at a template whose `index` is a symlink put
+// the copy's index outside the copy — measured, a green run that wrote 3692 bytes into a
+// file the fingerprint cannot see, because it is not under ROOT. `core.excludesFile` and
+// `core.hooksPath` are the same shape waiting for a gate that asks a wider question.
+const ENV = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))),
+  GIT_CONFIG_GLOBAL: os.devNull,
+  GIT_CONFIG_SYSTEM: os.devNull,
+};
 const git = (args, cwd, input) =>
   execFileSync("git", args, { cwd, env: ENV, input, encoding: "utf8", stdio: input === undefined ? undefined : ["pipe", "pipe", "pipe"] });
 
@@ -211,7 +221,30 @@ let OBJECT_FORMAT = "";
 try {
   OBJECT_FORMAT = git(["rev-parse", "--show-object-format"], ROOT).trim();
 } catch {}
-const INIT = ["init", "--quiet", ...(OBJECT_FORMAT ? [`--object-format=${OBJECT_FORMAT}`] : [])];
+// `--no-template` as well, because a template directory is reachable three ways and the
+// sealing above only closes one: config, `GIT_TEMPLATE_DIR`, and the one compiled into
+// git. Nothing in a template belongs in a copy that exists to hold an index for a few
+// milliseconds.
+const INIT = ["init", "--quiet", "--no-template", ...(OBJECT_FORMAT ? [`--object-format=${OBJECT_FORMAT}`] : [])];
+
+// And the copy's own `.git` is checked rather than assumed. Six defects in this file have
+// been a path inside the copy that names something outside it, and the last one arrived
+// through a directory git was told to copy — so the question is asked of the result
+// instead of enumerated over the ways in.
+function assertNoEscape(root, dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      assertNoEscape(root, p);
+      continue;
+    }
+    if (!entry.isSymbolicLink()) continue;
+    const real = path.resolve(path.dirname(p), fs.readlinkSync(p));
+    if (real !== root && !real.startsWith(root + path.sep)) {
+      fail(`the copy's ${path.relative(root, p)} points at ${real}, which is outside the copy`);
+    }
+  }
+}
 
 // The copy keeps no symlinks. A link is a hole in it: every write in `apply()` follows
 // one, so a contributor whose `format.js` is locally a link to a file kept elsewhere had
@@ -294,6 +327,7 @@ function clone(dir) {
   // tracked set. A path that is tracked but absent from the working tree keeps its
   // entry, which is what makes a staged-then-deleted addition reproduce here.
   git(INIT, dir);
+  assertNoEscape(dir, path.join(dir, ".git"));
   git(["update-index", "-z", "--index-info"], dir, TRACKED);
   return dir;
 }
