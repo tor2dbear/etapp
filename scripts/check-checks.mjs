@@ -180,10 +180,26 @@ const CASES = [
 // the base plus one mutant, which is nothing.
 const SKIP_COPY = new Set(["node_modules", ".sources", ".wrangler"]);
 const GIT_DIR = path.join(ROOT, ".git");
-// The index, resolved through git rather than assumed to be `.git/index`: in a linked
-// worktree it is not.
-const INDEX = path.resolve(ROOT, execFileSync("git", ["rev-parse", "--git-path", "index"],
-  { cwd: ROOT, encoding: "utf8" }).trim());
+
+// Every git command here, and every gate below, runs without the caller's `GIT_*`
+// variables. They are how git is told to look somewhere else, and a child inherits
+// them: with an absolute `GIT_INDEX_FILE` set, the copy's `git add` wrote into the
+// *caller's* index — measured, `secrets.txt` staged over there and the copy's own
+// index untouched. The gates run `git ls-files`, so they need the same treatment or
+// they read the caller's tracked set instead of the copy's. Nothing here wants any of
+// them, so the whole prefix goes.
+const ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
+const git = (args, cwd, input) =>
+  execFileSync("git", args, { cwd, env: ENV, input, encoding: "utf8", stdio: input === undefined ? undefined : ["pipe", "pipe", "pipe"] });
+
+// The tracked set, as mode/hash/stage/path records. Not the index *file*: copying that
+// has been wrong three times now, each in a different way git is allowed to be
+// configured. A linked worktree puts it somewhere else; split-index makes it a link to
+// a `sharedindex.<hash>` companion the copy does not have, so `git ls-files` exits 128
+// with "index file open failed" before a single gate runs; and `GIT_INDEX_FILE` moves
+// it again. `ls-files -s` answers through git, so every one of those is already
+// resolved by the time this reads it.
+const TRACKED = execFileSync("git", ["ls-files", "-s", "-z"], { cwd: ROOT, env: ENV, encoding: "utf8" });
 
 function clone(dir) {
   fs.cpSync(ROOT, dir, {
@@ -202,11 +218,13 @@ function clone(dir) {
       // would otherwise be copied once per mutation. No gate reads them.
       !SKIP_COPY.has(path.basename(src)),
   });
-  // A repository of its own, carrying the real one's index. `git ls-files` — the only
-  // git either gate runs — reads the index and nothing else, so the copy sees the same
-  // tracked set; and any write the mutations make lands here rather than over there.
-  execFileSync("git", ["init", "--quiet"], { cwd: dir });
-  fs.copyFileSync(INDEX, path.join(dir, ".git", "index"));
+  // A repository of its own, with an index built from those records rather than copied.
+  // `update-index --index-info` does not need the objects they name, and `git ls-files`
+  // — the only git either gate runs — reads the index alone, so the copy sees the same
+  // tracked set. A path that is tracked but absent from the working tree keeps its
+  // entry, which is what makes a staged-then-deleted addition reproduce here.
+  git(["init", "--quiet"], dir);
+  git(["update-index", "-z", "--index-info"], dir, TRACKED);
   return dir;
 }
 
@@ -226,7 +244,7 @@ function apply(dir, c) {
   if (c.write) {
     const [rel, text] = c.write;
     fs.writeFileSync(path.join(dir, rel), text);
-    if (c.track) execFileSync("git", ["add", "-f", rel], { cwd: dir, stdio: "ignore" });
+    if (c.track) git(["add", "-f", "--", rel], dir);
   }
   if (c.remove) {
     fs.rmSync(path.join(dir, c.remove), { force: true });
@@ -263,7 +281,7 @@ const base = clone(path.join(tmp, "base"));
 const TIMEOUT = 180000;
 function run(argv, cwd) {
   return new Promise((resolve) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd });
+    const child = spawn(argv[0], argv.slice(1), { cwd, env: ENV });
     let out = "";
     const take = (b) => { out += b; };
     child.stdout.on("data", take);
