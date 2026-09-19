@@ -153,7 +153,18 @@ function clone(dir) {
   for (let i = 0; i < entries.length; i++) {
     const code = entries[i].slice(0, 2);
     dirty.push(entries[i].slice(3));
-    if (code[0] === "R" || code[0] === "C") i++; // the next field is the old path
+    // A rename or copy carries its source as the following field. Both go on the list
+    // rather than being skipped: the loop below copies a path that exists in the
+    // working tree and deletes one that does not, which is exactly right for each —
+    // a rename's source is gone and has to be removed from the clone, a copy's source
+    // is still there and is re-copied harmlessly.
+    //
+    // Skipping it meant the clone kept HEAD's copy of the old path beside the new one.
+    // Measured: with `tests/markdown.fixture.md` renamed away, the markdown gate — which
+    // reads that exact path — passed on the base clone and the whole run went green on
+    // a tree where the fixture no longer exists. The meta-check was validating stale
+    // code, which is the one failure it is built to be incapable of.
+    if (code[0] === "R" || code[0] === "C") dirty.push(entries[++i]);
   }
   for (const rel of dirty) {
     const from = path.join(ROOT, rel);

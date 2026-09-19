@@ -23,8 +23,14 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const files = execFileSync("git", ["ls-files", "*.js", "*.mjs"], { cwd: ROOT, encoding: "utf8" })
-  .split("\n")
+// `-z`, because `git ls-files` C-quotes a path containing a quote, a backslash or a
+// non-ASCII byte: `odd "name".js` comes back as `"odd \"name\".js"`, and `node --check`
+// then fails on a file that is perfectly valid but does not exist under that name. A
+// newline in a filename splits into two bogus entries. NUL-separated output is the raw
+// path. (Written with `.split("\n")` first, in the same commit that fixed this exact
+// quoting bug one file over — which is the whole argument for the meta-check.)
+const files = execFileSync("git", ["ls-files", "-z", "*.js", "*.mjs"], { cwd: ROOT, encoding: "utf8" })
+  .split("\0")
   .filter(Boolean);
 
 // An empty answer fails rather than passing vacuously: "nothing to check" and
