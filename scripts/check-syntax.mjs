@@ -41,15 +41,12 @@ if (!files.length) {
 }
 
 const bad = [];
+// `--` ends node's own options, because a tracked file named `--odd.js` is a valid path
+// and an invalid flag: without it node answers "bad option: --odd.js" and exits 9, which
+// this loop would have reported as a file that does not parse. Same class as the
+// C-quoting above — a perfectly legal git filename the gate cannot name.
 for (const f of files) {
   try {
-    // `--` ends node's own options, because a tracked file named `--odd.js` is a valid
-    // path and an invalid flag: without it node answers "bad option: --odd.js" and exits
-    // 9, which this loop would have reported as a file that does not parse. The same
-    // class as the C-quoting above — a perfectly legal git filename that the gate cannot
-    // name — and the reason for asking git rather than writing the list by hand is that
-    // the list is where such names go missing.
-
     execFileSync(process.execPath, ["--check", "--", f], { cwd: ROOT, stdio: ["ignore", "ignore", "pipe"] });
   } catch (e) {
     bad.push(`${f}: ${String(e.stderr || "").trim().split("\n").find((l) => /Error/.test(l)) || "does not parse"}`);

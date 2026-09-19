@@ -205,36 +205,39 @@ const TRACKED = execFileSync("git", ["ls-files", "-s", "-z"], { cwd: ROOT, env: 
 // one, so a contributor whose `format.js` is locally a link to a file kept elsewhere had
 // the sabotage land on that real file — measured, its bytes came back changed by a run
 // of the safety check. `cpSync` cannot close the hole by itself: `dereference: true`
-// only rewrites a relative target to an absolute one, which escapes just as well.
-// Same shape as the `.git` pointer file — a tool that mutates a copy must not be able to
-// reach the original, and "a copy is the tree" stops being true at exactly those entries
-// that are names for somewhere else.
+// only rewrites a relative target to an absolute one, which escapes just as well. Same
+// shape as the `.git` pointer file below.
 //
 // A link to a file becomes that file's bytes, which is what every gate meant to read
 // anyway. A link whose target is gone is dropped: reading it would have failed in the
 // real tree too. Anything else is refused by name rather than guessed at — following it
 // is precisely how the bug above worked.
-function refuse(rel, why) {
-  console.error(`\u2717 ${rel} is a symlink that ${why} — the copy cannot hold it without reaching outside itself.`);
-  console.error(`  Replace it with the file itself, or add it to SKIP_COPY above if no gate reads it.`);
+function fail(msg) {
+  console.error(`✗ ${msg}`);
   process.exit(1);
 }
 
-function materialize(dir, root = dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
+const refuse = (rel, why) =>
+  fail(
+    `${rel} is a symlink that ${why} — the copy cannot hold it without reaching outside itself.\n` +
+      `  Replace it with the file itself, or add it to SKIP_COPY above if no gate reads it.`
+  );
+
+// Walked in lockstep: `copy` is the directory being repaired, `src` the one it was copied
+// from. A link is followed from `src`, never from `copy` — `cpSync` keeps the target
+// string verbatim, so `format.js -> ../shared/format.js` means something else entirely
+// once the link is sitting in a temp directory: nothing, or whatever happens to occupy
+// that spot over there. Measured — the copy lost `format.js` and the base tree came back
+// red on a repository whose own `node --check` is clean.
+function materialize(copy, src) {
+  for (const entry of fs.readdirSync(copy, { withFileTypes: true })) {
+    const p = path.join(copy, entry.name);
+    const source = path.join(src, entry.name);
     if (entry.isDirectory()) {
-      materialize(p, root);
+      materialize(p, source);
       continue;
     }
     if (!entry.isSymbolicLink()) continue;
-    // Followed from where it was written, never from the copy. `cpSync` keeps the target
-    // string verbatim, so `format.js -> ../shared/format.js` means something else
-    // entirely once the link is sitting in a temp directory: nothing, or whatever
-    // happens to occupy that spot over there. Measured — the copy lost `format.js` and
-    // the base tree came back red on a repository whose own `node --check` is clean.
-    const rel = path.relative(root, p);
-    const source = path.join(ROOT, rel);
     let target = null;
     try {
       target = fs.statSync(source); // through the link, which is the point
@@ -242,15 +245,14 @@ function materialize(dir, root = dir) {
       // Only a target that is *gone* is dropped, and only because reading it would have
       // failed in the real tree too. A link that exists and cannot be followed — EACCES,
       // a loop — is not a question to answer by quietly deleting the file.
-      if (err.code !== "ENOENT") refuse(rel, `cannot be followed (${err.code})`);
+      if (err.code !== "ENOENT") refuse(path.relative(ROOT, source), `cannot be followed (${err.code})`);
     }
-    if (target && !target.isFile()) refuse(rel, "points at something other than a regular file");
-    const bytes = target ? fs.readFileSync(source) : null;
-    fs.rmSync(p, { force: true }); // unlinks the link, never the file it names
-    if (bytes) {
-      fs.writeFileSync(p, bytes);
-      fs.chmodSync(p, target.mode & 0o777); // an executable stays executable
-    }
+    if (target && !target.isFile()) refuse(path.relative(ROOT, source), "points at something other than a regular file");
+    fs.unlinkSync(p); // unlinks the link, never the file it names
+    // `copyFileSync` reads through the link kernel-side and, the destination having just
+    // been removed, creates it with the source's mode — 755 stays 755 under a 077 umask,
+    // measured. No whole file through the heap and no separate chmod to forget.
+    if (target) fs.copyFileSync(source, p);
   }
 }
 
@@ -271,21 +273,43 @@ function clone(dir) {
       // would otherwise be copied once per mutation. No gate reads them.
       !SKIP_COPY.has(path.basename(src)),
   });
+  // The last step of copying, not the first step of indexing: run before `git init`, so
+  // there is no `.git` in the copy for it to walk.
+  materialize(dir, ROOT);
   // A repository of its own, with an index built from those records rather than copied.
   // `update-index --index-info` does not need the objects they name, and `git ls-files`
   // — the only git either gate runs — reads the index alone, so the copy sees the same
   // tracked set. A path that is tracked but absent from the working tree keeps its
   // entry, which is what makes a staged-then-deleted addition reproduce here.
-  materialize(dir);
   git(["init", "--quiet"], dir);
   git(["update-index", "-z", "--index-info"], dir, TRACKED);
   return dir;
 }
 
+// Every path a mutation is about to touch, checked against the copy it belongs to. Four
+// defects in this file have been the same sentence with a different subject — a worktree
+// pointer file, an inherited `GIT_INDEX_FILE`, a split index, a symlink — and each was
+// fixed by teaching the tool about one more layer that resolves a name to somewhere
+// else. Nothing says that list is finished. So the rule is stated once, in code rather
+// than in the comments above: resolve the name the way the kernel will, and refuse if
+// the answer is not inside the copy. It costs two stats per mutation and does not depend
+// on `materialize()` having been exhaustive, which is the assumption that keeps failing.
+function inside(dir, rel) {
+  const f = path.join(dir, rel);
+  const leaf = path.join(fs.realpathSync(path.dirname(f)), path.basename(f));
+  if (leaf !== dir && !leaf.startsWith(dir + path.sep)) {
+    fail(`${rel} resolves to ${leaf}, which is outside the copy — refusing to write`);
+  }
+  if (fs.lstatSync(leaf, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    fail(`${rel} is still a symlink inside the copy — refusing to write through it`);
+  }
+  return f;
+}
+
 function apply(dir, c) {
   if (c.edit) {
     const [rel, find, replace] = c.edit;
-    const f = path.join(dir, rel);
+    const f = inside(dir, rel);
     const src = fs.readFileSync(f, "utf8");
     const n = src.split(find).length - 1;
     if (n !== 1) return `the mutation's anchor appears ${n} times in ${rel}, not once`;
@@ -293,15 +317,15 @@ function apply(dir, c) {
   }
   if (c.append) {
     const [rel, text] = c.append;
-    fs.appendFileSync(path.join(dir, rel), text);
+    fs.appendFileSync(inside(dir, rel), text);
   }
   if (c.write) {
     const [rel, text] = c.write;
-    fs.writeFileSync(path.join(dir, rel), text);
+    fs.writeFileSync(inside(dir, rel), text);
     if (c.track) git(["add", "-f", "--", rel], dir);
   }
   if (c.remove) {
-    fs.rmSync(path.join(dir, c.remove), { force: true });
+    fs.rmSync(inside(dir, c.remove), { force: true });
   }
   return null;
 }
@@ -325,38 +349,92 @@ if (!cases.length) {
 // `TMPDIR=$PWD/.tmp` — makes the destination a subdirectory of the source. `cpSync`
 // refuses that outright, with `ERR_FS_CP_EINVAL` raised before the filter is consulted,
 // so no skip list can rescue it: the run dies on a stack trace before a single gate has
-// been asked anything. Measured. Beside the repository is the fallback, being the one
-// place that certainly exists and is certainly outside the tree.
-function tmpRoot() {
+// been asked anything. Measured.
+//
+// Refused rather than worked around. The obvious fallback — beside the repository —
+// would put megabytes of copies in the parent of the checkout, which may itself be a
+// repository, and they would then turn up in *its* `git status`: the exact signature of
+// the `.git` defect above, reintroduced by the code whose job is containment.
+function tmpBase() {
   const root = fs.realpathSync(ROOT);
-  for (const base of [os.tmpdir(), path.dirname(ROOT)]) {
-    let dir;
-    try {
-      dir = fs.realpathSync(base);
-    } catch {
-      continue;
-    }
-    // `startsWith("..")` alone is not the containment test it looks like: a directory
-    // named `..tmp` *inside* the checkout relativises to `..tmp`, which passes it. Then
-    // `cpSync` raises the exact ERR_FS_CP_EINVAL this function exists to prevent —
-    // reproduced with `TMPDIR=$PWD/..tmp`. Only a leading `..` component means outside.
-    const rel = path.relative(root, dir);
-    const outside = path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep);
-    if (!outside) continue;
-    try {
-      return fs.mkdtempSync(path.join(dir, "etapp-checkcheck-"));
-    } catch {}
+  let dir;
+  try {
+    dir = fs.realpathSync(os.tmpdir());
+  } catch (err) {
+    fail(`${os.tmpdir()} cannot be used for the copies (${err.code}) — point TMPDIR somewhere writable`);
   }
-  console.error("✗ nowhere outside the repository to put the copies — point TMPDIR at a writable directory that is not inside it");
-  process.exit(1);
+  // Both sides are realpaths, so containment is a prefix. `path.relative` with a leading
+  // `..` is not the same test: a directory named `..tmp` inside the checkout relativises
+  // to `..tmp`, passes it, and dies on the ERR_FS_CP_EINVAL above. Reproduced.
+  if (dir === root || dir.startsWith(root + path.sep)) {
+    fail(`${dir} is inside the repository — point TMPDIR at a writable directory that is not`);
+  }
+  try {
+    return fs.mkdtempSync(path.join(dir, "etapp-checkcheck-"));
+  } catch (err) {
+    fail(`cannot create a temporary directory in ${dir} (${err.code})`);
+  }
 }
-const tmp = tmpRoot();
+const tmp = tmpBase();
 // Every exit, not only the happy one. The base-tree guard's `process.exit(1)` skipped
 // the cleanup at the end and left a ~2MB clone behind on each failed run.
 const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} };
 process.on("exit", cleanup);
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { cleanup(); process.exit(130); });
 const failures = [];
+
+// Thirty-three claims say each gate can fail. Nothing has ever said the one thing this
+// file promises about itself: that a run leaves the real tree exactly as it found it.
+// Every breach of it so far — a worktree pointer, an inherited `GIT_INDEX_FILE`, a split
+// index, a symlink — was found by a reviewer or by a contributor whose own files came
+// back modified, which is the discovery channel this file's whole argument complains
+// about. So the tree is fingerprinted before and after, and any difference is a failure
+// that names the path.
+//
+// Stats are taken *through* a symlink on purpose: that is how the last breach escaped,
+// and a link inside the tree pointing at a file outside it is the only way the damage is
+// visible from in here. `.git` is not walked — it churns for its own reasons — but the
+// two things a mutation could reach inside it are asked of git directly, which is how
+// the first two breaches announced themselves: a file staged in the caller's own index.
+function fingerprint() {
+  const seen = [];
+  const walk = (dir, rel) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1));
+    for (const entry of entries) {
+      if (entry.name === ".git" || SKIP_COPY.has(entry.name)) continue;
+      const here = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(path.join(dir, entry.name), here);
+        continue;
+      }
+      const st = fs.statSync(path.join(dir, entry.name), { throwIfNoEntry: false });
+      seen.push(st ? `${here} ${st.mode} ${st.size} ${st.mtimeMs} ${st.ino}` : `${here} — gone`);
+    }
+  };
+  walk(ROOT, "");
+  // One entry per record, not one entry per command: the difference is then the record
+  // that moved rather than two copies of the whole index.
+  for (const rec of git(["status", "--porcelain", "-z"], ROOT).split("\0").filter(Boolean)) seen.push(`git status: ${rec}`);
+  for (const rec of git(["ls-files", "-s", "-z"], ROOT).split("\0").filter(Boolean)) seen.push(`git index: ${rec}`);
+  return seen;
+}
+const BEFORE = fingerprint();
+
+function assertTreeUntouched() {
+  const after = fingerprint();
+  const was = new Set(BEFORE);
+  const now = new Set(after);
+  const changed = [
+    ...BEFORE.filter((l) => !now.has(l)).map((l) => `was  ${l}`),
+    ...after.filter((l) => !was.has(l)).map((l) => `now  ${l}`),
+  ].sort((a, b) => (a.slice(5) < b.slice(5) ? -1 : 1));
+  if (!changed.length) return;
+  console.error("\u2717 this run modified the repository it was supposed to only read\n");
+  for (const line of changed.slice(0, 10)) console.error(`  ${line}`);
+  if (changed.length > 10) console.error(`  … and ${changed.length - 10} more`);
+  console.error("\n  (or someone edited the tree while it ran — check the paths above before believing this)");
+  process.exit(1);
+}
 
 // The gates must all pass on the *unmutated* clone first. Otherwise a mutation that
 // "fails" proves nothing — the gate was already red.
@@ -486,6 +564,10 @@ await Promise.all(
   })
 );
 cases.forEach((c, i) => { if (verdicts[i]) failures.push([c, verdicts[i]]); });
+
+// Before the verdict, and before the claim failures, because a tool that corrupted the
+// tree has nothing worth saying about anything else.
+assertTreeUntouched();
 
 if (failures.length) {
   console.error(`✗ ${failures.length} of ${cases.length} claim(s) are not actually held\n`);
