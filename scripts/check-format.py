@@ -195,6 +195,55 @@ with tempfile.TemporaryDirectory() as tmp:
         except yaml.YAMLError as e:
             fail("cli", f"{path.name} is not valid YAML — {type(e).__name__}")
 
+# ── what the writer writes, field by field ───────────────────────────────────
+# `setField` is the one writer the CLI and the board both call now. Before it moved
+# into format.js they were two copies, and the board's had neither the BOM fix nor the
+# field-type encoding: seven of these eight-odd cases came back as the wrong type, or
+# as a file PyYAML refuses, committed to somebody else's repo. Asked of PyYAML rather
+# than of our own reader, because "the wrong type" is exactly what our reader was
+# lenient about.
+EXPECT = {
+    "str": lambda v, m: isinstance(v, str) and v == m,
+    "num": lambda v, m: isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) == float(m),
+    "date": lambda v, m: isinstance(v, (datetime.date, datetime.datetime)) and normalize(v) == m,
+    "list": lambda v, m: isinstance(v, list) and v == m,
+}
+for w in probe["writes"]:
+    where = f"{w['key']}={w['value']!r}"
+    if w["file"] is None:
+        fail("writer", f"{where}: setField refused a puck that has frontmatter")
+        continue
+    try:
+        data = yaml.safe_load(w["file"].lstrip("\ufeff").split("---")[1])
+    except yaml.YAMLError as e:
+        fail("writer", f"{where}: PyYAML refuses the file the writer produced — {type(e).__name__}")
+        continue
+    got = data.get(w["key"])
+    if not EXPECT[w["type"]](got, w["value"]):
+        fail("writer", f"{where}: PyYAML reads {got!r} ({type(got).__name__}), wanted {w['type']}")
+    # The rest of the puck has to survive the edit untouched — every field the write
+    # did not name. (A `title` write is allowed to change the title, which is what the
+    # first version of this check got wrong about its own fixture.)
+    untouched = {"title": "A puck", "status": "now"}
+    for k, want in untouched.items():
+        if k != w["key"] and data.get(k) != want:
+            fail("writer", f"{where}: the edit disturbed {k} — {data!r}")
+
+# A BOM is tolerated and carried back out, on both the write and the remove. An editor
+# that emits one used to make a puck readable but not editable from the board.
+for name, text in (("setField", probe["bom"]), ("removeField", probe["bomRemoved"])):
+    if text is None:
+        fail("writer", f"{name} refuses a puck that starts with a BOM")
+    elif not text.startswith("\ufeff"):
+        fail("writer", f"{name} dropped the BOM instead of carrying it back out")
+if probe["bom"] and "status: next" not in probe["bom"]:
+    fail("writer", "setField did not write the field on a BOM-prefixed puck")
+if probe["bomRemoved"] and "status:" in probe["bomRemoved"].split("---")[1]:
+    fail("writer", "removeField did not remove the field on a BOM-prefixed puck")
+# Text that is not a puck answers null, so each caller can say so in its own words.
+if probe["noFrontmatter"] is not None:
+    fail("writer", "setField invented frontmatter for a file that has none")
+
 if failures:
     print(f"✗ {len(failures)} format check(s) failed\n", file=sys.stderr)
     for check, detail in failures:
@@ -211,5 +260,6 @@ print(
     f"✓ format clean — {len(probe['strings'])} strings round-trip as strings in both positions, "
     f"{len(probe['numbers'])} numbers as numbers, {len(probe['dates'])} dates as dates, "
     f"this parser agrees with PyYAML on {len(probe['lines'])} frontmatter lines, "
-    f"and every puck the CLI writes parses clean"
+    f"every puck the CLI writes parses clean, and the {len(probe['writes'])} fields the "
+    f"shared writer writes come back as the type they were meant to be"
 )

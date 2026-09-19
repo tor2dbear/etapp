@@ -11,7 +11,7 @@
 // over there, by something that has never heard of this codebase.
 //
 // Node builtins only, like the rest of scripts/.
-import { encodeItem, encodeScalar, encodeNumber, parseFrontmatter } from "./lib/frontmatter.mjs";
+import { encodeItem, encodeScalar, encodeNumber, parseFrontmatter, setField, removeField } from "./lib/frontmatter.mjs";
 
 // Strings. Every one of these must come back from a YAML parser as the *same
 // string* — the type matters as much as the characters, which is how `true` and
@@ -43,6 +43,42 @@ const LINES = [
   'depends: ["a, b", c]', "order: 10", "order: 10 # note", "updated: 2026-09-18",
 ];
 
+// What `setField` writes, field by field. The encoders above answer "how is this value
+// spelled"; this answers "which spelling does *this key* get", which is the half that
+// was missing from the owner and therefore missing from the board. Every one of these
+// was measured wrong before the writer moved here: `parent: release #1` read back as
+// `release`, `agent: true` as a boolean, and two of them produced a file PyYAML
+// refuses outright — committed, by the board, to somebody else's repo.
+//
+// `type` is what a YAML parser must hand back, not merely what the characters look
+// like. That distinction is the whole point: `owner: 2026-01-01` is a *string* field
+// holding something date-shaped, and `order: 10.5` is a number that must not arrive as
+// one. A puck with a BOM is here because the board refused to edit one at all.
+const BOM = "\uFEFF";
+const BASE = "---\ntitle: A puck\nstatus: now\n---\n\nbody\n";
+const WRITES = [
+  { key: "parent", value: "release #1", type: "str" },
+  { key: "parent", value: "a: b", type: "str" },
+  { key: "parent", value: "owner/repo#slug", type: "str" },
+  { key: "agent", value: "true", type: "str" },
+  { key: "agent", value: "yes", type: "str" },
+  { key: "owner", value: "no", type: "str" },
+  { key: "owner", value: "2026-01-01", type: "str" },
+  { key: "owner", value: "123dev", type: "str" },
+  { key: "priority", value: "@urgent", type: "str" },
+  { key: "title", value: "123", type: "str" },
+  { key: "title", value: "", type: "str" },
+  { key: "status", value: "next", type: "str" },
+  { key: "order", value: 10, type: "num" },
+  { key: "order", value: 10.5, type: "num" },
+  { key: "order", value: 5e-7, type: "num" },
+  { key: "issue", value: 42, type: "num" },
+  { key: "target", value: "2026-11-30", type: "date" },
+  { key: "updated", value: "2026-09-18", type: "date" },
+  { key: "tags", value: ["ui", "release #1", "a, b"], type: "list" },
+  { key: "depends", value: ["owner/repo#slug", "a b"], type: "list" },
+];
+
 console.log(JSON.stringify({
   strings: STRINGS.map((v) => ({ value: v, item: encodeItem(v), scalar: encodeScalar(v, false) })),
   numbers: NUMBERS.map((n) => ({ value: n, written: encodeNumber(n) })),
@@ -54,4 +90,10 @@ console.log(JSON.stringify({
     line,
     read: Object.values(parseFrontmatter(`---\n${line}\n---\n`).data)[0],
   })),
+  writes: WRITES.map((w) => ({ ...w, file: setField(BASE, w.key, w.value) })),
+  // The same writer over a puck that starts with a BOM, and a removal. Both are things
+  // the board's own copy could not do: it returned null on the BOM and refused the edit.
+  bom: setField(BOM + BASE, "status", "next"),
+  bomRemoved: removeField(BOM + BASE, "status"),
+  noFrontmatter: setField("just a body\n", "status", "next"),
 }, null, 2));

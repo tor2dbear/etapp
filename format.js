@@ -241,6 +241,75 @@
 
   // The one name both sides reach for. `__ROADMAP__` next to it on the page is the
   // same idea: a global is what a classic script can offer.
+  // ── which spelling a *field* gets, and how a field is edited in place ────────
+  //
+  // The half that was missing. This file owned how a *value* is spelled and stopped
+  // there, so the decision one level up — which encoder a given key needs, and what a
+  // frontmatter edit has to tolerate — stayed in `scripts/roadmap.mjs`, where the board
+  // cannot reach it. It reached for the list encoder and wrote every scalar with
+  // `String(value)` instead.
+  //
+  // Measured against PyYAML: seven of eight fields the board wrote came back wrong.
+  // `parent: release #1` read as `release`, `agent: true` as a boolean, `owner: no` as
+  // `false`, `owner: 2026-01-01` as a date — and `priority: @urgent` and `parent: a: b`
+  // produced a file PyYAML refuses outright, committed to somebody else's repo. Every
+  // one of those is a defect the CLI had already been fixed for, twice, in #1 and #2.
+
+  // The fields whose schema is not a string: a number for the first two, a date for the
+  // rest. Only these may write a digit string bare — everywhere else `123` is text.
+  const TYPED_FIELDS = new Set(["order", "issue", "updated", "created", "target"]);
+
+  function formatValue(key, value) {
+    // Inline arrays (tags, depends) — one shape for every list field. Each item is
+    // encoded rather than pasted in, so a value that needs quoting gets it back on the
+    // way out instead of being written bare and read as something else next time.
+    if (Array.isArray(value)) return `[${value.map(encodeItem).join(", ")}]`;
+    if (key === "tags") return "[]";
+    // A number is written as a number, without a detour through a string that something
+    // then has to recognise as numeric again.
+    if (typeof value === "number" && Number.isFinite(value)) return encodeNumber(value);
+    return encodeScalar(value, TYPED_FIELDS.has(key));
+  }
+
+  // A BOM is dropped before the fence check and carried back out, because the parser
+  // tolerates one and an editor that emits one otherwise makes a puck readable but not
+  // editable. The CLI learned this in #1; the board's own copy never did, and refused
+  // every edit to such a puck with "no frontmatter".
+  function splitText(text) {
+    const bom = text.startsWith("\uFEFF") ? "\uFEFF" : "";
+    const nl = text.includes("\r\n") ? "\r\n" : "\n";
+    return { bom, nl, lines: text.slice(bom.length).replace(/\r\n/g, "\n").split("\n") };
+  }
+
+  function frontmatterRange(lines) {
+    if (lines[0] !== "---") return null;
+    for (let i = 1; i < lines.length; i++) if (lines[i] === "---") return [1, i];
+    return null;
+  }
+
+  // Write one field, preserving the rest of the file byte for byte. `null` back means
+  // the text carries no frontmatter; each caller says so in its own words.
+  function setField(text, key, value) {
+    const { bom, nl, lines } = splitText(text);
+    const range = frontmatterRange(lines);
+    if (!range) return null;
+    const line = `${key}: ${formatValue(key, value)}`;
+    const at = fieldSpan(lines, range[0], range[1], key);
+    // The new value is the whole field, so a sequence's items go with the header.
+    if (at) lines.splice(at.index, at.count, line);
+    else lines.splice(range[1], 0, line); // insert before closing fence
+    return bom + lines.join(nl);
+  }
+
+  function removeField(text, key) {
+    const { bom, nl, lines } = splitText(text);
+    const range = frontmatterRange(lines);
+    if (!range) return null;
+    const at = fieldSpan(lines, range[0], range[1], key);
+    if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
+    return bom + lines.join(nl);
+  }
+
   globalThis.__PUCK_FORMAT__ = {
     stripComment,
     splitList,
@@ -250,5 +319,8 @@
     encodeItem,
     encodeScalar,
     fieldSpan,
+    formatValue,
+    setField,
+    removeField,
   };
 })();

@@ -9781,20 +9781,25 @@
     return "[" + values.map(function (v) { return f.encodeItem(v); }).join(", ") + "]";
   }
 
-  // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
+  // Format-preserving frontmatter edit. Not a mirror of `scripts/roadmap.mjs setField`
+  // any more — the same function, from format.js, which is what a mirror should have
+  // been all along.
+  //
+  // It was a copy, and it had drifted exactly where a copy does. The CLI encodes a
+  // value by what the *field* is (`formatValue`), and this wrote `key + ": " + value`
+  // raw; the CLI tolerates a leading BOM, and this returned null and refused the edit.
+  // Both were fixed in #1, in `scripts/` only, and #2 moved *value* spelling into
+  // format.js while leaving the field-level decision behind — so the board reached the
+  // owner for lists (`yamlList`, two functions up, with a comment explaining exactly
+  // why encoding matters) and wrote every scalar bare.
+  //
+  // Measured with PyYAML, seven of eight fields came back wrong: `parent: release #1`
+  // read as `release`, `agent: true` as a boolean, `owner: no` as `false`,
+  // `owner: 2026-01-01` as a date, and `priority: @urgent` and `parent: a: b` produced
+  // a file PyYAML refuses outright — committed to somebody else's repo, where the
+  // harvester and their own tooling have to read it.
   function editFrontmatter(text, key, value) {
-    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
-    var lines = text.replace(/\r\n/g, "\n").split("\n");
-    if (lines[0] !== "---") return null;
-    var end = -1;
-    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
-    if (end < 0) return null;
-    var out = key + ": " + value;
-    var at = fmt().fieldSpan(lines, 1, end, key);
-    // The new value is the whole field, so a sequence's items go with its header.
-    if (at) lines.splice(at.index, at.count, out);
-    else lines.splice(end, 0, out);
-    return lines.join(nl);
+    return fmt().setField(text, key, value);
   }
 
   // Write several frontmatter fields in ONE commit (a null value removes the key).
@@ -9811,7 +9816,11 @@
       .then(function (info) {
         var out = b64decode(info.content);
         for (var k in fields) {
-          out = fields[k] == null ? removeFrontmatter(out, k) : editFrontmatter(out, k, String(fields[k]));
+          // The value itself, not `String(value)`: `formatValue` decides by type as
+          // well as by key, so a stringified rank arrived as text and lost the one
+          // distinction `order` has. `10.5` is a number; `"10.5"` is a string that
+          // PyYAML hands back as a string, beside integer neighbours.
+          out = fields[k] == null ? removeFrontmatter(out, k) : editFrontmatter(out, k, fields[k]);
           if (out == null) throw new Error("no frontmatter");
         }
         out = editFrontmatter(out, "updated", today());
@@ -9992,15 +10001,7 @@
   // Remove a frontmatter field line (no-op if absent) — mirrors roadmap.mjs
   // removeField. Used to clear priority (absence of the field = no priority).
   function removeFrontmatter(text, key) {
-    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
-    var lines = text.replace(/\r\n/g, "\n").split("\n");
-    if (lines[0] !== "---") return null;
-    var end = -1;
-    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
-    if (end < 0) return null;
-    var at = fmt().fieldSpan(lines, 1, end, key);
-    if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
-    return lines.join(nl);
+    return fmt().removeField(text, key);
   }
 
   // Commit a priority change via the Contents API. A null level clears the field.
@@ -10141,7 +10142,7 @@
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
-        var out = number ? editFrontmatter(text, "issue", String(number)) : removeFrontmatter(text, "issue");
+        var out = number ? editFrontmatter(text, "issue", number) : removeFrontmatter(text, "issue");
         if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -10162,7 +10163,9 @@
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
-        var out = tags.length ? editFrontmatter(text, "tags", yamlList(tags)) : removeFrontmatter(text, "tags");
+        // The list itself, not a rendered one: `formatValue` encodes each item, and a
+        // pre-rendered `[a, b]` would reach `encodeScalar` and come back quoted whole.
+        var out = tags.length ? editFrontmatter(text, "tags", tags) : removeFrontmatter(text, "tags");
         if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -10527,7 +10530,7 @@
     return false;
   }
   function commitDepends(item, refs, message) {
-    return commitFields(item, { depends: refs.length ? yamlList(refs) : null }, message);
+    return commitFields(item, { depends: refs.length ? refs : null }, message); // the list, not a rendered one
   }
   // `refs` is the whole new list — one field, one commit, like every other write.
   function changeDepends(item, refs, message) {

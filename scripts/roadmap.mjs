@@ -26,7 +26,10 @@ import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
-import { stripComment, stripQuotes, parseList, encodeItem, encodeScalar, encodeNumber, fieldSpan } from "./lib/frontmatter.mjs";
+import {
+  stripComment, stripQuotes, parseList, encodeItem, encodeScalar, encodeNumber, fieldSpan,
+  formatValue, setField as setFieldIn, removeField as removeFieldIn,
+} from "./lib/frontmatter.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -65,26 +68,6 @@ function frontmatterRange(lines) {
   return null;
 }
 
-// The fields whose schema is not a string: a number for the first two, a date for the
-// rest. Only these may write a digit string bare — everywhere else `123` is text.
-const TYPED_FIELDS = new Set(["order", "issue", "updated", "created", "target"]);
-
-function formatValue(key, value) {
-  // Inline arrays (tags, depends) — one shape for every list field. Each item is
-  // encoded rather than pasted in, so a value that needs quoting gets it back on the
-  // way out instead of being written bare and read as something else next time.
-  if (Array.isArray(value)) return `[${value.map(encodeItem).join(", ")}]`;
-  if (key === "tags") return "[]";
-  // A number is written as a number, without a detour through a string that something
-  // then has to recognise as numeric again.
-  if (typeof value === "number" && Number.isFinite(value)) return encodeNumber(value);
-  // Otherwise by what the value is, not by which field it happens to be. The old rule
-  // asked `key === "title" && /[:#]/` — so `roadmap new "@frontend refactor"` wrote a
-  // title that no YAML parser accepts, because @ is not : or #, and it quoted
-  // `C# tips` that needed nothing.
-  return encodeScalar(value, TYPED_FIELDS.has(key));
-}
-
 // The CLI reads the files the harvester reads, so it has to tolerate what the parser
 // tolerates. The parser drops a leading BOM before its fence check and this did not,
 // so every mutating command failed with "no YAML frontmatter found" on a puck the
@@ -96,16 +79,17 @@ function splitText(text) {
   return { bom, nl, lines: text.slice(bom.length).replace(/\r\n/g, "\n").split("\n") };
 }
 
+// The edit itself lives in format.js now, with the quoting rules it depends on. It was
+// here, and the board kept its own copy — which had neither this file's BOM fix nor its
+// field-type encoding. Measured against PyYAML, seven of eight fields the board wrote
+// came back as the wrong type, or as a file PyYAML refuses outright, committed to
+// somebody else's repo. A rule two surfaces have to agree on is one implementation
+// short; that is the argument format.js exists for, and the writer had been left out
+// of it. These two keep the CLI's own words for a file that is not a puck.
 function setField(text, key, value) {
-  const { bom, nl, lines } = splitText(text);
-  const range = frontmatterRange(lines);
-  if (!range) fail("no YAML frontmatter found — is this a puck?");
-  const line = `${key}: ${formatValue(key, value)}`;
-  const at = fieldSpan(lines, range[0], range[1], key);
-  // The new value is the whole field, so a sequence's items go with the header.
-  if (at) lines.splice(at.index, at.count, line);
-  else lines.splice(range[1], 0, line); // insert before closing fence
-  return bom + lines.join(nl);
+  const out = setFieldIn(text, key, value);
+  if (out == null) fail("no YAML frontmatter found — is this a puck?");
+  return out;
 }
 
 // A scalar field's value, through the parser's own comment rule so the CLI and the
@@ -148,12 +132,9 @@ function getList(text, key) {
 // Delete a frontmatter field line (no-op if absent). Keeps everything else
 // byte-identical, same as setField.
 function removeField(text, key) {
-  const { bom, nl, lines } = splitText(text);
-  const range = frontmatterRange(lines);
-  if (!range) fail("no YAML frontmatter found — is this a puck?");
-  const at = fieldSpan(lines, range[0], range[1], key);
-  if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
-  return bom + lines.join(nl);
+  const out = removeFieldIn(text, key);
+  if (out == null) fail("no YAML frontmatter found — is this a puck?");
+  return out;
 }
 
 // ── locate a puck file by slug: roadmap/<slug>.md | roadmap/<slug>/README.md ──
