@@ -138,8 +138,23 @@ function clone(dir) {
   execFileSync("git", ["clone", "--quiet", "--no-hardlinks", ROOT, dir], { stdio: "ignore" });
   // The clone has HEAD, not the working tree — copy over anything uncommitted so this
   // checks the code in front of you rather than the last commit.
-  const dirty = execFileSync("git", ["status", "--porcelain"], { cwd: ROOT, encoding: "utf8" })
-    .split("\n").filter(Boolean).map((l) => l.slice(3).trim()).filter((f) => f && !f.includes(" -> "));
+  //
+  // `-uall` and `-z`, both for the same reason: the plain porcelain format is a
+  // summary, not a list of files. It collapses an untracked directory into one entry
+  // (`?? new-fixtures/`), which `copyFileSync` then hit with EISDIR before a single
+  // gate ran — so adding a fixtures directory silently disabled the working-tree half
+  // of this check. And it *quotes* a path containing a space or a quote character
+  // (`"odd \"name\".md"`), which would have been copied to a filename with the quotes
+  // still in it. `-z` emits raw NUL-separated paths; a rename carries its old path as
+  // the following field, which is consumed rather than mistaken for a file.
+  const entries = execFileSync("git", ["status", "--porcelain", "-z", "-uall"], { cwd: ROOT, encoding: "utf8" })
+    .split("\0").filter(Boolean);
+  const dirty = [];
+  for (let i = 0; i < entries.length; i++) {
+    const code = entries[i].slice(0, 2);
+    dirty.push(entries[i].slice(3));
+    if (code[0] === "R" || code[0] === "C") i++; // the next field is the old path
+  }
   for (const rel of dirty) {
     const from = path.join(ROOT, rel);
     const to = path.join(dir, rel);
