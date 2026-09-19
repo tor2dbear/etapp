@@ -71,23 +71,23 @@ const CASES = [
   // ── Query grammar ─────────────────────────────────────────────────────────
   { gate: "query", claim: "parseQuery never throws",
     edit: ["app.js", "/^(>=|<=|>|<|=)?([\\s\\S]+)$/.exec(rest)", "/^(>=|<=|>|<|=)?(.+)$/.exec(rest)"],
-    expect: "threw" },
+    expect: "[throws]" },
   { gate: "query", claim: "serialize∘parse is a fixed point",
-    edit: ["app.js", "t.op + quoted(t.values[0]);", "t.op + t.values[0];"], expect: "fixed-point" },
+    edit: ["app.js", "t.op + quoted(t.values[0]);", "t.op + t.values[0];"], expect: "[fixed-point]" },
   { gate: "query", claim: "no token vanishes",
     edit: ["app.js", "      terms.push({ field: \"text\", op: \"has\", values: [lower(tok)], neg: neg });", "      if (tok.length > 1) terms.push({ field: \"text\", op: \"has\", values: [lower(tok)], neg: neg });"],
-    expect: "token" },
+    expect: "[vanishing]" },
   { gate: "query", claim: "the documented grammar parses as AGENTS.md describes",
-    edit: ["app.js", 'prio: "priority"', 'prioX: "priority"'], expect: "prio:high" },
+    edit: ["app.js", 'prio: "priority"', 'prioX: "priority"'], expect: "[grammar]" },
   { gate: "query", claim: "`is:` states are predicates, not stubs",
     edit: ["app.js", "function isFlagged(item) { return (item.signals || []).length > 0; }", "function isFlagged(item) { return !!item.flagged; }"],
-    expect: "is:flagged" },
+    expect: "[is-states]" },
   { gate: "query", claim: "an apostrophe finds the puck that carries one",
     edit: ["app.js", "      if (c === '\"') { quote = c; continue; }", "      if (c === '\"' || c === \"'\") { quote = c; continue; }"],
-    expect: "don't" },
+    expect: "[search]" },
   { gate: "query", claim: "nothing decodes the URL bare",
     edit: ["app.js", 'var h = safeDecode(location.hash.replace(/^#/, ""));', 'var h = decodeURIComponent(location.hash.replace(/^#/, ""));'],
-    expect: "safeDecode" },
+    expect: "[url-decode]" },
   { gate: "query", claim: "the fenced region is really lifted from app.js",
     edit: ["app.js", "  // q:begin", "  // (marker removed)"], expect: "fence" },
 
@@ -97,41 +97,57 @@ const CASES = [
   { gate: "format", claim: "index.html still loads it as one",
     edit: ["index.html", '<script src="format.js"></script>', '<script type="module" src="format.js"></script>'],
     expect: "module" },
-  { gate: "format", claim: "strings round-trip as strings",
+  // "in both positions" is two claims, so it is two cases. The first version said
+  // `strings round-trip as strings` and mutated the item encoder while expecting the
+  // scalar tag — the gate failed, but for the other half of the sentence.
+  { gate: "format", claim: "strings round-trip as strings, as a list item",
     edit: ["format.js", "return bareIsSafe(s, ITEM_PLAIN, false) ? s : JSON.stringify(s);", "return s;"],
-    expect: "string" },
+    expect: "[string/item]" },
+  { gate: "format", claim: "strings round-trip as strings, after `key:`",
+    edit: ["format.js", "return bareIsSafe(s, SCALAR_PLAIN, typed) ? s : JSON.stringify(s);", "return s;"],
+    expect: "[string/scalar]" },
   { gate: "format", claim: "numbers are written as numbers",
-    edit: ["format.js", "if (typeof value === \"number\" && Number.isFinite(value)) return encodeNumber(value);", "if (typeof value === \"number\" && Number.isFinite(value)) return String(value);"],
-    expect: "num" },
+    // `encodeNumber`, not `formatValue`: the judge's number corpus is built from the
+    // encoder directly, so mutating the caller only ever tripped `[writer]` — and the
+    // loose expectation `"num"` matched that and called the claim held.
+    edit: ["format.js", "return exp ? `${exp[1]}${exp[2]}.0${exp[3]}` : s;", "return s;"],
+    expect: "[number]" },
   { gate: "format", claim: "typed fields write a date bare",
-    edit: ["format.js", 'new Set(["order", "issue", "updated", "created", "target"])', "new Set([])"],
-    expect: "date" },
+    // The typed path in `bareIsSafe`, which is what the judge's date corpus goes
+    // through. Emptying TYPED_FIELDS tripped `[cli]` and `[writer]` and never `[date]`.
+    edit: ["format.js", "if (typed && (PLAIN_NUMBER.test(s) || PLAIN_DATE.test(s))) return true;", "if (typed && PLAIN_NUMBER.test(s)) return true;"],
+    expect: "[date]" },
   { gate: "format", claim: "this parser agrees with PyYAML on a frontmatter line",
-    edit: ["format.js", "const COMMENT_OPENS = /\\s#/;", "const COMMENT_OPENS = /\\sZZZ#/;"], expect: "reads" },
+    // `stripComment` is the read side. The old mutation hit `bareIsSafe`, which only
+    // the write side uses, and `expect: "reads"` matched the judge's fixed epilogue
+    // ("what this repo writes and reads against a real YAML parser") — printed on every
+    // failure, so the expectation filtered nothing at all.
+    edit: ["scripts/lib/frontmatter.mjs", "  const v = stripComment(raw);", "  const v = raw.trim();"],
+    expect: "[reader]" },
   { gate: "format", claim: "the writer's fields come back as their own type",
     edit: ["format.js", "const line = formatLine(key, value);", "const line = `${key}: ${value}`;"],
-    expect: "writer" },
+    expect: "[writer]" },
   { gate: "format", claim: "a BOM is carried back out",
     edit: ["format.js", 'const bom = text.startsWith("\\uFEFF") ? "\\uFEFF" : "";', 'const bom = "";'],
-    expect: "BOM" },
+    expect: "refuses a puck that starts with a BOM" },
   { gate: "format", claim: "every puck the CLI writes parses",
     edit: ["format.js", "return bareIsSafe(s, SCALAR_PLAIN, typed) ? s : JSON.stringify(s);", "return s;"],
-    expect: "cli" },
+    expect: "[cli]" },
 
   // ── Markdown judge ────────────────────────────────────────────────────────
   { gate: "markdown", claim: "no body becomes markup the renderer does not write",
-    edit: ["app.js", '.replace(/</g, "&lt;")', '.replace(/\\u0001/g, "")'], expect: "tag" },
+    edit: ["app.js", '.replace(/</g, "&lt;")', '.replace(/\\u0001/g, "")'], expect: "[tag]" },
   { gate: "markdown", claim: "…including through an attribute",
-    edit: ["app.js", '.replace(/"/g, "&quot;");', ";"], expect: "attribute" },
+    edit: ["app.js", '.replace(/"/g, "&quot;");', ";"], expect: "[attribute]" },
   { gate: "markdown", claim: "the documented subset renders",
     edit: ["app.js", "out.push(\"<h\" + lvl + \">\" + mdInline(h[2]) + \"</h\" + lvl + \">\");", "out.push(\"<p>\" + mdInline(h[2]) + \"</p>\");"],
-    expect: "subset" },
+    expect: "[subset]" },
   { gate: "markdown", claim: "an unsupported line keeps its own line",
-    edit: ["app.js", "|\\[\\^|#+\\s|-{3,}", "|-{3,}"], expect: "folded" },
+    edit: ["app.js", "|\\[\\^|#+\\s|-{3,}", "|-{3,}"], expect: "[own-line]" },
   { gate: "markdown", claim: "a line ending is not a dialect",
-    edit: ["app.js", "esc(src).split(/\\r\\n?|\\n/)", 'esc(src).split("\\n")'], expect: "endings" },
+    edit: ["app.js", "esc(src).split(/\\r\\n?|\\n/)", 'esc(src).split("\\n")'], expect: "[line-endings]" },
   { gate: "markdown", claim: "the fixture is what the contract points at",
-    remove: ["tests/markdown.fixture.md"], expect: "failed" },
+    remove: ["tests/markdown.fixture.md"], expect: "markdown.fixture.md" },
 ];
 
 function clone(dir) {
@@ -150,9 +166,12 @@ function clone(dir) {
   const entries = execFileSync("git", ["status", "--porcelain", "-z", "-uall"], { cwd: ROOT, encoding: "utf8" })
     .split("\0").filter(Boolean);
   const dirty = [];
+  const untracked = new Set();
   for (let i = 0; i < entries.length; i++) {
     const code = entries[i].slice(0, 2);
-    dirty.push(entries[i].slice(3));
+    const rel = entries[i].slice(3);
+    if (code[0] === "?") untracked.add(rel);
+    dirty.push(rel);
     // A rename or copy carries its source as the following field. Both go on the list
     // rather than being skipped: the loop below copies a path that exists in the
     // working tree and deletes one that does not, which is exactly right for each —
@@ -169,12 +188,29 @@ function clone(dir) {
   for (const rel of dirty) {
     const from = path.join(ROOT, rel);
     const to = path.join(dir, rel);
-    if (fs.existsSync(from)) {
+    // `lstat`, not `existsSync`: a dangling symlink "does not exist" and would have
+    // been silently skipped, leaving the base clone green on a tree the real gate
+    // rejects. A symlink is recreated as one rather than dereferenced, and anything
+    // that is neither a file nor a symlink — a submodule gitlink, a typechange — is
+    // reported rather than handed to `copyFileSync`, which is the enumeration class
+    // the untracked-directory bug already came from.
+    let st = null;
+    try { st = fs.lstatSync(from); } catch { st = null; }
+    if (st && !st.isFile() && !st.isSymbolicLink()) {
+      throw new Error(`cannot mirror ${rel} into the clone — it is not a regular file or symlink`);
+    }
+    if (st) {
       fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.copyFileSync(from, to);
-      execFileSync("git", ["add", "-f", rel], { cwd: dir, stdio: "ignore" });
-    } else if (fs.existsSync(to)) {
-      fs.rmSync(to);
+      fs.rmSync(to, { force: true });
+      if (st.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(from), to);
+      else fs.copyFileSync(from, to);
+      // Only what git already considers tracked. `git add -f` on everything made an
+      // untracked file tracked in the clone, which changes what both `git ls-files`
+      // and check-bundle see — measured: an untracked `probe.tmp.js` with a syntax
+      // error is invisible to the real gate and aborted this one on the base tree.
+      if (!untracked.has(rel)) execFileSync("git", ["add", "-f", rel], { cwd: dir, stdio: "ignore" });
+    } else if (fs.existsSync(to) || fs.lstatSync(to, { throwIfNoEntry: false })) {
+      fs.rmSync(to, { force: true });
       execFileSync("git", ["rm", "--cached", "-q", rel], { cwd: dir, stdio: "ignore" });
     }
   }
@@ -205,22 +241,45 @@ function apply(dir, c) {
   return null;
 }
 
-const args = new Set(process.argv.slice(2));
-const only = [...args].find((a) => !a.startsWith("-"));
+const only = process.argv.slice(2).find((a) => !a.startsWith("-"));
+if (only && !GATES[only]) {
+  console.error(`✗ no gate called ${JSON.stringify(only)} — one of: ${Object.keys(GATES).join(", ")}`);
+  process.exit(1);
+}
 const cases = only ? CASES.filter((c) => c.gate === only) : CASES;
+// `check-checks.mjs fomat` used to print "✓ every gate can fail — 0 claims" and exit 0.
+// The same vacuous pass `check-syntax.mjs` refuses for an empty file list, in the file
+// whose entire subject is checks that cannot fail.
+if (!cases.length) {
+  console.error("✗ no claims selected — this check just stopped checking anything");
+  process.exit(1);
+}
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "etapp-checkcheck-"));
+// Every exit, not only the happy one. The base-tree guard's `process.exit(1)` skipped
+// the cleanup at the end and left a ~2MB clone behind on each failed run.
+const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} };
+process.on("exit", cleanup);
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { cleanup(); process.exit(130); });
 const failures = [];
 let ran = 0;
 
 // The gates must all pass on the *unmutated* clone first. Otherwise a mutation that
 // "fails" proves nothing — the gate was already red.
 const base = clone(path.join(tmp, "base"));
+// `python3` missing, or a gate that hangs, is not a held claim — and `r.stdout` is
+// `null` when the spawn itself failed, so the old `r.stdout + r.stderr` was `0` and
+// `.trim()` threw a TypeError over the top of the real reason.
+const output = (r) => [r.stdout, r.stderr].filter(Boolean).join("").trim();
 for (const [name, argv] of Object.entries(GATES)) {
-  const r = spawnSync(argv[0], argv.slice(1), { cwd: base, encoding: "utf8" });
+  const r = spawnSync(argv[0], argv.slice(1), { cwd: base, encoding: "utf8", timeout: 180000 });
+  if (r.error) {
+    console.error(`✗ ${name} could not be run at all (${argv.join(" ")}) — ${r.error.message}`);
+    process.exit(1);
+  }
   if (r.status !== 0) {
     console.error(`✗ ${name} does not pass on an unmutated tree — nothing below proves anything\n`);
-    console.error((r.stdout + r.stderr).trim());
+    console.error(output(r) || `(no output; signal ${r.signal})`);
     process.exit(1);
   }
 }
@@ -235,9 +294,11 @@ for (const [i, c] of cases.entries()) {
   }
   const argv = GATES[c.gate];
   const r = spawnSync(argv[0], argv.slice(1), { cwd: dir, encoding: "utf8", timeout: 180000 });
-  const out = (r.stdout || "") + (r.stderr || "");
+  const out = output(r);
   ran++;
-  if (r.status === 0) {
+  if (r.error) {
+    failures.push([c, `the gate could not be run — ${r.error.message}`]);
+  } else if (r.status === 0) {
     failures.push([c, "the gate passed — this claim is not held"]);
   } else if (!out.toLowerCase().includes(c.expect.toLowerCase())) {
     failures.push([c, `the gate failed but never mentioned ${JSON.stringify(c.expect)} — ` +
@@ -245,7 +306,6 @@ for (const [i, c] of cases.entries()) {
   }
   fs.rmSync(dir, { recursive: true, force: true });
 }
-fs.rmSync(tmp, { recursive: true, force: true });
 
 if (failures.length) {
   console.error(`✗ ${failures.length} of ${ran} claim(s) are not actually held\n`);
