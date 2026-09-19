@@ -30,6 +30,16 @@ def fail(check, detail):
     failures.append((check, detail))
 
 
+def frontmatter(text):
+    """The frontmatter block of a puck, as PyYAML reads it.
+
+    One helper because there were four spellings of this line in this file and two of
+    them stripped a BOM while two did not — divergent copies of a three-token
+    expression, in the file whose job is to catch exactly that elsewhere.
+    """
+    return yaml.safe_load(text.lstrip("\ufeff").split("---")[1])
+
+
 def load(line):
     """Parse one `key: value` line, or raise."""
     return list(yaml.safe_load(line).values())[0]
@@ -48,10 +58,30 @@ def normalize(x):
     return str(x)
 
 
-probe = json.loads(subprocess.run(
-    ["node", str(HERE / "format-probe.mjs")],
-    capture_output=True, text=True, check=True,
-).stdout)
+# The probe asserts format.js's own contract before it emits anything — that the file
+# still parses as a classic script and that index.html still loads it as one. Reported
+# by name rather than as a Python traceback: the failure it guards against is a board
+# where every write throws while all five gates stay green, and that deserves a
+# sentence, not a stack.
+try:
+    _run = subprocess.run(
+        ["node", str(HERE / "format-probe.mjs")],
+        capture_output=True, text=True, timeout=120,
+    )
+except subprocess.TimeoutExpired:
+    # The sibling judge catches this and this one did not — `timeout=` was copied over
+    # and the `except` was not, so a hung probe would have ended in a traceback where
+    # check-markdown.py prints a sentence. Copy-drift, in the file about copy-drift.
+    print("✗ format-probe.mjs did not finish in 120s", file=sys.stderr)
+    sys.exit(1)
+if _run.returncode != 0:
+    msg = next((l for l in _run.stderr.splitlines() if l.startswith("Error:")), "")
+    if msg:
+        print(f"✗ format-probe.mjs failed — {msg[len('Error: '):]}", file=sys.stderr)
+    else:
+        print("✗ format-probe.mjs failed:\n" + _run.stderr.strip(), file=sys.stderr)
+    sys.exit(1)
+probe = json.loads(_run.stdout)
 
 # 1. Every string must come back a string, with the same characters, in both the
 #    scalar position and inside a flow array. The type is half the check: a bare
@@ -126,7 +156,6 @@ for row in probe["lines"]:
 #    where the author typed three characters — a defect that reached review once
 #    already and that checks 1-5 cannot see. So this drives the real commands and
 #    judges the files they leave behind.
-import os
 import tempfile
 
 CLI = str(HERE / "roadmap.mjs")
@@ -140,7 +169,7 @@ def run(cwd, *args):
 
 
 def frontmatter_of(path):
-    return yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1])
+    return frontmatter(path.read_text(encoding="utf-8"))
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -191,9 +220,102 @@ with tempfile.TemporaryDirectory() as tmp:
     made = sorted((tmp / "roadmap").glob("*.md"))
     for path in made:
         try:
-            yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1])
+            frontmatter(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as e:
             fail("cli", f"{path.name} is not valid YAML — {type(e).__name__}")
+
+# ── what the writer writes, field by field ───────────────────────────────────
+# `setField` is the one writer the CLI and the board both call now. Before it moved
+# into format.js they were two copies, and the board's had neither the BOM fix nor the
+# field-type encoding: seven of these eight-odd cases came back as the wrong type, or
+# as a file PyYAML refuses, committed to somebody else's repo. Asked of PyYAML rather
+# than of our own reader, because "the wrong type" is exactly what our reader was
+# lenient about.
+# Anchored by key and by count, for the reason check-markdown.py sets out where it
+# does the same thing: a list the judge merely iterates can be shortened without
+# anything saying so.
+WRITER_KEYS = {"parent", "agent", "owner", "priority", "title", "status",
+               "order", "issue", "target", "updated", "tags", "depends"}
+MINIMUMS = {"strings": 48, "numbers": 11, "dates": 2, "lines": 22, "writes": 20}
+for name, least in MINIMUMS.items():
+    if len(probe[name]) < least:
+        fail("coverage", f"the probe now emits {len(probe[name])} {name}, down from {least}")
+missing = WRITER_KEYS - {w["key"] for w in probe["writes"]}
+for key in sorted(missing):
+    fail("coverage", f"the probe no longer writes {key!r}")
+
+EXPECT = {
+    "str": lambda v, m: isinstance(v, str) and v == m,
+    "num": lambda v, m: isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) == float(m),
+    "date": lambda v, m: isinstance(v, (datetime.date, datetime.datetime)) and normalize(v) == m,
+    "list": lambda v, m: isinstance(v, list) and v == m,
+}
+for w in probe["writes"]:
+    where = f"{w['key']}={w['value']!r}"
+    if w["file"] is None:
+        fail("writer", f"{where}: setField refused a puck that has frontmatter")
+        continue
+    try:
+        data = frontmatter(w["file"])
+    except yaml.YAMLError as e:
+        fail("writer", f"{where}: PyYAML refuses the file the writer produced — {type(e).__name__}")
+        continue
+    got = data.get(w["key"])
+    if not EXPECT[w["type"]](got, w["value"]):
+        fail("writer", f"{where}: PyYAML reads {got!r} ({type(got).__name__}), wanted {w['type']}")
+    # The rest of the puck has to survive the edit untouched — every field the write
+    # did not name. (A `title` write is allowed to change the title, which is what the
+    # first version of this check got wrong about its own fixture.)
+    untouched = {"title": "A puck", "status": "now"}
+    for k, want in untouched.items():
+        if k != w["key"] and data.get(k) != want:
+            fail("writer", f"{where}: the edit disturbed {k} — {data!r}")
+
+# The three entry points, asked the same four questions in one table. They were three
+# blocks with the BOM assertion written out twice in two wordings and the "invented
+# frontmatter" assertion split across two near-identical ifs.
+#
+# A BOM is tolerated and carried back out by all of them: an editor that emits one used
+# to make a puck readable but not editable from the board, and `replaceBody` — the last
+# copy of the fence — still refused "Edit body" after `setField` had learned.
+#
+#   name          the probe key        must contain      must not contain
+FENCE_CASES = [
+    ("setField",          "bom",         "status: next",   None),
+    ("removeField",       "bomRemoved",  None,             "status:"),
+    ("replaceBody",       "bodyBom",     "a new body",     None),
+]
+for name, key, wanted, unwanted in FENCE_CASES:
+    text = probe[key]
+    if text is None:
+        fail("writer", f"{name} refuses a puck that starts with a BOM")
+        continue
+    if not text.startswith("\ufeff"):
+        fail("writer", f"{name} dropped the BOM instead of carrying it back out")
+    if wanted and wanted not in text:
+        fail("writer", f"{name} did not write {wanted!r} on a BOM-prefixed puck")
+    if unwanted and unwanted in text.split("---")[1]:
+        fail("writer", f"{name} left {unwanted!r} in the frontmatter of a BOM-prefixed puck")
+
+# Text that is not a puck answers null, so each caller can say so in its own words.
+for name, key in (("setField", "noFrontmatter"), ("replaceBody", "bodyNoFrontmatter")):
+    if probe[key] is not None:
+        fail("writer", f"{name} invented frontmatter for a file that has none")
+
+# The body edit asks the same fence question and has to leave the frontmatter alone.
+body = probe["body"]
+if body is None:
+    fail("writer", "replaceBody refused a puck that has frontmatter")
+else:
+    try:
+        data = frontmatter(body)
+    except yaml.YAMLError as e:
+        fail("writer", f"replaceBody produced frontmatter PyYAML refuses — {type(e).__name__}")
+        data = None
+    if data is not None and (data.get("title") != "A puck" or data.get("status") != "now"):
+        fail("writer", f"replaceBody disturbed the frontmatter — {data!r}")
+    if "a new body" not in body:
+        fail("writer", "replaceBody did not write the body")
 
 if failures:
     print(f"✗ {len(failures)} format check(s) failed\n", file=sys.stderr)
@@ -211,5 +333,6 @@ print(
     f"✓ format clean — {len(probe['strings'])} strings round-trip as strings in both positions, "
     f"{len(probe['numbers'])} numbers as numbers, {len(probe['dates'])} dates as dates, "
     f"this parser agrees with PyYAML on {len(probe['lines'])} frontmatter lines, "
-    f"and every puck the CLI writes parses clean"
+    f"every puck the CLI writes parses clean, and the {len(probe['writes'])} fields the "
+    f"shared writer writes come back as the type they were meant to be"
 )

@@ -17,12 +17,22 @@ const {
   encodeNumber,
   encodeScalar,
   fieldSpan,
+  formatLine,
+  formatValue,
+  frontmatterRange,
   parseList,
+  removeField,
+  replaceBody,
+  setField,
+  splitText,
   stripComment,
   stripQuotes,
 } = globalThis.__PUCK_FORMAT__;
 
-export { encodeItem, encodeNumber, encodeScalar, fieldSpan, parseList, stripComment, stripQuotes };
+export {
+  encodeItem, encodeNumber, encodeScalar, fieldSpan, formatLine, formatValue, frontmatterRange,
+  parseList, removeField, replaceBody, setField, splitText, stripComment, stripQuotes,
+};
 
 function parseScalar(raw) {
   const v = stripComment(raw);

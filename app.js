@@ -47,7 +47,8 @@
 
   var STATUS_LABEL = { now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" };
   // Terminal statuses: settled, hidden from the active board unless "show done" is on.
-  var TERMINAL = { done: 1, cancelled: 1 };
+  // `TERMINAL` lives inside the `q:` fence with the query grammar that reads it —
+  // see the note there. Hoisted `var`, and every read is inside a function.
   // Priority is an optional, ordered field (highest → lowest). Absence = none.
   var PRIORITIES = ["urgent", "high", "medium", "low"];
   var PRIORITY_LABEL = { urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
@@ -183,7 +184,7 @@
     if (isNaN(t)) return null;
     return Math.floor((Date.now() - t) / 86400000);
   }
-  function isFlagged(item) { return (item.signals || []).length > 0; }
+  // `isFlagged` lives inside the `q:` fence too — see the note there.
   function itemById(id) {
     for (var i = 0; i < DATA.items.length; i++) if (DATA.items[i].id === id) return DATA.items[i];
     return null;
@@ -533,11 +534,19 @@
   // to learn it, and it is the same string an agent or a saved view writes.
   // `scripts/check-query.mjs` lifts everything between the two markers below and runs
   // it in Node, so the grammar's invariants are checked against the bytes the browser
-  // runs. It supplies exactly two names from outside the fence — `isFlagged` and
-  // `TERMINAL`, both reached only from `IS_STATES` — and anything else moved out of it
-  // fails the probe loudly rather than quietly leaving the check. Whole-line markers,
-  // so they carry no prose.
+  // runs. Nothing is supplied from outside: anything moved out of the fence fails the
+  // probe loudly rather than quietly leaving the check. Whole-line markers, so they
+  // carry no prose.
+  //
+  // `TERMINAL` and `isFlagged` are in here rather than beside `STATUS_LABEL` and the
+  // signal code, which is where they read more naturally, because the probe used to
+  // hand-write them instead — and its `isFlagged` was `!!i.flagged`, a field nothing
+  // in this file ever sets. So `is:flagged` was evaluated against a predicate that
+  // could never be true, and the check would have stayed green if the real one broke.
+  // A stub is a second implementation; this file has spent six rounds on that lesson.
   // q:begin
+  var TERMINAL = { done: 1, cancelled: 1 };
+  function isFlagged(item) { return (item.signals || []).length > 0; }
   function lower(s) { return String(s).toLowerCase(); }
   function shortRepo(r) { return String(r).split("/").pop(); }
 
@@ -9545,20 +9554,20 @@
         if (DATA.items[i].repo === repo && DATA.items[i].sourcePath === path) { it = DATA.items[i]; break; }
       }
       if (!it) return "---\ntitle: Untitled\nstatus: inbox\nupdated: " + today() + "\n---\n\n";
-      // Quoted the same way `puckTemplate` quotes it — `formatValue` lives in the CLI,
-      // not here, and reaching for it threw the first time this ran.
-      var t = fmt().encodeScalar(it.title);
-      var fm = ["---", "title: " + t, "status: " + it.status];
-      if (it.tags && it.tags.length) fm.push("tags: " + yamlList(it.tags));
-      if (it.priority) fm.push("priority: " + it.priority);
-      if (it.agent) fm.push("agent: " + it.agent);
-      if (it.owner) fm.push("owner: " + it.owner);
-      if (it.target) fm.push("target: " + it.target);
-      if (it.parent) fm.push("parent: " + it.parent);
-      if (it.depends && it.depends.length) fm.push("depends: " + yamlList(it.depends));
-      if (it.issue) fm.push("issue: " + it.issue);
-      fm.push("updated: " + (it.updated || today()));
-      if (it.created) fm.push("created: " + it.created);
+      // Every line through the owner, the same as a real write — the demo has to
+      // produce the file the product would, or it demonstrates something else.
+      var v = function (k, x) { return fmt().formatLine(k, x); };
+      var fm = ["---", v("title", it.title), v("status", it.status)];
+      if (it.tags && it.tags.length) fm.push(v("tags", it.tags));
+      if (it.priority) fm.push(v("priority", it.priority));
+      if (it.agent) fm.push(v("agent", it.agent));
+      if (it.owner) fm.push(v("owner", it.owner));
+      if (it.target) fm.push(v("target", it.target));
+      if (it.parent) fm.push(v("parent", it.parent));
+      if (it.depends && it.depends.length) fm.push(v("depends", it.depends));
+      if (it.issue) fm.push(v("issue", it.issue));
+      fm.push(v("updated", it.updated || today()));
+      if (it.created) fm.push(v("created", it.created));
       fm.push("---", "");
       return fm.join("\n") + "\n" + (it.body || "");
     }
@@ -9766,35 +9775,37 @@
   // token is not a CORS credential, so a board opened off the filesystem with a token
   // can reach the Contents API. It would then have had the edit controls and no rules
   // to write with.
-  var FORMAT = globalThis.__PUCK_FORMAT__;
-
+  // Read at call time, not snapshotted. A `var FORMAT = globalThis.__PUCK_FORMAT__`
+  // captured at IIFE-execution time made the *order* of the two script tags
+  // load-bearing, and the format probe had grown an assertion to guard that order.
+  // Nothing calls this before a render or a write, so there is nothing to capture too
+  // early — and one fewer property for a check to have to know about.
   function fmt() {
-    if (!FORMAT) throw new Error("format.js did not load — the page is missing its script tag");
-    return FORMAT;
+    var f = globalThis.__PUCK_FORMAT__;
+    if (!f) throw new Error("format.js did not load — the page is missing its script tag");
+    return f;
   }
 
-  // A list field's line. Every item encoded, never pasted in: a tag reading
-  // `release #1` written bare turns the rest of the line into a comment, and the next
-  // harvest publishes the tag as `"[release"`.
-  function yamlList(values) {
-    var f = fmt();
-    return "[" + values.map(function (v) { return f.encodeItem(v); }).join(", ") + "]";
-  }
 
-  // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
+  // Format-preserving frontmatter edit. Not a mirror of `scripts/roadmap.mjs setField`
+  // any more — the same function, from format.js, which is what a mirror should have
+  // been all along.
+  //
+  // It was a copy, and it had drifted exactly where a copy does: the CLI encoded a
+  // value by what the *field* is and tolerated a leading BOM, and this did neither —
+  // seven of eight fields came back wrong to PyYAML, two of them as a file PyYAML
+  // refuses, committed to somebody else's repo. The measurements and the reason the
+  // ownership stopped halfway are written down in format.js, above `formatValue`.
+  //
+  // The null is turned into a throw here rather than at each call site: eight of them
+  // wrote `if (out == null) throw new Error("no frontmatter")` and then, on the very
+  // next line, called this again for `updated` without checking. One place to say it,
+  // and the unchecked line is covered too. (`scripts/roadmap.mjs` reached the same
+  // shape with `fail()`.)
   function editFrontmatter(text, key, value) {
-    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
-    var lines = text.replace(/\r\n/g, "\n").split("\n");
-    if (lines[0] !== "---") return null;
-    var end = -1;
-    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
-    if (end < 0) return null;
-    var out = key + ": " + value;
-    var at = fmt().fieldSpan(lines, 1, end, key);
-    // The new value is the whole field, so a sequence's items go with its header.
-    if (at) lines.splice(at.index, at.count, out);
-    else lines.splice(end, 0, out);
-    return lines.join(nl);
+    var out = fmt().setField(text, key, value);
+    if (out == null) throw new Error("no frontmatter");
+    return out;
   }
 
   // Write several frontmatter fields in ONE commit (a null value removes the key).
@@ -9811,8 +9822,11 @@
       .then(function (info) {
         var out = b64decode(info.content);
         for (var k in fields) {
-          out = fields[k] == null ? removeFrontmatter(out, k) : editFrontmatter(out, k, String(fields[k]));
-          if (out == null) throw new Error("no frontmatter");
+          // The value itself, not `String(value)`: `formatValue` decides by type as
+          // well as by key, so a stringified rank arrived as text and lost the one
+          // distinction `order` has. `10.5` is a number; `"10.5"` is a string that
+          // PyYAML hands back as a string, beside integer neighbours.
+          out = fields[k] == null ? removeFrontmatter(out, k) : editFrontmatter(out, k, fields[k]);
         }
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -9836,7 +9850,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = editFrontmatter(text, "status", status);
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -9989,18 +10002,13 @@
       });
   }
 
-  // Remove a frontmatter field line (no-op if absent) — mirrors roadmap.mjs
-  // removeField. Used to clear priority (absence of the field = no priority).
+  // Remove a frontmatter field line (no-op if absent) — from format.js, the same
+  // function the CLI calls. It used to mirror `roadmap.mjs`; mirroring is what
+  // drifted. Used to clear priority (absence of the field = no priority).
   function removeFrontmatter(text, key) {
-    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
-    var lines = text.replace(/\r\n/g, "\n").split("\n");
-    if (lines[0] !== "---") return null;
-    var end = -1;
-    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
-    if (end < 0) return null;
-    var at = fmt().fieldSpan(lines, 1, end, key);
-    if (at) lines.splice(at.index, at.count); // a sequence's items go with its header
-    return lines.join(nl);
+    var out = fmt().removeField(text, key);
+    if (out == null) throw new Error("no frontmatter");
+    return out;
   }
 
   // Commit a priority change via the Contents API. A null level clears the field.
@@ -10015,7 +10023,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = priority ? editFrontmatter(text, "priority", priority) : removeFrontmatter(text, "priority");
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10100,7 +10107,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = agent ? editFrontmatter(text, "agent", agent) : removeFrontmatter(text, "agent");
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10141,8 +10147,7 @@
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
-        var out = number ? editFrontmatter(text, "issue", String(number)) : removeFrontmatter(text, "issue");
-        if (out == null) throw new Error("no frontmatter");
+        var out = number ? editFrontmatter(text, "issue", number) : removeFrontmatter(text, "issue");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10162,8 +10167,9 @@
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
-        var out = tags.length ? editFrontmatter(text, "tags", yamlList(tags)) : removeFrontmatter(text, "tags");
-        if (out == null) throw new Error("no frontmatter");
+        // The list itself, not a rendered one: `formatValue` encodes each item, and a
+        // pre-rendered `[a, b]` would reach `encodeScalar` and come back quoted whole.
+        var out = tags.length ? editFrontmatter(text, "tags", tags) : removeFrontmatter(text, "tags");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10199,7 +10205,6 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = date ? editFrontmatter(text, "target", date) : removeFrontmatter(text, "target");
-        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10527,7 +10532,7 @@
     return false;
   }
   function commitDepends(item, refs, message) {
-    return commitFields(item, { depends: refs.length ? yamlList(refs) : null }, message);
+    return commitFields(item, { depends: refs.length ? refs : null }, message); // the list, not a rendered one
   }
   // `refs` is the whole new list — one field, one commit, like every other write.
   function changeDepends(item, refs, message) {
@@ -10864,19 +10869,6 @@
     }).catch(function (err) { toast("✗ " + (err && err.message || "issue failed"), true); });
   }
 
-  // Replace the body (everything after the frontmatter fence), keeping the
-  // frontmatter byte-identical.
-  function replaceBody(text, newBody) {
-    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
-    var lines = text.replace(/\r\n/g, "\n").split("\n");
-    if (lines[0] !== "---") return null;
-    var end = -1;
-    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
-    if (end < 0) return null;
-    var fm = lines.slice(0, end + 1);
-    var b = newBody.replace(/\r\n/g, "\n").replace(/\s+$/, "").split("\n");
-    return fm.concat([""], b, [""]).join(nl);
-  }
 
   // Delete a puck: remove its markdown file from the source repo (read sha →
   // DELETE). Git-native — the file is gone from the board, git history keeps it.
@@ -10928,7 +10920,9 @@
     return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
-        var out = replaceBody(b64decode(info.content), newBody);
+        // The owner's function, called directly: the one-line wrapper that used to sit
+        // here shadowed the name it delegated to and had this single caller.
+        var out = fmt().replaceBody(b64decode(info.content), newBody);
         if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -11084,15 +11078,19 @@
     return body;
   }
   function puckTemplate(title, status, tags, agent, context, parentRef) {
-    var t = fmt().encodeScalar(title);
-    var lines = ["---", "title: " + t, "status: " + status];
-    if (tags.length) lines.push("tags: " + yamlList(tags));
-    if (agent) lines.push("agent: " + agent);
+    // Every value through the owner, not only the title and the tags. A puck is born
+    // here, so a value that needs quoting needs it on the first write as much as on
+    // the tenth — and `agent` and `parent` are the two the create path can carry that
+    // nothing in a closed set constrains.
+    var v = function (k, x) { return fmt().formatLine(k, x); };
+    var lines = ["---", v("title", title), v("status", status)];
+    if (tags.length) lines.push(v("tags", tags));
+    if (agent) lines.push(v("agent", agent));
     // Membership is authored on the child, so a puck created *from* its parent can
     // carry the relation in the file it is born with — one write instead of two,
     // and no window where the puck exists outside the parent it was made for.
-    if (parentRef) lines.push("parent: " + parentRef);
-    lines.push("updated: " + today(), "created: " + today(), "---", "");
+    if (parentRef) lines.push(v("parent", parentRef));
+    lines.push(v("updated", today()), v("created", today()), "---", "");
     var body = puckBody(context);
     return lines.join("\n") + (body ? "\n" + body : "");
   }

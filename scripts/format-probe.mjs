@@ -11,7 +11,53 @@
 // over there, by something that has never heard of this codebase.
 //
 // Node builtins only, like the rest of scripts/.
-import { encodeItem, encodeScalar, encodeNumber, parseFrontmatter } from "./lib/frontmatter.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+import { fileURLToPath } from "node:url";
+import { encodeItem, encodeScalar, encodeNumber, parseFrontmatter, setField, removeField, replaceBody } from "./lib/frontmatter.mjs";
+
+// format.js has to be two things at once, and only one of them was ever checked.
+//
+// Node reads it as an ES module — `package.json` says `type: module`, so `node --check`
+// parses it in the module goal, where `export` is perfectly legal. index.html reads the
+// same bytes as a *classic* script, where a top-level `export` is a SyntaxError. Add one
+// and: `node --check` passes, check-bundle passes, the query and markdown judges pass,
+// the board renders byte-identically — and `globalThis.__PUCK_FORMAT__` is undefined, so
+// every write throws "format.js did not load". Measured, all five gates green.
+//
+// That dual nature is the entire argument the file exists on (see its header, and #2).
+// It was the one property nothing held it to.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function assertServedAsClassicScript() {
+  const src = fs.readFileSync(path.join(ROOT, "format.js"), "utf8");
+  // The real test: does a classic-script parser accept it? `vm.Script` uses the script
+  // goal, which is what a browser uses for `<script src>`.
+  try {
+    new vm.Script(src, { filename: "format.js" });
+  } catch (e) {
+    throw new Error(
+      "format.js no longer parses as a classic script — a browser would refuse it and " +
+        "every board write would throw. " + e.message
+    );
+  }
+  const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
+  const tag = /<script\b[^>]*\bsrc=["']format\.js["'][^>]*>/i.exec(html);
+  if (!tag) {
+    throw new Error("index.html no longer loads format.js — the board would have no spelling rules");
+  }
+  if (/\btype\s*=\s*["']module["']/i.test(tag[0])) {
+    throw new Error("index.html loads format.js as a module — it does not load at all from file://");
+  }
+  // No ordering assertion. There was one — format.js had to be loaded before app.js —
+  // and it guarded a hazard the product made for itself: app.js snapshotted
+  // `globalThis.__PUCK_FORMAT__` into a `var` at IIFE-execution time. `fmt()` reads the
+  // global at call time now, so there is nothing to capture too early and nothing here
+  // to check. Deleting the cause deleted the assertion, which is the better direction.
+}
+
+assertServedAsClassicScript();
 
 // Strings. Every one of these must come back from a YAML parser as the *same
 // string* — the type matters as much as the characters, which is how `true` and
@@ -43,6 +89,42 @@ const LINES = [
   'depends: ["a, b", c]', "order: 10", "order: 10 # note", "updated: 2026-09-18",
 ];
 
+// What `setField` writes, field by field. The encoders above answer "how is this value
+// spelled"; this answers "which spelling does *this key* get", which is the half that
+// was missing from the owner and therefore missing from the board. Every one of these
+// was measured wrong before the writer moved here: `parent: release #1` read back as
+// `release`, `agent: true` as a boolean, and two of them produced a file PyYAML
+// refuses outright — committed, by the board, to somebody else's repo.
+//
+// `type` is what a YAML parser must hand back, not merely what the characters look
+// like. That distinction is the whole point: `owner: 2026-01-01` is a *string* field
+// holding something date-shaped, and `order: 10.5` is a number that must not arrive as
+// one. A puck with a BOM is here because the board refused to edit one at all.
+const BOM = "\uFEFF";
+const BASE = "---\ntitle: A puck\nstatus: now\n---\n\nbody\n";
+const WRITES = [
+  { key: "parent", value: "release #1", type: "str" },
+  { key: "parent", value: "a: b", type: "str" },
+  { key: "parent", value: "owner/repo#slug", type: "str" },
+  { key: "agent", value: "true", type: "str" },
+  { key: "agent", value: "yes", type: "str" },
+  { key: "owner", value: "no", type: "str" },
+  { key: "owner", value: "2026-01-01", type: "str" },
+  { key: "owner", value: "123dev", type: "str" },
+  { key: "priority", value: "@urgent", type: "str" },
+  { key: "title", value: "123", type: "str" },
+  { key: "title", value: "", type: "str" },
+  { key: "status", value: "next", type: "str" },
+  { key: "order", value: 10, type: "num" },
+  { key: "order", value: 10.5, type: "num" },
+  { key: "order", value: 5e-7, type: "num" },
+  { key: "issue", value: 42, type: "num" },
+  { key: "target", value: "2026-11-30", type: "date" },
+  { key: "updated", value: "2026-09-18", type: "date" },
+  { key: "tags", value: ["ui", "release #1", "a, b"], type: "list" },
+  { key: "depends", value: ["owner/repo#slug", "a b"], type: "list" },
+];
+
 console.log(JSON.stringify({
   strings: STRINGS.map((v) => ({ value: v, item: encodeItem(v), scalar: encodeScalar(v, false) })),
   numbers: NUMBERS.map((n) => ({ value: n, written: encodeNumber(n) })),
@@ -54,4 +136,14 @@ console.log(JSON.stringify({
     line,
     read: Object.values(parseFrontmatter(`---\n${line}\n---\n`).data)[0],
   })),
+  writes: WRITES.map((w) => ({ ...w, file: setField(BASE, w.key, w.value) })),
+  // The same writer over a puck that starts with a BOM, and a removal. Both are things
+  // the board's own copy could not do: it returned null on the BOM and refused the edit.
+  bom: setField(BOM + BASE, "status", "next"),
+  bomRemoved: removeField(BOM + BASE, "status"),
+  noFrontmatter: setField("just a body\n", "status", "next"),
+  // The body edit, which asks the same fence question and used to answer it alone.
+  body: replaceBody(BASE, "a new body"),
+  bodyBom: replaceBody(BOM + BASE, "a new body"),
+  bodyNoFrontmatter: replaceBody("just a body\n", "x"),
 }, null, 2));
