@@ -71,6 +71,15 @@ jobs:
       - name: Bundle
         run: node scripts/check-bundle.mjs
 
+      # `?q=` is the store every filter surface reads and writes, so the grammar's
+      # round trip runs on every chip toggle, every URL write and every render. Three
+      # properties, none of which anything checked: `parseQuery` never throws (a throw
+      # there is a blank board, not a wrong answer), serialize∘parse is a fixed point
+      # (or the round trip rewrites your query a little at a time), and no token
+      # vanishes. Node-only and seeded, so a failure is reproducible from the seed.
+      - name: Query grammar
+        run: node scripts/check-query.mjs
+
       # Both judges below read the product's own output with a parser that has never
       # heard of this codebase. That is the only arrangement that can answer "is this
       # valid to anyone else", and both are CI-only: nothing here ships, and a second
