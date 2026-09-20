@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in eight different ways, once per
-// round of review. Seven were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in ten different ways, once per round
+// of review. Eight were the same defect: the scan could not see a shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -101,12 +101,25 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // the strings, templates and regex literals are *masked*: their text is left in place and
 // marked, so a `{`, a `//` or a `constructor` inside one is never mistaken for code.
 //
-// `/` is the ambiguous one — regex or division — and it is read from what precedes it,
-// which is the ordinary rule and is not exact: `(a + b) / 2` and `if (x) /re/.test(y)`
-// are both a `/` after `)`. This resolves it as division, and the assertion below is what
-// makes that safe rather than assumed.
+// `/` is the ambiguous one — regex or division — and it is read from what precedes it.
+// `(a + b) / 2` and `if (x) /re/.test(y)` are the same character after the same bracket,
+// so a `)` is not one token: it is remembered by which `(` it closes, and only the four
+// heads whose `)` is followed by a statement open a regex. Reading it as division whatever
+// preceded it made `if (true) /{}/.test("")` — a valid line — report an empty object
+// literal, which is a *red gate on good code*: Codex found it (#9, round 9).
+//
+// That is also the direction the error runs in, and it is worth being exact about, because
+// the assertion below does not catch it. A regex read as division leaves the text alone
+// and scans its body as code, so it can only add a finding, never hide one. The dangerous
+// direction is division read as a regex — that masks real code — and it needs a `/` after
+// an operator, a keyword or a control-flow `)`, which is where a `/` is a regex in
+// JavaScript anyway.
 const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split(""));
 const REGEX_WORDS = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else"]);
+// The four heads whose closing `)` is followed by a statement rather than by more of an
+// expression — so the `/` after it opens a regex. Everything else that ends in `)` is a
+// value, and the `/` after *that* is division.
+const CONTROL = new Set(["if", "while", "for", "with"]);
 
 function lex(text) {
   const out = text.split("");
@@ -116,8 +129,26 @@ function lex(text) {
   let i = 0;
   let last = "";
   let word = "";
+  // What preceded each open paren, so a `)` can say which kind it is. `if (x) /re/` and
+  // `(a + b) / 2` are the same character after the same bracket, and the only difference
+  // is four characters further back.
+  const heads = [];
+  // A template is not one opaque run: `${…}` inside it is code, and masking through to the
+  // closing backtick hid a lookup written there. Each frame is the template's text, or a
+  // substitution and how deep its braces are.
+  const nest = [];
+  const top = () => nest[nest.length - 1];
   while (i < text.length) {
     const c = text[i];
+    // Inside a template's text, the only three things that matter.
+    if (top() && top().kind === "tpl") {
+      if (c === "\\") { cover(i, i + 2); i += 2; continue; }
+      if (c === "`") { cover(i, i + 1); i++; nest.pop(); last = "`"; word = ""; continue; }
+      if (c === "$" && text[i + 1] === "{") { cover(i, i + 2); i += 2; nest.push({ kind: "sub", depth: 0 }); last = "{"; word = ""; continue; }
+      cover(i, i + 1);
+      i++;
+      continue;
+    }
     if (c === "/" && text[i + 1] === "/") {
       let j = i;
       while (j < text.length && text[j] !== "\n") j++;
@@ -132,7 +163,13 @@ function lex(text) {
       i = j;
       continue;
     }
-    if (c === '"' || c === "'" || c === "`") {
+    if (c === "`") {
+      cover(i, i + 1);
+      i++;
+      nest.push({ kind: "tpl" });
+      continue;
+    }
+    if (c === '"' || c === "'") {
       let j = i + 1;
       while (j < text.length) {
         if (text[j] === "\\") { j += 2; continue; }
@@ -145,7 +182,7 @@ function lex(text) {
       word = "";
       continue;
     }
-    if (c === "/" && (last === "" || REGEX_AFTER.has(last) || REGEX_WORDS.has(word))) {
+    if (c === "/" && (last === "" || last === ")head" || REGEX_AFTER.has(last) || REGEX_WORDS.has(word))) {
       // A character class can hold an unescaped `/`, so the closing one is only the one
       // outside `[…]`. An opener with no closer on its line was not a regex after all.
       let j = i + 1;
@@ -168,8 +205,14 @@ function lex(text) {
         continue;
       }
     }
+    if (c === "(") heads.push(word);
+    if (c === "{" && top() && top().kind === "sub") top().depth++;
+    if (c === "}" && top() && top().kind === "sub") {
+      if (top().depth === 0) { cover(i, i + 1); i++; nest.pop(); last = "`"; word = ""; continue; }
+      top().depth--;
+    }
     if (/\S/.test(c)) {
-      last = c;
+      last = c === ")" ? (CONTROL.has(heads.pop()) ? ")head" : ")") : c;
       word = /[\w$]/.test(c) ? word + c : "";
     }
     i++;
@@ -360,7 +403,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Eight rounds of review found eight
+// every other line is here because it must *not* be. Nine rounds of review found ten
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -381,6 +424,10 @@ const FIXTURE = [
   'var G1 = { a: 1 }; var G2 = G1; G2[k];', //                           indexed under another name
   'var G3 = { b: { a: 1 } }; var G4 = G3; G4.b[k];', //                  …and a path from the alias
   'var G7 = { a: 1 }; var G8; G8 = G7; G8[k];', //                       an alias with no keyword either
+  'var T1 = { now: 1 }; var s3 = `${T1[k]}`;', //                        code inside a template
+  'var T3 = { c: 1 }; var s5 = `a${ `b${T3[k]}` }c`;', //                …and inside a nested one
+  'var T2 = table({ a: 1 }); var s4 = `x${T2[k]}y`;', //                 safe — wrapped, in a template
+  'function rt() { if (true) /{}/.test(""); }', //                       safe — a regex, not division
   'var G5 = table({ a: 1 }); var G6 = G5; G6[k];', //                    safe — the alias holds a table
   'var m = table({ n: dict() }); m.n[k];', //                            safe — the value is a dict
   'var o = table({ p: 1 }); o[k];', //                                   safe — the table is wrapped
@@ -389,7 +436,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
@@ -402,12 +449,16 @@ for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
 const { notes, wrapped, dicts, code } = survey(src);
 for (const n of notes) fail(n.check, `app.js:${n.line} — ${n.what}`);
 
-// The judge on the reading above, and the reason the `/` heuristic is safe rather than
-// assumed: removing the comments from a file that parses leaves a file that parses. A
-// blank cut through a string leaves it unterminated, and a regex read as a string swallows
-// the comment after it — both are syntax errors, and neither is anything this file would
-// otherwise notice. It is the same shape as the rest of the repository's checks: the thing
-// that decides is a parser, not our own reading of the output.
+// The judge on the reading above: removing the comments from a file that parses leaves a
+// file that parses. A blank cut through a string leaves it unterminated, and a regex read
+// as a string swallows the comment after it — both are syntax errors, and neither is
+// anything this file would otherwise notice. It is the same shape as the rest of the
+// repository's checks: the thing that decides is a parser, not our own reading.
+//
+// What it does *not* catch is a misclassification that leaves the text valid — a regex
+// read as division is exactly that, and Codex demonstrated it rather than arguing it. So
+// the fixture carries that line too. A judge with its reach written down beats a judge
+// described as though it settled the question.
 for (const [what, text] of [["app.js", code], ["the fixture", fixture.code]]) {
   try {
     new vm.Script(text, { filename: "blanked" });
