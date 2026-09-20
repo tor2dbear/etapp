@@ -117,7 +117,14 @@ for (const m of CODE.matchAll(/\{\s*\}/g)) {
 //   app.js has one, in the keyboard handler.
 const declared = [...CODE.matchAll(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(table\(\{|\{)/g)]
   .map((m) => ({ name: m[1], wrapped: m[2] !== "{", at: m.index }));
-const indexedByAVariable = (name) => new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`).test(CODE);
+// Through a property path too, not just `name[k]`: a table can be held in one —
+// `var t = { status: { now: "Now" } }` read as `t.status[k]` — and looking only for
+// `t[` meant the declaration was recorded and then never tested. No instance of that
+// shape is in app.js today (the empty-literal rule above already covers the property
+// maps that are, `cols:` and `keys:`), so this closes the claim rather than a hole:
+// the sentence this section prints has to be true of the next table as well.
+const indexedByAVariable = (name) =>
+  new RegExp(`\\b${name}\\s*(?:\\.[A-Za-z_$][\\w$]*)*\\s*\\[\\s*[^"'\\]]`).test(CODE);
 for (const { name, wrapped, at } of declared) {
   if (!wrapped && indexedByAVariable(name)) {
     fail("bare-table", `app.js:${lineAt(at)} — ${name} is indexed by a variable somewhere but built without table()`);
