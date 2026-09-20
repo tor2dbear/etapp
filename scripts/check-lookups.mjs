@@ -200,6 +200,12 @@ function lex(text) {
   // blocks, and the list of exemptions that used to stand in for this could not say so.
   const braces = [];
   const kinds = new Map();
+  // …and the same answer at the *closing* brace, because `}[` is read there and nowhere
+  // else: `if (true) { run(); } [value].forEach(run)` is a block and an array literal, and
+  // the rule that looks for a literal indexed on the spot had only the character to go on.
+  // Codex found it (#9, round 28) — the ninth time this gate has failed valid code, and the
+  // third of those where the lexer already knew the answer and the rule did not ask.
+  const closes = new Map();
   // Whether the next `{` is a function or class expression's body (true), a declaration's
   // (false), or neither (null).
   let maker = null;
@@ -382,7 +388,11 @@ function lex(text) {
     }
     if (/\S/.test(c)) {
       if (c === ")") last = CONTROL.has(heads.pop()) ? ")head" : ")";
-      else if (c === "}") last = braces.pop() !== "block" ? "}expr" : "}";
+      else if (c === "}") {
+        const was = braces.pop();
+        closes.set(i, was);
+        last = was !== "block" ? "}expr" : "}";
+      }
       // `counter++ / x` is division: a postfix update is a value, and its second `+`
       // is not the operator that `+` usually is. `a + +b` collapses to the same token
       // and is division at the same place, so the one rule covers both.
@@ -396,7 +406,7 @@ function lex(text) {
     }
     i++;
   }
-  return { code: out.join(""), mask, kinds };
+  return { code: out.join(""), mask, kinds, closes };
 }
 
 // A key written as a string is the string it denotes, not the characters between the
@@ -409,7 +419,7 @@ const unescape = (raw) => raw.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, 
 });
 
 function survey(text) {
-  const { code, mask, kinds } = lex(text);
+  const { code, mask, kinds, closes } = lex(text);
   const notes = [];
   const lineOf = (index) => code.slice(0, index).split("\n").length;
   const seen = new Set();
@@ -481,28 +491,39 @@ function survey(text) {
   // it is transparent to for both answers.
   const readInitialiser = (from) => {
     const found = [];
-    const holds = [];
     const open = [];
     let depth = 0;
     // The name so far, and whether anything has happened to it that means the value is no
     // longer just that name: an operator, a property access, a call, a number. A branch
     // separator starts the question again — `?` discards what it read, because that was the
     // condition, and `:` keeps it, because that was a branch. A sequence comma discards, for
-    // the same reason `(sideEffect(), source)` is `source`, and so does a `||` or a `&&`,
-    // which keeps the right operand only: that one is a value either way, while the left of
-    // an `&&` never is, an object being truthy. So `a || b` reaches `b` and not `a` — a
-    // stated gap rather than a guess, and the narrowest one I could find that is sound.
-    let candidate = null;
+    // the same reason `(sideEffect(), source)` is `source`. A `||` keeps what it read and a
+    // `&&` discards it, from the one fact: an object is truthy, so `a || b` *is* `a` when `a`
+    // holds one, and `a && b` never is. I had both of those as “the right operand only” and
+    // wrote the reason for the `&&` next to the rule for the `||`; Codex found the half that
+    // was a miss (#9, round 28). Reading a gap out loud is not the same as checking it.
+    // Nothing is written down until the operand it belongs to is over, because an operand
+    // that looked like a name can stop being one after the fact: `(subject || "").trim()`
+    // reads `subject` and then calls something on the parenthesis, and a name pushed at the
+    // `||` could not be taken back. app.js has two of those. So `current` is what this
+    // operand could be, `list` is what the expression could be, and only an operand that
+    // ends unpoisoned joins the list.
+    let current = [];
+    let list = [];
     let poisoned = false;
+    const commit = () => {
+      if (!poisoned) for (const name of current) if (!ALIAS_SKIP.has(name)) list.push(name);
+      current = [];
+    };
     const branch = (keep) => {
-      if (keep && candidate && !poisoned && !ALIAS_SKIP.has(candidate)) holds.push(candidate);
-      candidate = null;
+      if (keep) commit();
+      current = [];
       poisoned = false;
     };
-    // The poison belongs to the expression it was read in, so grouping parentheses save it
-    // and give it back: `b.title = level ? "P: " + (LABEL[level] || level) : "none"` hands
-    // `title` a concatenation and not `level`, and a `||` inside the parentheses had been
-    // clearing the `+` outside them. Measured against app.js, which is where it appeared.
+    // A grouping parenthesis is its own expression: it starts the question again, and what
+    // it hands back is one operand of the expression it sits in — which may poison it
+    // afterwards. `b.title = level ? "P: " + (LABEL[level] || level) : "none"` hands `title`
+    // a concatenation, not `level`. Measured against app.js, which is where it appeared.
     const outer = [];
     // Grouping parentheses are transparent to `depth` so that `x = ({ … })` binds the
     // literal — but they still enclose, and a comma inside one is a sequence operator rather
@@ -520,13 +541,17 @@ function survey(text) {
             NAME.lastIndex = i;
             const word = NAME.exec(code);
             if (!word) poisoned = true;
-            else if (!poisoned) candidate = word[0];
+            else if (!poisoned) current = [word[0]];
           }
         } else if (c === "?") branch(false);
         else if (c === ":") branch(true);
-        else if (c === "|" || c === "&") branch(false);
+        else if (c === "|") branch(true);
+        else if (c === "&") branch(false);
         else if (c === "," && groups > 0) branch(false);
-        else if (!/[([{)\]}]/.test(c) && c !== ";" && c !== ",") poisoned = true;
+        else if (!/[([{)\]}]/.test(c) && c !== ";" && c !== ",") {
+          poisoned = true;
+          current = [];
+        }
         OPENER.lastIndex = i;
         const m = OPENER.exec(code);
         // `var v = function (k, x) { … }` has a `{` at the top level of its initialiser and
@@ -542,9 +567,14 @@ function survey(text) {
         const grouping = c === "(" && !/[\w$)\]]/.test(before);
         // A call or an index is not the name that precedes it — `f(source)` holds whatever
         // `f` answered, not `source`.
-        if (!grouping && depth === 0) poisoned = true;
+        if (!grouping && depth === 0) {
+          poisoned = true;
+          current = [];
+        }
         if (grouping) {
-          outer.push(poisoned);
+          outer.push({ list, poisoned });
+          list = [];
+          current = [];
           poisoned = false;
         }
         open.push(grouping);
@@ -557,9 +587,14 @@ function survey(text) {
         if (!open.length) break;
         if (open.pop()) {
           groups--;
-          // What the parentheses gave back, and what they were an operand of: `(a.b)` is no
-          // more a name than `a.b` is, and `n + (m || WG)` is no more one than `n + m`.
-          poisoned = outer.pop() || poisoned;
+          // The last operand inside is the parenthesis's value, and the parenthesis is then
+          // one operand of what encloses it — which is where it was, poison and all.
+          commit();
+          const inner = list;
+          const saved = outer.pop();
+          list = saved.list;
+          poisoned = saved.poisoned;
+          current = inner;
         } else depth--;
         before = c;
         continue;
@@ -568,8 +603,8 @@ function survey(text) {
       if (depth === 0 && groups === 0 && c === ",") break;
       before = c;
     }
-    branch(true);
-    return { found, holds };
+    commit();
+    return { found, holds: list };
   };
   // A member assignment binds a *path*, not a name. `left.lookup = { … }` recorded `lookup`
   // and the name-keyed rule then read an unrelated `right.lookup[k]` as the same thing —
@@ -828,8 +863,12 @@ function survey(text) {
       if (hasPrototype(k.opens)) note("bare-table", k.at, subject, `${subject} reaches an object with a prototype`);
     }
   }
-  // And a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all.
+  // And a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all —
+  // when the brace closes a literal. A block ends with the same character, and
+  // `if (true) { run(); } [value].forEach(run)` is then an array literal rather than an
+  // index, which the lexer has known all along.
   for (const m of [...code.matchAll(/\}\s*\[/g)].filter(computed)) {
+    if (closes.get(m.index) !== "literal") continue;
     note("bare-table", m.index, "(anonymous)", "an object literal indexed on the spot, without table()");
   }
   // …and the same literal with grouping parentheses around it, `({ … })[k]`, which the
@@ -925,6 +964,10 @@ const FIXTURE = [
   'var WE = { now: 1 }; var WF = WE[0]; WF[k];', //                     safe — an element of it, not it
   'var WG = { now: 1 }; var WH = n + (m || WG); WH[k];', //             safe — an operand still, inside parentheses
   'var WI = { now: 1 }; var WJ = (WI.inner); WJ[k];', //                safe — and a property still, inside them
+  'var WK = { now: 1 }; var WL = WK || dict(); WL[k];', //              the left of a fallback, which an object wins
+  'var WM = { now: 1 }; var WN = WM && dict(); WN[k];', //              safe — the left of an `&&`, which it never does
+  'function wb() { if (true) { wb(); } [k].forEach(wb); }', //          safe — a block’s brace, then an array
+  'var WO = { now: 1 }; var WP = (WO || dict()).slice; WP[k];', //      safe — a call on the parenthesis, not the name
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -948,7 +991,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -978,6 +1021,14 @@ const fixture = survey(FIXTURE);
 const got = [...new Set(fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject))].sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
   fail("fixture", `the matcher reports ${got.join(", ") || "nothing"} where it should report ${REPORTED.join(", ")}`);
+}
+// The list above is of *subjects*, and the anonymous rule's subject never varies, so a
+// second report from it — a block's brace read as a literal's, say — would not show there at
+// all. Its sites are counted instead. Codex's round-28 false positive was invisible to the
+// fixture until this line existed, which makes it the same defect as the gate it guards.
+const anonymous = fixture.notes.filter((n) => n.subject === "(anonymous)").length;
+if (anonymous !== 1) {
+  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 1`);
 }
 for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
   fail("fixture", `the matcher reports ${n.check} on line ${n.line} of a fixture that has none: ${n.what}`);
@@ -1034,7 +1085,7 @@ console.log(
     `blanked, and in it ${wrapped} tables and ${dicts} maps are built with no prototype, no empty object literal is ` +
     `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.assign({…}) that a ` +
     `variable indexes — under its own name, under a name it was assigned to — in parentheses, as a branch of a ` +
-    `conditional, as the last of a sequence or as the right of a fallback — or through a property path, ` +
+    `conditional, as the last of a sequence or as either side of a fallback — or through a property path, ` +
     `which a name may have been assigned onto — is left ` +
     `with a prototype`
 );
