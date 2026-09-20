@@ -135,6 +135,14 @@ const ID = "[\\p{ID_Start}$_][\\p{ID_Continue}$\\u200C\\u200D]*";
 const IDENT = new RegExp(ID, "yu");
 const IDENT_PART = /[\p{ID_Continue}$\u200C\u200D]/u;
 
+// The calls that hand back the very object they were given. `Object.freeze({ … })` is that
+// literal, prototype and all, so the reading looks *through* them rather than treating them
+// as factories — a factory entry would have called `Object.freeze(dict())` a hazard, which
+// it is not. Codex found the first of the three (#9, round 36); the other two are the rest
+// of the family, and an immutable-table refactor is how any of them would arrive.
+const THROUGH = `Object\\s*\\.\\s*(?:freeze|seal|preventExtensions)\\s*\\(`;
+const THROUGH_END = new RegExp(`${THROUGH}$`);
+
 const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split("").concat(["=>"]));
 // The keyword side of the same question, and it is written as an inversion because the
 // list I had was a guess: "the keywords a regex may follow" was missing `await`, which made
@@ -656,7 +664,9 @@ function survey(text) {
       if (c === "(" || c === "[" || c === "{") {
         // A grouping parenthesis is transparent — `x = ({ … })` binds the literal — while a
         // call's is not, because `x = f({ … })` binds whatever `f` answered.
-        const grouping = c === "(" && before !== ")" && before !== "]" && !IDENT_PART.test(before);
+        const grouping = c === "(" &&
+          (THROUGH_END.test(code.slice(Math.max(0, i - 40), i + 1)) ||
+            (before !== ")" && before !== "]" && !IDENT_PART.test(before)));
         // A call or an index is not the name that precedes it — `f(source)` holds whatever
         // `f` answered, not `source`.
         if (!grouping && depth === 0) {
@@ -927,11 +937,12 @@ function survey(text) {
   // a key. End-of-text counts as well, because what is read here is the *inside* of the
   // literal: the last shorthand in `{ inner }` has no comma and no brace after it, which is
   // how the first version of this matched nothing at all.
-  const KEY = new RegExp(`(${ID})\\s*(?::\\s*(table\\(|dict\\(\\)|\\{|${ID}|)|(?=[,}]|$))`, "yu");
+  // The wrapper is stepped over and not captured, so `opens` stays the opener itself.
+  const VALUE = `(?:${THROUGH}\\s*)?(table\\(|dict\\(\\)|\\{|${ID}|)`;
+  const KEY = new RegExp(`(${ID})\\s*(?::\\s*${VALUE}|(?=[,}]|$))`, "yu");
   // A quoted key is a *string*, and `"status-name"` is as much a key as `status` is —
   // restricting it to identifier shapes meant `t["status-name"][k]` reached nothing.
   // Codex found it (#9, round 12).
-  const VALUE = `(table\\(|dict\\(\\)|\\{|${ID}|)`;
   const QUOTED = new RegExp(`"(${DQ})"\\s*:\\s*${VALUE}|'(${SQ})'\\s*:\\s*${VALUE}`, "yu");
   // What a bracket does to a depth count. Written twice twenty lines apart, and the second
   // copy exists because the first one was missing a case — which is the argument for there
@@ -1108,7 +1119,7 @@ function survey(text) {
   // grouping `(` that opens a literal rather than matched, because the literal in between
   // is whatever it is: `f({ … })[k]` is excluded by the lookbehind, since there the
   // parenthesis belongs to the call and what is indexed is the call's answer.
-  for (const m of [...code.matchAll(new RegExp(`${GROUPED}(?=\\{)`, "g"))].filter(inCode)) {
+  for (const m of [...code.matchAll(new RegExp(`(?:${GROUPED}|${THROUGH}\\s*)(?=\\{)`, "gu"))].filter(inCode)) {
     const body = bodyOf(m.index + m[0].length);
     if (!body) continue;
     let i = skip(body.at + body.text.length + 1);
@@ -1240,6 +1251,12 @@ const FIXTURE = [
   'var ZS = { now: 1 }; var ZT = { a: 1, ZS }; ZT.ZS[k];', //            …beside a key that is spelled out
   'var ZU = dict(); var ZV = table({ ZU }); ZV.ZU[k];', //               safe — a shorthand holding a dict
   'var ZW = table({ m() {} }); ZW.m[k];', //                            safe — a method is not a shorthand property
+  'var AA = Object.freeze({ now: 1 }); AA[k];', //                      a literal handed back by the call that froze it
+  'var AB = Object.seal({ now: 1 }); AB[k];', //                        …and by the one that sealed it
+  'var AC = Object.preventExtensions({ now: 1 }); AC[k];', //           …and by the third of them
+  'var AD = Object.freeze(dict()); AD[k];', //                          safe — freezing a dict leaves a dict
+  'var AE = table({ s: Object.freeze({ a: 1 }) }); AE.s[k];', //        …and one frozen inside a property
+  'Object.freeze({ now: 1 })[k];', //                                   …and one frozen and indexed on the spot
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -1262,7 +1279,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -1313,8 +1330,8 @@ if (!twice || !/bindings of that name/.test(twice.what)) {
   fail("fixture", "the matcher does not say that ZI is one of several bindings of its name");
 }
 const anonymous = fixture.notes.filter((n) => n.subject === "(anonymous)").length;
-if (anonymous !== 2) {
-  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 2`);
+if (anonymous !== 3) {
+  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 3`);
 }
 for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
   fail("fixture", `the matcher reports ${n.check} on line ${n.line} of a fixture that has none: ${n.what}`);
