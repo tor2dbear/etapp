@@ -149,7 +149,7 @@
     b.appendChild(el("span", "agent-name", name));
     return b;
   }
-  var state = {
+  var state = table({
     // One store. Repo and agent used to live in Sets of their own, because the sidebar
     // calls them *places* — where you are, rather than something you narrowed to. That
     // distinction is real and the rows stay, but it was never a reason for a second
@@ -201,7 +201,7 @@
     // empty choice, since an empty string is indistinguishable from an absent key once
     // it has been through a saved view).
     fields: null,
-  };
+  });
   var PRIORITY_RANK = table({ urgent: 0, high: 1, medium: 2, low: 3 });
   // Display preferences persist (they're settings, not a transient filter) — but they
   // persist *to the view they were set in*, not to the board as a whole. There is no
@@ -8323,7 +8323,7 @@
       viewsShown(viewCounts()).forEach(function (g) { g.keys.forEach(function (x) { open[x] = 1; }); });
       // `e` is kept beside `p`: it is what the row was called, and muscle memory is not
     // worth breaking to save a letter nobody else uses.
-    var want = { a: "all", r: "ready", i: "inbox", p: "parents", e: "parents", s: "standalone", t: "attention" }[k];
+    var want = table({ a: "all", r: "ready", i: "inbox", p: "parents", e: "parents", s: "standalone", t: "attention" })[k];
       if (want && open[want]) setFocus(want);
       else jumped = false;
       clearG();
@@ -9958,7 +9958,7 @@
   }
   function changeOrder(item, order, alsoKey, group) {
     if (!ghToken()) return;
-    var fields = { order: order };
+    var fields = table({ order: order });
     var label = "reordered";
     var prevOrder = item.order, prevU = item.updated, prevKey = null, keyField = null;
     if (alsoKey && group && group.field) {
@@ -11222,14 +11222,14 @@
     var meta = sourceMeta(repo);
     var path = meta.dir + "/" + slug + ".md";
     var body = puckBody(context);
-    var item = {
+    var item = table({
       id: id, repo: repo, repoName: src.name || short, repoColor: src.color || "#888888",
       issueState: null, slug: slug, title: title, status: status, tags: tags, updated: today(),
       created: today(), issue: null, order: 0, depends: [], owner: null, agent: agent || null, body: body,
       parent: null, parentRef: null, children: [], progress: null, blocks: [], missingDepends: [],
       sourcePath: path, sourceUrl: "https://github.com/" + repo + "/blob/" + meta.branch + "/" + path,
       adapter: "pucks", native: true, blockedBy: [], signals: [],
-    };
+    });
     var parentItm = opts.parent ? itemById(opts.parent) : null;
     var parentRef = parentItm ? refFor(item, parentItm) : null;
     // Pushed before linked: `relink` recounts the parent's rollup through `itemById`,
@@ -11678,8 +11678,8 @@
     save.disabled = !canGit;
     save.addEventListener("click", function () {
       if (!canGit) { close(); return; }
-      var next = { title: title.value.trim(), description: desc.value.trim(), repoUrl: url.value.trim(),
-        sections: sections.value.split(",").map(function (x) { return x.trim(); }).filter(Boolean) };
+      var next = table({ title: title.value.trim(), description: desc.value.trim(), repoUrl: url.value.trim(),
+        sections: sections.value.split(",").map(function (x) { return x.trim(); }).filter(Boolean) });
       save.disabled = true; toast("Saving…");
       commitConfig(repo, next)
         .then(function () {

@@ -70,54 +70,68 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // ── 2. nothing in app.js is built with a prototype ──────────────────────────────
 // This was two heuristics: one asking whether a capitalised table was wrapped, one
 // asking whether a lowercase map was indexed by a variable somewhere in its block. Both
-// answered "is this a lookup table?" by guessing, and both were blind — a map declared
-// as `cols: {}` inside a larger literal was neither, and it was live: `data-col` is a
-// group key, so with a puck whose agent is named `constructor` the board read the Object
+// answered "is this a lookup table?" by guessing, and both were blind — a map spelled
+// `cols: {}` inside a larger literal was neither, and it was live: `data-col` is a group
+// key, so with a puck whose agent is named `constructor` the board read the Object
 // constructor back out and assigned a function to `scrollTop`.
 //
-// So the rule is a construction instead of a guess: **an empty object literal in value
-// position is not written in this file**. `dict()` is how a map is made and `table()` is
-// how a lookup is made, and a non-empty literal is a record — it has its keys written
-// out, which is what makes it not the shape that means "something will fill this".
-// Nothing needs to decide whether a given map is "indexed by data", which is the
-// judgement that kept being wrong.
+// So the rule is a construction instead of a guess: **an empty object literal is not
+// written in this file**. `dict()` makes a map, `table()` makes a lookup, and a
+// non-empty literal is a record — it has its keys written out, which is what makes it
+// not the shape that means "something will fill this". Nothing needs to decide whether a
+// given map is "indexed by data", which is the judgement that kept being wrong.
 //
-// Three spellings of `{}` are not value position and are left alone: an empty catch, an
-// empty function body, and the two-character string.
-const EXEMPT = [/catch\s*\([^)]*\)\s*$/, /function[^)]*\)\s*$/, /=>\s*$/];
-let empties = 0;
-lines.forEach((line, i) => {
-  // Prose about the rule is not the rule: this file's own comments say `{}` a dozen
-  // times, and the first run of this section flagged two of them.
-  const comment = line.indexOf("//");
-  for (const m of line.matchAll(/\{\}/g)) {
-    if (comment !== -1 && m.index > comment) continue;
-    const before = line.slice(0, m.index).trimEnd();
-    if (line[m.index - 1] === '"' || line[m.index + 2] === '"') continue;
-    if (EXEMPT.some((re) => re.test(before))) continue;
-    empties++;
-    fail("bare", `app.js:${i + 1} — an empty object literal: ${line.trim().slice(0, 70)}`);
-  }
-});
+// Comments are blanked rather than skipped, so the offsets — and the line numbers
+// reported from them — still point at the real file. This file's own prose says `{}` a
+// dozen times, and the first version of this section flagged two of its own sentences.
+const CODE = lines
+  .map((line) => {
+    const at = line.indexOf("//");
+    return at === -1 ? line : line.slice(0, at) + " ".repeat(line.length - at);
+  })
+  .join("\n");
+const lineAt = (index) => CODE.slice(0, index).split("\n").length;
 
-// A capitalised name holding a *non-empty* literal is a lookup table, and those are
-// still a judgement call — so the narrower question stays for them: is it indexed
-// anywhere by a key that is not a literal?
-const declared = [...src.matchAll(/^ {2}var ([A-Z][A-Z0-9_]*) = (table\(\{|\{)/gm)]
+// Whitespace included, and over the whole source rather than line by line: `{ }` and a
+// literal broken across two lines are the same empty object, and both sailed past a
+// `/\{\}/` that matched only the bare token — measured, with the gate still reporting
+// that the file writes none. Three spellings are not a map and are left alone: an empty
+// catch, an empty function body, and the two-character string.
+const EXEMPT = [/catch\s*\([^)]*\)\s*$/, /function[^)]*\)\s*$/, /=>\s*$/];
+for (const m of CODE.matchAll(/\{\s*\}/g)) {
+  const before = CODE.slice(0, m.index).trimEnd();
+  if (CODE[m.index - 1] === '"' || CODE[m.index + m[0].length] === '"') continue;
+  if (EXEMPT.some((re) => re.test(before))) continue;
+  fail("bare", `app.js:${lineAt(m.index)} — an empty object literal: ${m[0].replace(/\s+/g, " ")}`);
+}
+
+// A *non-empty* literal is a record until something indexes it with a key that is not a
+// literal, and then it is a lookup table and needs `table()`. Two shapes, because there
+// are two ways to write one:
+//
+//   a declaration, of any case and any keyword — the first version of this read only
+//   `var ALL_CAPS`, so a lowercase or `const` table was invisible while the success line
+//   claimed every table was covered;
+//
+//   and a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all.
+//   app.js has one, in the keyboard handler.
+const declared = [...CODE.matchAll(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(table\(\{|\{)/g)]
   .map((m) => ({ name: m[1], wrapped: m[2] !== "{", at: m.index }));
-const indexedByAVariable = (name) => new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`).test(src);
+const indexedByAVariable = (name) => new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`).test(CODE);
 for (const { name, wrapped, at } of declared) {
   if (!wrapped && indexedByAVariable(name)) {
-    const line = src.slice(0, at).split("\n").length;
-    fail("bare-table", `app.js:${line} — ${name} is indexed by a variable somewhere but built without table()`);
+    fail("bare-table", `app.js:${lineAt(at)} — ${name} is indexed by a variable somewhere but built without table()`);
   }
+}
+for (const m of CODE.matchAll(/\}\s*\[\s*[^"'\]]/g)) {
+  fail("bare-table", `app.js:${lineAt(m.index)} — an object literal indexed on the spot, without table()`);
 }
 
 // Anti-vacuity, over both halves. If the shapes stopped matching — a reformat, a rename,
 // a regex tightened by one character — this section would pass by checking nothing, and
 // the half that covers data was written without a floor and was blind three times.
 const wrapped = declared.filter((d) => d.wrapped).length;
-const dicts = (src.match(/\bdict\(\)/g) || []).length;
+const dicts = (CODE.match(/\bdict\(\)/g) || []).length;
 if (wrapped < 15) fail("coverage", `only ${wrapped} tables go through table() — the pattern this checks has moved`);
 if (dicts < 40) fail("coverage", `only ${dicts} maps go through dict() — the pattern this checks has moved`);
 

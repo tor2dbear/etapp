@@ -229,10 +229,10 @@ const CASES = [
     edit: ["app.js", "    var byKey = dict();\n    keys.forEach", "    var byKey = {};\n    keys.forEach"],
     expect: "[bare]" },
   { gate: "lookups", claim: "…and the shape it looks for still matches the file",
-    edit: ["scripts/check-lookups.mjs", "var ([A-Z][A-Z0-9_]*) = (table", "zzz ([A-Z][A-Z0-9_]*) = (table"],
+    edit: ["scripts/check-lookups.mjs", "(?:var|let|const)\\s+([A-Za-z_$][\\w$]*)", "(?:zzz|let|const)\\s+([A-Za-z_$][\\w$]*)"],
     expect: "[coverage]" },
   { gate: "lookups", claim: "…on the half that covers data too, which had no floor at all",
-    edit: ["scripts/check-lookups.mjs", "src.match(/\\bdict\\(\\)/g)", "src.match(/\\bzzzz\\(\\)/g)"],
+    edit: ["scripts/check-lookups.mjs", "CODE.match(/\\bdict\\(\\)/g)", "CODE.match(/\\bzzzz\\(\\)/g)"],
     expect: "[coverage]" },
 ];
 
