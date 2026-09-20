@@ -231,10 +231,12 @@ const CASES = [
   { gate: "lookups", claim: "…and so is the second declarator of a list, which has no keyword in front of it",
     edit: ["app.js", "entry = table({ name: name })", "entry = { name: name }"],
     expect: "[bare-table]" },
-  // The five findings this gate collected in review were all one defect — the scan could
-  // not see a shape — so the scan now runs against a fixture that names every shape, and
-  // these three break the scan rather than the file. Without them the fixture is prose:
-  // it would go on passing as the matcher it tests stopped matching.
+  // Five of the six findings this gate collected in review were one defect — the scan
+  // could not see a shape — so the scan runs against a fixture that names every shape, and
+  // these break the scan rather than the file. Without them the fixture is prose: it would
+  // go on passing as the matcher it tests stopped matching. The sixth was the reading
+  // itself, so the last three take the lexer apart in the three ways it was wrong or could
+  // be, and the parser is what answers.
   { gate: "lookups", claim: "the matcher's own fixture notices a keyword it stops treating as optional",
     edit: ["scripts/check-lookups.mjs", "(?:\\b(?:var|let|const)\\s+)?([A-Za-z_$][\\w$]*)\\s*=",
       "(?:\\b(?:var|let|const)\\s+)([A-Za-z_$][\\w$]*)\\s*="],
@@ -247,11 +249,22 @@ const CASES = [
     edit: ["scripts/check-lookups.mjs", "const KEY = /([A-Za-z_$][\\w$]*)\\s*:\\s*(table\\(|dict\\(\\)|\\{|)/y;",
       "const KEY = /([A-Za-z_$][\\w$]*)\\s*:\\s*(table\\(|dict\\(\\)|zzzz|)/y;"],
     expect: "[fixture]" },
+  { gate: "lookups", claim: "…and a string whose contents it stops holding apart from code",
+    edit: ["scripts/check-lookups.mjs", "      cover(i, j);\n      i = j;\n      last = c;",
+      "      cover(i, i);\n      i = j;\n      last = c;"],
+    expect: "[fixture]" },
+  { gate: "lookups", claim: "a `//` inside a string is not the start of a comment",
+    edit: ["scripts/check-lookups.mjs", "    if (c === '\"' || c === \"'\" || c === \"`\") {", "    if (c === \"\\u0000\") {"],
+    expect: "[lex]" },
+  { gate: "lookups", claim: "…and a regex is not a pair of quotes either",
+    edit: ["scripts/check-lookups.mjs", "const REGEX_AFTER = new Set(\"(,=:[!&|?{};+-*%~^<>\".split(\"\"));",
+      "const REGEX_AFTER = new Set([]);"],
+    expect: "[lex]" },
   { gate: "lookups", claim: "…and the shape it counts as wrapped still matches the file",
     edit: ["scripts/check-lookups.mjs", "filter((b) => b.opens === \"table(\")", "filter((b) => b.opens === \"zzzzz(\")"],
     expect: "[coverage]" },
   { gate: "lookups", claim: "…on the half that covers data too, which had no floor at all",
-    edit: ["scripts/check-lookups.mjs", "CODE.match(/\\bdict\\(\\)/g)", "CODE.match(/\\bzzzz\\(\\)/g)"],
+    edit: ["scripts/check-lookups.mjs", "code.matchAll(/\\bdict\\(\\)/g)", "code.matchAll(/\\bzzzz\\(\\)/g)"],
     expect: "[coverage]" },
 ];
 
