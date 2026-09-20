@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in sixteen different ways over thirteen
-// rounds of review. Thirteen were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in eighteen different ways over fourteen
+// rounds of review. Fourteen were the same defect: the scan could not see a shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -162,11 +162,23 @@ function lex(text) {
   // Whether the next `{` is a function or class expression's body (true), a declaration's
   // (false), or neither (null).
   let maker = null;
+  // A `:` is two things as well: the one in `{ a: 1 }` puts what follows in expression
+  // position, and the one in `case 1:` or `outer:` does not — so `case 1: {}` was read as
+  // an empty object literal and failed CI on a valid switch arm. Codex found it (#9, round
+  // 14). Which one it is comes from where the thing before it stood, and the brace stack
+  // already knows whether the enclosing `{` was a literal or a block.
+  let identStart = "";
+  let pendingLabel = false;
   // A template is not one opaque run: `${…}` inside it is code, and masking through to the
   // closing backtick hid a lookup written there. Each frame is the template's text, or a
   // substitution and how deep its braces are.
   const nest = [];
   const top = () => nest[nest.length - 1];
+  // Statement position: the start, after a `;`, after a block's `}`, after a control-flow
+  // head's `)`, or just inside a `{` that is not an object literal.
+  const statementPlace = (token) =>
+    token === "" || token === ";" || token === "}" || token === ")head" ||
+    (token === "{" && braces[braces.length - 1] !== "literal");
   while (i < text.length) {
     const c = text[i];
     // Inside a template's text, the only three things that matter.
@@ -244,9 +256,18 @@ function lex(text) {
       while (j < text.length && /[\w$]/.test(text[j])) j++;
       const ident = text.slice(i, j);
       if (MAKERS.has(ident)) maker = VALUE_AFTER.has(last) || VALUE_WORDS.has(word);
+      if ((ident === "case" || ident === "default") && statementPlace(last)) pendingLabel = true;
+      identStart = last;
       word = ident;
       last = "w";
       i = j;
+      continue;
+    }
+    if (c === ":") {
+      last = pendingLabel || (last === "w" && statementPlace(identStart)) ? ":label" : ":";
+      pendingLabel = false;
+      word = "";
+      i++;
       continue;
     }
     if (c === "(") heads.push(word);
@@ -376,8 +397,14 @@ function survey(text) {
     }
     return out;
   };
+  // `(unsafe)[k]` is `unsafe[k]` with grouping parentheses around it, and the matcher read
+  // only the second spelling. The lookbehind is what keeps `f(unsafe)[k]` out: there the
+  // parenthesis belongs to the call and the thing being indexed is what `f` returned, not
+  // the literal — app.js has eight of those and none of them is this. Nested grouping,
+  // `((unsafe))[k]`, is not covered: a gap in reach, which is the direction to err in.
+  const GROUPED = `(?<![\\w$)\\]])\\(\\s*`;
   const indexedByAVariable = (name) =>
-    [...code.matchAll(new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`, "g"))].some(inCode);
+    [...code.matchAll(new RegExp(`(?:\\b${name}|${GROUPED}${name}\\s*\\))\\s*\\[\\s*[^"'\\]]`, "g"))].some(inCode);
 
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
   // argument, so both openers are "the next `{` that is code".
@@ -471,11 +498,16 @@ function survey(text) {
   // know, and it is the same boundary as a root bound to a call.
   const STRING = `"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'`;
   const SEGMENT = new RegExp(`\\.\\s*([A-Za-z_$][\\w$]*)|\\[\\s*(${STRING})\\s*\\]`, "g");
-  const PATH = new RegExp(`\\b([A-Za-z_$][\\w$]*)((?:\\s*\\.\\s*[A-Za-z_$][\\w$]*|\\s*\\[\\s*(?:${STRING})\\s*\\])+)\\s*\\[\\s*[^"'\\]]`, "g");
+  const PATH = new RegExp(
+    `(?:${GROUPED}([A-Za-z_$][\\w$]*)\\s*\\)|\\b([A-Za-z_$][\\w$]*))` +
+      `((?:\\s*\\.\\s*[A-Za-z_$][\\w$]*|\\s*\\[\\s*(?:${STRING})\\s*\\])+)\\s*\\[\\s*[^"'\\]]`,
+    "g"
+  );
   for (const m of [...code.matchAll(PATH)].filter(inCode)) {
-    const path = [...m[2].matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
-    const subject = `${m[1]}.${path.join(".")}`;
-    for (const k of reached(m[1], path)) {
+    const root = m[1] !== undefined ? m[1] : m[2];
+    const path = [...m[3].matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
+    const subject = `${root}.${path.join(".")}`;
+    for (const k of reached(root, path)) {
       if (k.opens === "{") note("bare-table", k.at, subject, `${subject} reaches an object literal built without table()`);
     }
   }
@@ -491,7 +523,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Thirteen rounds of review found sixteen
+// every other line is here because it must *not* be. Fourteen rounds of review found eighteen
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -521,6 +553,10 @@ const FIXTURE = [
   'var C1 = table({ "a-b": { x: 1 } }); C1["a-b"][k];', //               a key no identifier could spell
   'var C3 = table({ "a\\"b": { x: 1 } }); C3["a\\"b"][k];', //             …and one with an escape in it
   'var D1; var d1 = function () {} / (D1 = { now: 1 }, D1[k]) / 2;', //  after a function expression
+  'var E1 = { now: 1 }; (E1)[k];', //                                    grouping parens before the index
+  'var E2 = { s: { a: 1 } }; (E2).s[k];', //                             …and around a path's root
+  'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
+  'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
   'var D2 = { m: function () {} }; D2.m;', //                            safe — an empty body, not a map
   'function pA() { try { pA(); } catch {} }', //                         safe — an empty block, not a map
   'class Empty {}', //                                                   safe — so is a class body
@@ -534,7 +570,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
