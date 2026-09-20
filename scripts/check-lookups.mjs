@@ -232,9 +232,15 @@ function lex(text) {
   // colon at *that* depth and no other: `case { a: {} }.a:` has a property colon inside the
   // case expression, and taking that one for the label left the nested literal read as a
   // block. Codex found it (#9, round 19).
+  // …and a conditional inside the case expression has its own colon at that very depth, so
+  // depth alone is not enough: `case flag ? 1 : { … }[k]:` closed the label on the ternary's
+  // colon and the literal after it was then read as a block. Codex found it (#9, round 32).
+  // The open conditionals are counted, and the first colon that is not owed to one of them
+  // is the label's.
   let nesting = 0;
   let labelDepth = -1;
   let pendingLabel = false;
+  let ternaries = 0;
   // A template is not one opaque run: `${…}` inside it is code, and masking through to the
   // closing backtick hid a lookup written there. Each frame is the template's text, or a
   // substitution and how deep its braces are.
@@ -347,7 +353,7 @@ function lex(text) {
         makerAt = nesting;
         carried = null;
       } else carried = null;
-      if ((ident === "case" || ident === "default") && statementPlace(last)) { pendingLabel = true; labelDepth = nesting; }
+      if ((ident === "case" || ident === "default") && statementPlace(last)) { pendingLabel = true; labelDepth = nesting; ternaries = 0; }
       identStart = last;
       word = ident;
       // A reserved word after a `.` is a property name — `holder.yield` is a value, and
@@ -359,8 +365,13 @@ function lex(text) {
       i = j;
       continue;
     }
+    // A `?` that opens a conditional inside the case expression owes a colon. `?.` and `??`
+    // owe none, and are told apart by the character after.
+    if (c === "?" && pendingLabel && nesting === labelDepth && text[i + 1] !== "." && text[i + 1] !== "?" && last !== "?") ternaries++;
     if (c === ":") {
-      const closesLabel = pendingLabel && nesting === labelDepth;
+      const owed = pendingLabel && nesting === labelDepth && ternaries > 0;
+      if (owed) ternaries--;
+      const closesLabel = pendingLabel && nesting === labelDepth && !owed;
       last = closesLabel || (last === "w" && statementPlace(identStart)) ? ":label" : ":";
       if (closesLabel) pendingLabel = false;
       word = "";
@@ -443,8 +454,24 @@ function survey(text) {
   // are neither, and both were reported as empty object literals: a red gate on valid
   // code, which Codex found (#9, round 12). The lexer already answers this question for
   // the `/` after a `}`, so it answers it here too, and the list is gone.
+  // …and a destructuring *assignment* is not a map either. `({} = source)` and
+  // `({ a: {} } = source)` write a brace in value position with no keyword in front of it,
+  // so the keyword rule that exempts `var {} = x` says nothing about them and both were
+  // reported: a red gate on valid code, the tenth, which Codex found (#9, round 32). What
+  // makes it a pattern is the `=` it is the target of, reached out through the patterns and
+  // parentheses it sits inside.
+  const patternTarget = (from) => {
+    for (let i = from; i < code.length; i++) {
+      const c = code[i];
+      if (mask[i] || /\s/.test(c)) continue;
+      if (c === "}" || c === "]" || c === ")") continue;
+      return c === "=" && code[i + 1] !== "=" && code[i + 1] !== ">";
+    }
+    return false;
+  };
   for (const m of [...code.matchAll(/\{\s*\}/g)].filter(inCode)) {
     if (kinds.get(m.index) !== "literal") continue;
+    if (patternTarget(m.index + m[0].length)) continue;
     note("bare", m.index, null, `an empty object literal: ${m[0].replace(/\s+/g, " ")}`);
   }
 
@@ -1007,6 +1034,7 @@ const FIXTURE = [
   'var XI = dict(); (XI).tbl = { now: 1 }; XI.tbl[k];', //              …around the root of a path
   'var XJ = dict(); (XJ.tbl) = { now: 1 }; XJ.tbl[k];', //              …and around the whole of one
   'var XN = dict(); XN[i].tbl = { now: 1 }; var XO = table({ tbl: dict() }); XO.tbl[k];', // safe — a computed receiver resolves to nothing
+  'function xt(x, k, flag) { switch (x) { case flag ? 1 : { now: 1 }[k]: break; } }', // a literal behind a case expression’s ternary
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -1043,6 +1071,9 @@ const EMPTY_FIXTURE = [
   'var { t1 } = { t1: 1 };', //                                   ·   a declaration's pattern
   'ident({});', //                                                6 — an argument really is a literal
   'function rt2(a = {}) { return a; }', //                        7 — and so is a default value
+  '({} = src);', //                                               ·   a destructuring assignment
+  '({ a: {} } = src);', //                                        ·   …and one nested inside a pattern
+  '[{}] = arr;', //                                               ·   …and one inside an array pattern
 ].join("\n");
 const empties = survey(EMPTY_FIXTURE).notes;
 const bares = empties.filter((n) => n.check === "bare").map((n) => n.line);
@@ -1066,8 +1097,8 @@ if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
 // all. Its sites are counted instead. Codex's round-28 false positive was invisible to the
 // fixture until this line existed, which makes it the same defect as the gate it guards.
 const anonymous = fixture.notes.filter((n) => n.subject === "(anonymous)").length;
-if (anonymous !== 1) {
-  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 1`);
+if (anonymous !== 2) {
+  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 2`);
 }
 for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
   fail("fixture", `the matcher reports ${n.check} on line ${n.line} of a fixture that has none: ${n.what}`);
