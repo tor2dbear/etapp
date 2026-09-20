@@ -128,7 +128,15 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // and wrong in another — which is the failure rounds 26 to 31 kept being, in a different
 // part of the same file. The regexes that use it carry the `u` flag, which is what makes
 // `\p{…}` mean anything.
-const ID = "[\\p{ID_Start}$_][\\p{ID_Continue}$\\u200C\\u200D]*";
+// …and a character of one may be written as an escape: `look\\u0075p` is `lookup`, the same
+// binding by the language's reckoning. The fragment ended at the backslash, so the name split
+// in two and a piece of it was recorded as a binding of its own — which is worse than a miss,
+// because that piece can collide with a real name. Codex found it (#9, round 44).
+const ESCAPED = "\\\\u(?:[0-9a-fA-F]{4}|\\{[0-9a-fA-F]+\\})";
+const ID = `(?:[\\p{ID_Start}$_]|${ESCAPED})(?:[\\p{ID_Continue}$\\u200C\\u200D]|${ESCAPED})*`;
+// What a name *is*, whatever it is spelled with. Every place that writes a name into a map
+// goes through this, so the two spellings meet there rather than in a rule of their own.
+const asName = (raw) => (raw.indexOf("\\") < 0 ? raw : unescape(raw));
 // The lexer reads a whole name with the same fragment the patterns use, rather than a start
 // test and an end test that could drift apart — and a sticky match always moves, where two
 // tests that disagreed left the scan standing still and the gate never finished.
@@ -558,7 +566,10 @@ const ESCAPES = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", 0: "\0" 
 // four-digit form — so `{ "😀": … }` and `t["\u{1F600}"]` were two keys where the language has
 // one. Codex found it (#9, round 43). A code point outside the range stands for itself, the
 // way every other unreadable escape here does; in real source it is a syntax error.
-const unescape = (raw) => raw.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (all, what) => {
+const unescape = (raw) => raw.replace(/\\(\r\n|[\n\r\u2028\u2029]|u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[\s\S])/g, (all, what) => {
+  // A line continuation decodes to nothing at all, which is the one escape that is not a
+  // character.
+  if (/^(?:\r\n|[\n\r\u2028\u2029])$/.test(what)) return "";
   if (what[0] === "u" || what[0] === "x") {
     const point = parseInt(what.replace(/[u{}x]/g, ""), 16);
     return point <= 0x10ffff ? String.fromCodePoint(point) : all;
@@ -663,8 +674,13 @@ function survey(text) {
 
   // One spelling of "a quoted body, escapes and all", used by both the fragment that finds
   // a constant path segment and the one that reads a quoted key.
-  const DQ = `(?:[^"\\\\]|\\\\.)*`;
-  const SQ = `(?:[^'\\\\]|\\\\.)*`;
+  // `\\` before a line terminator is a *continuation*: the string carries on and the two
+  // characters decode to nothing. `.` matches neither the newline nor `\u2028`, so a key
+  // written across two lines ended the string early here and matched nothing at all — Codex
+  // found it (#9, round 44). `[\\s\\S]` is the one character class that means "any", which is
+  // what follows a backslash in a string.
+  const DQ = `(?:[^"\\\\]|\\\\[\\s\\S])*`;
+  const SQ = `(?:[^'\\\\]|\\\\[\\s\\S])*`;
   const STRING = `"${DQ}"|'${SQ}'`;
   // …and one spelling of a number, because a key may be written as one: `table({ 0: { … } })`
   // is indexed `outer[0][k]`, and `STEPS` read a dot name or a quoted bracket and nothing
@@ -672,7 +688,7 @@ function survey(text) {
   // on the *writing* side at the same time — a literal's `0:` was no key either, since a key
   // had to start like a name — which is the fourth round in a row whose finding was one half
   // of a pair.
-  const NUMBER = `[-+]?(?:0[xXoObB][0-9a-fA-F_]+|(?:\\d[\\d_]*(?:\\.[\\d_]*)?|\\.[\\d_]+)(?:[eE][-+]?\\d+)?)n?`;
+  const NUMBER = `[-+]?(?:0[xXoObB][0-9a-fA-F_]+|(?:\\d[\\d_]*(?:\\.[\\d_]*)?|\\.[\\d_]+)(?:[eE][-+]?[\\d_]+)?)n?`;
   // A key is the string it denotes. For a quoted one that is what is between the quotes; for
   // a number it is `String(Number(…))`, which is not a guess — it is the conversion the
   // language does, so `{ 16: … }`, `t[0x10]` and `t["16"]` are one key by construction rather
@@ -724,7 +740,7 @@ function survey(text) {
   // question. So an unreadable one empties the whole reading, which every caller already
   // treats as "no path here".
   const segmentsOf = (text) => {
-    const steps = [...text.matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : asKey(piece[2])));
+    const steps = [...text.matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? asName(piece[1]) : asKey(piece[2])));
     return steps.includes(null) ? [] : steps;
   };
   // A match that ends at its `[`, so the bracket can be read — and one sticky reader of it,
@@ -877,7 +893,7 @@ function survey(text) {
             IDENT.lastIndex = i;
             const word = IDENT.exec(code);
             if (!word) poisoned = true;
-            else if (!poisoned) current = [{ root: word[0], path: [] }];
+            else if (!poisoned) current = [{ root: asName(word[0]), path: [] }];
           }
         } else if (c === "?") branch(code[i + 1] === "?");
         else if (c === ":") branch(true);
@@ -1075,7 +1091,7 @@ function survey(text) {
   );
   for (const m of [...code.matchAll(TARGET)].filter(inCode)) {
     const g = m.groups;
-    const root = g.pg !== undefined ? g.pg : g.ng !== undefined ? g.ng : g.pb !== undefined ? g.pb : g.nb;
+    const root = asName(g.pg !== undefined ? g.pg : g.ng !== undefined ? g.ng : g.pb !== undefined ? g.pb : g.nb);
     const steps = segmentsOf(g.steps);
     const path = steps.length ? `${root}.${steps.join(".")}` : null;
     const { found, holds, paths } = readInitialiser(m.index + m[0].length);
@@ -1156,7 +1172,7 @@ function survey(text) {
         PROP.lastIndex = i;
         const m = PROP.exec(code);
         if (!m) { i = afterEntry(i, close); continue; }
-        key = m[1] !== undefined ? m[1] : asKey(m[2] !== undefined ? m[2] : m[3]);
+        key = m[1] !== undefined ? asName(m[1]) : asKey(m[2] !== undefined ? m[2] : m[3]);
         if (key === null) { i = afterEntry(i, close); continue; }
         if (m[4] === ":") target = spaced(PROP.lastIndex);
         else {
@@ -1317,6 +1333,24 @@ function survey(text) {
   // as one claim.
   const ON_THE_SPOT = "an object literal indexed on the spot, without table()";
   const escapeRe = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // …and how a name may be *spelled* where it is looked for, which is the other half of
+  // reading escaped identifiers: the maps hold `lookup`, and the file may write the index
+  // site as `look\\u0075p[k]`. Every character stands for itself or for one of its two
+  // escapes, and hex digits are case-blind, which is what the classes are for. Only when the
+  // file writes an escaped name at all — otherwise this is the plain name it always was, and
+  // app.js pays nothing for a spelling it does not use.
+  const escapedNames = /\\u(?:[0-9a-fA-F]{4}|\{[0-9a-fA-F]+\})/.test(code);
+  const anyCase = (hex) => hex.replace(/[a-f]/g, (d) => `[${d}${d.toUpperCase()}]`);
+  const spellings = (name) =>
+    escapedNames
+      ? [...name]
+          .map((ch) => {
+            const hex = ch.codePointAt(0).toString(16);
+            const four = hex.length <= 4 ? `|\\\\u${anyCase(hex.padStart(4, "0"))}` : "";
+            return `(?:${escapeRe(ch)}${four}|\\\\u\\{0*${anyCase(hex)}\\})`;
+          })
+          .join("")
+      : escapeRe(name);
   // Where a name stands to be indexed: bare, or inside grouping parentheses. Both readers
   // need it, and they had it written out in two orders — `GROUPED`/`EDGE` are the pair three
   // rounds went into, and a fix to one spelling would have missed the other, which is the
@@ -1331,7 +1365,7 @@ function survey(text) {
       indexedNames.set(
         name,
         indexedGroup.has(name) ||
-          [...code.matchAll(new RegExp(`${rooted(escapeRe(name))}${INDEX}`, "gu"))].some(computed)
+          [...code.matchAll(new RegExp(`${rooted(spellings(name))}${INDEX}`, "gu"))].some(computed)
       );
     }
     return indexedNames.get(name);
@@ -1425,12 +1459,14 @@ function survey(text) {
       // A key, however it is spelled, is the string it denotes — and a shorthand is its own
       // value and stands where it is written.
       const bare = re === KEY;
-      const name = bare ? m[1] : asKey(m[1]);
+      const name = bare ? asName(m[1]) : asKey(m[1]);
       if (name === null) { depth += delta(c); continue; }
       const short = bare && m[2] === undefined;
-      const opens = short ? name : m[2];
+      const opens = short ? m[1] : m[2];
       const at = short ? body.at + i : body.at + i + m[0].length - opens.length;
-      if (!keys.has(name)) keys.set(name, { opens, at });
+      // The position is measured against what was *written* and the name against what it
+      // means, which is why the two are read off `opens` in that order.
+      if (!keys.has(name)) keys.set(name, { opens: asName(opens), at });
       // The match consumed the token the value *opens* with, and the scan then jumps past
       // it — so the brackets inside it never reached the depth counter while their closers
       // did. Depth went to -1 at the end of the first nested literal, and from there every
@@ -1570,7 +1606,7 @@ function survey(text) {
   // zero while leaving both other floors satisfied and the success line green.
   const INDEXED = new RegExp(`${rooted(`(${ID})`)}${INDEX}`, "gu");
   const sites = [...code.matchAll(INDEXED)].filter(computed);
-  const resolved = sites.filter((m) => bindingsOf(m[1] !== undefined ? m[1] : m[2]).length).length;
+  const resolved = sites.filter((m) => bindingsOf(asName(m[1] !== undefined ? m[1] : m[2])).length).length;
 
   // `name[k]` — the binding itself, read with a key that is not a literal.
   for (const [name, bindings] of bound) {
@@ -1636,7 +1672,7 @@ function survey(text) {
     "gu"
   );
   const reads = [...code.matchAll(PATH)].filter(computed)
-    .map((m) => ({ roots: [m[1] !== undefined ? m[1] : m[2]], path: segmentsOf(m[3]) }))
+    .map((m) => ({ roots: [asName(m[1] !== undefined ? m[1] : m[2])], path: segmentsOf(m[3]) }))
     // …and a path read off a parenthesised expression, `(a || t).s[k]`, whose roots the walk
     // has already worked out. The same rule, one shape wider.
     .concat(grouped.filter((g) => g.steps.length).map((g) => ({ roots: g.holds, path: g.steps })));
@@ -1934,12 +1970,18 @@ const FIXTURE = [
   'var EN = table({ [true]: { now: 1 } }); EN[true][k];', //             …and as a computed one
   'var EO = { true: { now: 1 } }; var { [true]: EP } = EO; EP[k];', //   …and as one in a pattern
   'var EQ = { now: 1 }; EQ[truthy];', //                                 a name that merely starts like one is not one
+  'var ER = table({ "10000000000": { now: 1 } }); ER[1e1_0][k];', //     a separator runs through an exponent too
+  'var ES = table({ "lookup": { now: 1 } }); ES["look\\\nup"][k];', //   a line continuation joins a key
+  'var esc\\u0061ped = { now: 1 }; escaped[k];', //                      an escape in a name is that character
+  'var ET = { now: 1 }; E\\u0054[k];', //                                …wherever the name is written
+  'var EU = table({ look\\u0070: { now: 1 } }); EU.lookp[k];', //        …including a key of a literal
+  'var EV = { inner: { now: 1 } }; var { inn\\u0065r: EW } = EV; EW[k];', // …and a pattern's key
   'var BL = { a: 1 }; BL[.5];', //                                       safe — a number may begin with its point
   'var BM = { a: 1 }; BM[-.5];', //                                      safe — …and with a sign in front of that
   'var BN = { a: 1 }; BN[.5e3];', //                                     safe — …and carry on as any number does
   'var BO = { a: 1 }; BO[.5 + n];', //                                   a sum that starts with one is not a constant
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "EF.😀", "EG.😀", "EH.9007199254740993", "EI.9007199254740993", "EL", "EM.true", "EN.true", "EP", "EQ", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "EF.😀", "EG.😀", "EH.9007199254740993", "EI.9007199254740993", "EL", "EM.true", "EN.true", "EP", "EQ", "ER.10000000000", "ES.lookup", "escaped", "ET", "EU.lookp", "EW", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
