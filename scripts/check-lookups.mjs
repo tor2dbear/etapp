@@ -502,6 +502,9 @@ function survey(text) {
     // holds one, and `a && b` never is. I had both of those as “the right operand only” and
     // wrote the reason for the `&&` next to the rule for the `||`; Codex found the half that
     // was a miss (#9, round 28). Reading a gap out loud is not the same as checking it.
+    // `??` keeps its left for the same kind of reason — an object is not nullish — and is
+    // told from a conditional `?` by the character after it. I saw this one while writing the
+    // `||` rule and left it, which is how it came back as round 29.
     // Nothing is written down until the operand it belongs to is over, because an operand
     // that looked like a name can stop being one after the fact: `(subject || "").trim()`
     // reads `subject` and then calls something on the parenthesis, and a name pushed at the
@@ -543,7 +546,7 @@ function survey(text) {
             if (!word) poisoned = true;
             else if (!poisoned) current = [word[0]];
           }
-        } else if (c === "?") branch(false);
+        } else if (c === "?") branch(code[i + 1] === "?");
         else if (c === ":") branch(true);
         else if (c === "|") branch(true);
         else if (c === "&") branch(false);
@@ -651,7 +654,12 @@ function survey(text) {
     if (!map.has(key)) map.set(key, new Set());
     map.get(key).add(value);
   };
-  const TARGET = new RegExp(`(?<![\\w$.)\\]])(?:\\b(?:var|let|const)\\s+)?([A-Za-z_$][\\w$]*)((?:${STEPS})*)\\s*=(?![=>])`, "g");
+  // `x ||= { … }`, `x &&= v` and `x ??= v` all put the right side into `x` — in two of the
+  // three only sometimes, which is the same “may hold” every alias here already means. They
+  // are the siblings of round 29's finding, and the reading was blind to all three: the
+  // character before the `=` was not one it allowed. `+=` still is not, because a sum is not
+  // the thing that was added to it.
+  const TARGET = new RegExp(`(?<![\\w$.)\\]])(?:\\b(?:var|let|const)\\s+)?([A-Za-z_$][\\w$]*)((?:${STEPS})*)\\s*(?:\\|\\||&&|\\?\\?)?=(?![=>])`, "g");
   for (const m of [...code.matchAll(TARGET)].filter(inCode)) {
     const steps = segmentsOf(m[2]);
     const path = steps.length ? `${m[1]}.${steps.join(".")}` : null;
@@ -968,6 +976,10 @@ const FIXTURE = [
   'var WM = { now: 1 }; var WN = WM && dict(); WN[k];', //              safe — the left of an `&&`, which it never does
   'function wb() { if (true) { wb(); } [k].forEach(wb); }', //          safe — a block’s brace, then an array
   'var WO = { now: 1 }; var WP = (WO || dict()).slice; WP[k];', //      safe — a call on the parenthesis, not the name
+  'var WQ = { now: 1 }; var WR = WQ ?? dict(); WR[k];', //              the left of a nullish fallback, which an object also wins
+  'var WT; WT ||= { now: 1 }; WT[k];', //                               a literal put there by a logical assignment
+  'var WU = { now: 1 }; var WV; WV ??= WU; WV[k];', //                  …and a name put there by one
+  'var WW = { now: 1 }; var WX = 0; WX += WW; WX[k];', //               safe — a sum is not the thing added to it
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -991,7 +1003,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then

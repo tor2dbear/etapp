@@ -242,8 +242,8 @@ const CASES = [
   // itself, so the last three take the lexer apart in the three ways it was wrong or could
   // be, and the parser is what answers.
   { gate: "lookups", claim: "the matcher's own fixture notices a keyword it stops treating as optional",
-    edit: ["scripts/check-lookups.mjs", "(?:\\\\b(?:var|let|const)\\\\s+)?([A-Za-z_$][\\\\w$]*)((?:${STEPS})*)\\\\s*=(?![=>])`",
-      "(?:\\\\b(?:var|let|const)\\\\s+)([A-Za-z_$][\\\\w$]*)((?:${STEPS})*)\\\\s*=(?![=>])`"],
+    edit: ["scripts/check-lookups.mjs", "(?:\\\\b(?:var|let|const)\\\\s+)?([A-Za-z_$][\\\\w$]*)((?:${STEPS})*)\\\\s*(?:",
+      "(?:\\\\b(?:var|let|const)\\\\s+)([A-Za-z_$][\\\\w$]*)((?:${STEPS})*)\\\\s*(?:"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a property path it stops following to the end",
     edit: ["scripts/check-lookups.mjs", "          if (last) hits.push(k);",
@@ -417,6 +417,12 @@ const CASES = [
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and what a closing brace closes, before calling it a literal",
     edit: ["scripts/check-lookups.mjs", "    if (closes.get(m.index) !== \"literal\") continue;", "    if (false) continue;"],
+    expect: "[fixture]" },
+  { gate: "lookups", claim: "…and a nullish fallback, which is not the conditional it starts like",
+    edit: ["scripts/check-lookups.mjs", "        } else if (c === \"?\") branch(code[i + 1] === \"?\");", "        } else if (c === \"?\") branch(false);"],
+    expect: "[fixture]" },
+  { gate: "lookups", claim: "…and a logical assignment, which puts its right side in the name",
+    edit: ["scripts/check-lookups.mjs", "\\s*(?:\\\\|\\\\||&&|\\\\?\\\\?)?=(?![=>])", "\\s*=(?![=>])"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and an alias it stops walking out to",
     edit: ["scripts/check-lookups.mjs", "const by = [...spread(name, holders)].find(indexedByAVariable);",
