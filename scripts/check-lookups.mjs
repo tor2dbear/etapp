@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in twelve different ways over ten
-// rounds of review. Ten were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in thirteen different ways over eleven
+// rounds of review. Eleven were the same defect: the scan could not see a shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -234,6 +234,10 @@ function lex(text) {
     if (/\S/.test(c)) {
       if (c === ")") last = CONTROL.has(heads.pop()) ? ")head" : ")";
       else if (c === "}") last = braces.pop() === "value" ? "}expr" : "}";
+      // `counter++ / x` is division: a postfix update is a value, and its second `+`
+      // is not the operator that `+` usually is. `a + +b` collapses to the same token
+      // and is division at the same place, so the one rule covers both.
+      else if ((c === "+" || c === "-") && last === c) last = "++";
       else last = c;
       word = /[\w$]/.test(c) ? word + c : "";
     }
@@ -430,7 +434,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Ten rounds of review found twelve
+// every other line is here because it must *not* be. Eleven rounds of review found thirteen
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -456,6 +460,7 @@ const FIXTURE = [
   'var T2 = table({ a: 1 }); var s4 = `x${T2[k]}y`;', //                 safe — wrapped, in a template
   'var B1 = table({ s: { a: 1 } }); B1["s"][k];', //                     a constant bracket segment
   'var B2 = { valueOf: function () { return 1; } } / (B3 = { now: 1 }, B3[k]) / 2;', // division, not a regex
+  'function f11(k) { var n = 1, P1; return n++ / (P1 = { now: 1 }, P1[k]) / 2; }', // after a postfix update
   'var B4 = table({ s: { a: 1 } }); B4["s"]["a"];', //                   safe — every key is a literal
   'function rt() { if (true) /{}/.test(""); }', //                       safe — a regex, not division
   'var G5 = table({ a: 1 }); var G6 = G5; G6[k];', //                    safe — the alias holds a table
@@ -466,7 +471,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
