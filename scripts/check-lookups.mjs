@@ -516,10 +516,20 @@ function survey(text) {
     }
     return found;
   };
-  for (const m of [...code.matchAll(/(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=(?![=>])/g)].filter(inCode)) {
+  // A member assignment binds a *path*, not a name. `left.lookup = { … }` recorded `lookup`
+  // and the name-keyed rule then read an unrelated `right.lookup[k]` as the same thing —
+  // valid code, failing the gate, which is the seventh time that has happened here and the
+  // first from a name collision rather than a misclassification. Codex found it (#9, round
+  // 24). So the receiver is kept: the path goes in its own map, where only the path rule
+  // can reach it, and the bare name is not recorded at all.
+  const members = new Map();
+  for (const m of [...code.matchAll(/(?:\b(?:var|let|const)\s+)?((?:[A-Za-z_$][\w$]*\s*(?:\?\.|\.)\s*)*)([A-Za-z_$][\w$]*)\s*=(?![=>])/g)].filter(inCode)) {
+    const path = m[1].trim() ? m[1].replace(/\s|\?/g, "") + m[2] : null;
     for (const opener of openersIn(m.index + m[0].length)) {
-      if (!bound.has(m[1])) bound.set(m[1], []);
-      bound.get(m[1]).push(opener);
+      const into = path ? members : bound;
+      const key = path || m[2];
+      if (!into.has(key)) into.set(key, []);
+      into.get(key).push(opener);
     }
   }
   // A literal is the only opener this can read *into*; a factory call is opaque, and
@@ -685,6 +695,9 @@ function survey(text) {
       }
     };
     step(bindingsOf(root), 0);
+    // …and what a member assignment put there, which is keyed by the whole path so that two
+    // properties spelled alike stay apart.
+    for (const b of members.get(`${root}.${path.join(".")}`) || []) if (hasPrototype(b.opens)) hits.push(b);
     return hits;
   };
 
@@ -803,6 +816,8 @@ const FIXTURE = [
   'var R0 = { yield: 1 }, R1; var r0 = R0.yield / (R1 = { now: 1 }, R1[k]) / 2;', // a keyword as a property
   'function rp(k, R2 = { now: 1 }) { return R2[k]; }', //                a literal in a default parameter
   'function rq(a) { return a; } var R3 = { x: 1 }; R3.x;', //            safe — an ordinary body still is one
+  'var U0 = dict(); U0.tbl = { now: 1 }; U0.tbl[k];', //                 a table assigned onto a property
+  'var U1 = dict(); U1.tbl = { now: 1 }; var U2 = table({ tbl: dict() }); U2.tbl[k];', // safe — a namesake, indexed elsewhere
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -826,7 +841,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
