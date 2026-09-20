@@ -534,7 +534,10 @@ function survey(text) {
   // against the `=`. Codex found it (#9, round 27), and it is round 26 one level down: two
   // readings of one thing, only one of them taught. So whatever the walk is transparent to,
   // it is transparent to for both answers.
-  const readInitialiser = (from) => {
+  // `inGroup` when the caller has already stepped over the opening parenthesis: then a comma
+  // is the sequence operator rather than the end of a declarator, which is the difference
+  // between reading `(sideEffect(), N)` as `N` and not reading it at all.
+  const readInitialiser = (from, inGroup) => {
     const found = [];
     const open = [];
     let depth = 0;
@@ -572,7 +575,7 @@ function survey(text) {
     // it hands back is one operand of the expression it sits in — which may poison it
     // afterwards. `b.title = level ? "P: " + (LABEL[level] || level) : "none"` hands `title`
     // a concatenation, not `level`. Measured against app.js, which is where it appeared.
-    const outer = [];
+    const outer = inGroup ? [{ list: [], poisoned: false }] : [];
     // Grouping parentheses are transparent to `depth` so that `x = ({ … })` binds the
     // literal — but they still enclose, and a comma inside one is a sequence operator rather
     // than the end of the declarator: `var x = (sideEffect(), { … })` stopped the read before
@@ -580,7 +583,9 @@ function survey(text) {
     // stack they already push their poison onto; a second counter alongside it could only
     // ever have said the same thing or been wrong.
     let before = "=";
+    let at = code.length;
     for (let i = from; i < code.length; i++) {
+      at = i;
       if (mask[i] || !/\S/.test(code[i])) continue;
       const c = code[i];
       if (depth === 0) {
@@ -654,7 +659,7 @@ function survey(text) {
       before = c;
     }
     commit();
-    return { found, holds: list };
+    return { found, holds: list, at };
   };
   // A member assignment binds a *path*, not a name. `left.lookup = { … }` recorded `lookup`
   // and the name-keyed rule then read an unrelated `right.lookup[k]` as the same thing —
@@ -848,6 +853,7 @@ function survey(text) {
   // missing mirror of rounds 17, 25 and 26.
   const rooted = (name) => `(?:${EDGE}${name}|${GROUPED}${name}\\s*\\))`;
   const indexedByAVariable = (name) =>
+    indexedGroup.has(name) ||
     [...code.matchAll(new RegExp(`${rooted(escapeRe(name))}${INDEX}`, "gu"))].some(computed);
 
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
@@ -971,6 +977,36 @@ function survey(text) {
     return hits;
   };
 
+  // What a parenthesised expression is worth, when the thing indexed is that parenthesis.
+  // The index side knew one shape — a name in brackets, optionally wrapped — while the value
+  // side had a walk that reads every operator; so `((N))[k]`, `(a || N)[k]`,
+  // `(f(), N)[k]` and `(flag ? N : d)[k]` were all invisible here and all understood there.
+  // app.js:5640 writes one of them, `(archive ? full.count : byQuery.count)[k]`, and the
+  // gate could not read it: what it reaches is a `dict()`, so the silence was luck rather
+  // than an answer. It asks the walk now, which is the mechanism that already exists rather
+  // than a fourth place to teach the same parenthesis — and the gap the comment above
+  // `GROUPED` admitted, nested parentheses, closes with it.
+  const grouped = [];
+  for (const m of [...code.matchAll(new RegExp(GROUPED, "gu"))].filter(inCode)) {
+    const { holds, at } = readInitialiser(m.index + m[0].length, true);
+    if (!holds.length || code[at] !== ")") continue;
+    const tail = new RegExp(`((?:${STEPS})*)${INDEX}`, "yu");
+    tail.lastIndex = at + 1;
+    const after = tail.exec(code);
+    if (!after || constantKey(tail.lastIndex - 1)) continue;
+    grouped.push({ holds, steps: segmentsOf(after[1]) });
+  }
+  const indexedGroup = new Set(grouped.filter((g) => !g.steps.length).flatMap((g) => g.holds));
+
+  // Both floors below count what was *built*. This counts what was *read*: how many of the
+  // file's variable-keyed index sites have a root this analysis can resolve to a binding at
+  // all. An unresolvable root yields nothing, so silence and safety look the same from
+  // outside — and a refactor that moved the tables behind factories would take the reach to
+  // zero while leaving both other floors satisfied and the success line green.
+  const INDEXED = new RegExp(`${rooted(`(${ID})`)}${INDEX}`, "gu");
+  const sites = [...code.matchAll(INDEXED)].filter(computed);
+  const resolved = sites.filter((m) => bindingsOf(m[1] !== undefined ? m[1] : m[2]).length).length;
+
   // `name[k]` — the binding itself, read with a key that is not a literal.
   for (const [name, bindings] of bound) {
     if (!bindings.some((b) => hasPrototype(b.opens))) continue;
@@ -980,7 +1016,14 @@ function survey(text) {
       if (!hasPrototype(b.opens)) continue;
       const built = b.opens === "{" ? "without table()" : `with ${b.opens.replace(/\s+/g, "")}…) and not passed through table()`;
       const how = by === name ? "is indexed by a variable somewhere" : `is indexed by a variable somewhere as \`${by}\``;
-      note("bare-table", b.at, name, `${name} ${how} but built ${built}`);
+      // Names here are file-wide: there are no scopes, so every binding of a name answers
+      // for every index of it. app.js binds fourteen names more than once — `headers`
+      // thirteen times, in five different functions — and one unrelated `headers[k]` would
+      // report all thirteen. Telling them apart needs scope resolution, which is a parser's
+      // job and not this file's; saying so turns a future wall of mystery reports into an
+      // explained one, which is the part that can be done without one.
+      const shared = bindings.length > 1 ? `, one of ${bindings.length} bindings of that name, which this cannot tell apart` : "";
+      note("bare-table", b.at, name, `${name} ${how} but built ${built}${shared}`);
     }
   }
   // `root.a.b[k]` — the value at the end of the path, not the root at the start of it.
@@ -995,12 +1038,17 @@ function survey(text) {
     `${rooted(`(${ID})`)}((?:${STEPS})+)${INDEX}`,
     "gu"
   );
-  for (const m of [...code.matchAll(PATH)].filter(computed)) {
-    const root = m[1] !== undefined ? m[1] : m[2];
-    const path = segmentsOf(m[3]);
-    const subject = `${root}.${path.join(".")}`;
-    for (const k of reached(root, path)) {
-      if (hasPrototype(k.opens)) note("bare-table", k.at, subject, `${subject} reaches an object with a prototype`);
+  const reads = [...code.matchAll(PATH)].filter(computed)
+    .map((m) => ({ roots: [m[1] !== undefined ? m[1] : m[2]], path: segmentsOf(m[3]) }))
+    // …and a path read off a parenthesised expression, `(a || t).s[k]`, whose roots the walk
+    // has already worked out. The same rule, one shape wider.
+    .concat(grouped.filter((g) => g.steps.length).map((g) => ({ roots: g.holds, path: g.steps })));
+  for (const { roots, path } of reads) {
+    for (const root of roots) {
+      const subject = `${root}.${path.join(".")}`;
+      for (const k of reached(root, path)) {
+        if (hasPrototype(k.opens)) note("bare-table", k.at, subject, `${subject} reaches an object with a prototype`);
+      }
     }
   }
   // And a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all —
@@ -1032,7 +1080,7 @@ function survey(text) {
 
   const wrapped = [...bound.values()].flat().filter((b) => b.opens === "table(").length;
   const dicts = [...code.matchAll(/\bdict\(\)/g)].filter(inCode).length;
-  return { notes, wrapped, dicts, code, mask };
+  return { notes, wrapped, dicts, resolved, reads: sites.length, code, mask };
 }
 
 // The matcher against text written for it, before it is turned on the file. Each line is
@@ -1136,6 +1184,14 @@ const FIXTURE = [
   'var ZD$ = { now: 1 }; ZD$[k];', //                                   …and at the end of one, where it also does
   'var ZE = table(parsedZE); var ZF = { q: { deep: 1 } }; ZE.q[k];', // safe — a wrapped name opens no literal here
   'var ZG = { r: 1 }; var ZH = table({ ZG: dict() }); ZH.ZG[k];', //     safe — a property is not the variable it is spelled like
+  'var ZI = { now: 1 }; ZI = { later: 2 }; ZI[k];', //                  a name bound twice, which this cannot tell apart
+  'var ZJ = { now: 1 }; ((ZJ))[k];', //                                 a name indexed through nested parentheses
+  'var ZK = { now: 1 }; (other || ZK)[k];', //                          …and through a fallback
+  'var ZL = { now: 1 }; (sideEffect(), ZL)[k];', //                     …and through a sequence
+  'var ZM = { now: 1 }; (flag ? ZM : dict())[k];', //                   …and through a conditional
+  'var ZN = table({ s: { a: 1 } }); (flag ? ZN : dict()).s[k];', //     …and a path read off one
+  'var ZO = dict(); (flag ? ZO : dict())[k];', //                       safe — every branch is a dict
+  'var ZP = { now: 1 }; ident(ZP)[k];', //                              safe — a call’s answer, not the name in it
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -1158,7 +1214,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -1196,6 +1252,13 @@ if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
 // second report from it — a block's brace read as a literal's, say — would not show there at
 // all. Its sites are counted instead. Codex's round-28 false positive was invisible to the
 // fixture until this line existed, which makes it the same defect as the gate it guards.
+// …and the same for what a note *says* rather than which subject it names: a name bound
+// more than once has to carry that, or the day it reports thirteen sites nobody will know
+// why.
+const twice = fixture.notes.find((n) => n.subject === "ZI");
+if (!twice || !/bindings of that name/.test(twice.what)) {
+  fail("fixture", "the matcher does not say that ZI is one of several bindings of its name");
+}
 const anonymous = fixture.notes.filter((n) => n.subject === "(anonymous)").length;
 if (anonymous !== 2) {
   fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 2`);
@@ -1215,7 +1278,7 @@ for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
 // it is the same defect caught by the earlier of the two checks that can see it.
 report();
 
-const { notes, wrapped, dicts, code, mask } = survey(src);
+const { notes, wrapped, dicts, resolved, reads, code, mask } = survey(src);
 for (const n of notes) fail(n.check, `app.js:${n.line} — ${n.what}`);
 
 // The judge on the reading above: removing the comments from a file that parses leaves a
@@ -1257,6 +1320,7 @@ for (const [what, text] of [["app.js", code], ["the fixture", fixture.code]]) {
 // the half that covers data was written without a floor and was blind three times.
 if (wrapped < 15) fail("coverage", `only ${wrapped} tables go through table() — the pattern this checks has moved`);
 if (dicts < 40) fail("coverage", `only ${dicts} maps go through dict() — the pattern this checks has moved`);
+if (resolved < 120) fail("coverage", `only ${resolved} of ${reads} variable-keyed reads have a root this resolves — the analysis has lost its reach`);
 
 report();
 // What the success line may say is the whole subject of this file's review history: six
@@ -1265,8 +1329,18 @@ report();
 // being clean of a thing no scan of text can see. A repo-local `makeThing()` with a
 // `return { … }` in it is outside this, and saying so is the difference between a boundary
 // and a blind spot.
+// The half the fixture says to leave alone, which is where all thirteen red gates on valid
+// code lived while the success line counted only the other half. It is counted, not
+// asserted: a line that asserts *nothing* — neither listed in `REPORTED` nor marked safe —
+// would still pass, because the `safe` markers are comments in this file and the fixture
+// the matcher runs on is only the code. Making that checkable means the fixture carrying
+// its verdicts as data rather than in a list beside it, which is a bigger change than this
+// one and is written down as such.
+const safeLines = FIXTURE.split("\n").length - new Set(fixture.notes.map((n) => n.line)).size;
 console.log(
-  `✓ lookups: the matcher sees all ${REPORTED.length} spellings in its fixture, app.js still parses with its comments ` +
+  `✓ lookups: the matcher sees all ${REPORTED.length} spellings its fixture says to report and leaves the ` +
+    `${safeLines} it says not to, ${resolved} of ${reads} variable-keyed reads in app.js have a root it resolves, ` +
+    `app.js still parses with its comments ` +
     `blanked, and in it ${wrapped} tables and ${dicts} maps are built with no prototype, no empty object literal is ` +
     `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.assign({…}) that a ` +
     `variable indexes — under its own name, under a name it was assigned to — in parentheses, as a branch of a ` +
