@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in eighteen different ways over fourteen
-// rounds of review. Fourteen were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in nineteen different ways over fifteen
+// rounds of review. Fifteen were the same defect: the scan could not see a shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -403,8 +403,12 @@ function survey(text) {
   // the literal — app.js has eight of those and none of them is this. Nested grouping,
   // `((unsafe))[k]`, is not covered: a gap in reach, which is the direction to err in.
   const GROUPED = `(?<![\\w$)\\]])\\(\\s*`;
+  // `x[k]` and `x?.[k]` are one read, and a `.` may be optional wherever it appears in a
+  // path. app.js writes neither spelling — it is ES5 throughout — but a gate that goes
+  // blind on an ordinary refactor is the thing this file keeps being reviewed for.
+  const INDEX = `\\s*(?:\\?\\.)?\\s*\\[\\s*[^"'\\]]`;
   const indexedByAVariable = (name) =>
-    [...code.matchAll(new RegExp(`(?:\\b${name}|${GROUPED}${name}\\s*\\))\\s*\\[\\s*[^"'\\]]`, "g"))].some(inCode);
+    [...code.matchAll(new RegExp(`(?:\\b${name}|${GROUPED}${name}\\s*\\))${INDEX}`, "g"))].some(inCode);
 
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
   // argument, so both openers are "the next `{` that is code".
@@ -498,9 +502,13 @@ function survey(text) {
   // know, and it is the same boundary as a root bound to a call.
   const STRING = `"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'`;
   const SEGMENT = new RegExp(`\\.\\s*([A-Za-z_$][\\w$]*)|\\[\\s*(${STRING})\\s*\\]`, "g");
+  // Each step starts with its own punctuation — `.`, `?.` or `[`. Writing the dot as
+  // optional let a step match a bare name, and `(?:…)+` over that is the textbook
+  // catastrophic backtrack: the gate stopped finishing at all rather than answering wrong,
+  // which `check-checks` would have called a killed gate rather than a failing one.
+  const STEP = `\\s*(?:\\?\\.|\\.)\\s*[A-Za-z_$][\\w$]*|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${STRING})\\s*\\]`;
   const PATH = new RegExp(
-    `(?:${GROUPED}([A-Za-z_$][\\w$]*)\\s*\\)|\\b([A-Za-z_$][\\w$]*))` +
-      `((?:\\s*\\.\\s*[A-Za-z_$][\\w$]*|\\s*\\[\\s*(?:${STRING})\\s*\\])+)\\s*\\[\\s*[^"'\\]]`,
+    `(?:${GROUPED}([A-Za-z_$][\\w$]*)\\s*\\)|\\b([A-Za-z_$][\\w$]*))((?:${STEP})+)${INDEX}`,
     "g"
   );
   for (const m of [...code.matchAll(PATH)].filter(inCode)) {
@@ -523,7 +531,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Fourteen rounds of review found eighteen
+// every other line is here because it must *not* be. Fifteen rounds of review found nineteen
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -555,6 +563,8 @@ const FIXTURE = [
   'var D1; var d1 = function () {} / (D1 = { now: 1 }, D1[k]) / 2;', //  after a function expression
   'var E1 = { now: 1 }; (E1)[k];', //                                    grouping parens before the index
   'var E2 = { s: { a: 1 } }; (E2).s[k];', //                             …and around a path's root
+  'var H1 = { now: 1 }; H1?.[k];', //                                    an optional computed index
+  'var H2 = { s: { a: 1 } }; H2?.s[k];', //                              …and an optional step in a path
   'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
   'var D2 = { m: function () {} }; D2.m;', //                            safe — an empty body, not a map
@@ -570,7 +580,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
