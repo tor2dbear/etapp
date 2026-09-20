@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in nineteen different ways over fifteen
-// rounds of review. Fifteen were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in twenty different ways over sixteen
+// rounds of review. Sixteen were the same defect: the scan could not see a shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -168,6 +168,8 @@ function lex(text) {
   // 14). Which one it is comes from where the thing before it stood, and the brace stack
   // already knows whether the enclosing `{` was a literal or a block.
   let identStart = "";
+  // What stood before an `async` that is still waiting for its `function`.
+  let carried = null;
   let pendingLabel = false;
   // A template is not one opaque run: `${…}` inside it is code, and masking through to the
   // closing backtick hid a lookup written there. Each frame is the template's text, or a
@@ -255,7 +257,16 @@ function lex(text) {
       let j = i;
       while (j < text.length && /[\w$]/.test(text[j])) j++;
       const ident = text.slice(i, j);
-      if (MAKERS.has(ident)) maker = VALUE_AFTER.has(last) || VALUE_WORDS.has(word);
+      // `async` stands in front of the keyword without changing where it stands. Reading it
+      // as an ordinary name meant `var r = async function () {}` looked like a declaration
+      // and its body like a block, so the `/` after it masked a lookup — the same defect as
+      // round 13, one word to the left. Codex found it (#9, round 16).
+      if (ident === "async") { carried = { last, word }; }
+      else if (MAKERS.has(ident)) {
+        const from = carried || { last, word };
+        maker = VALUE_AFTER.has(from.last) || VALUE_WORDS.has(from.word);
+        carried = null;
+      } else carried = null;
       if ((ident === "case" || ident === "default") && statementPlace(last)) pendingLabel = true;
       identStart = last;
       word = ident;
@@ -531,7 +542,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Fifteen rounds of review found nineteen
+// every other line is here because it must *not* be. Sixteen rounds of review found twenty
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -567,6 +578,8 @@ const FIXTURE = [
   'var H2 = { s: { a: 1 } }; H2?.s[k];', //                              …and an optional step in a path
   'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
+  'var J1; var j1 = async function () {} / (J1 = { now: 1 }, J1[k]) / 2;', // async before the keyword
+  'async function jd() {} var J2 = { a: 1 }; J2.a;', //                  safe — still a declaration
   'var D2 = { m: function () {} }; D2.m;', //                            safe — an empty body, not a map
   'function pA() { try { pA(); } catch {} }', //                         safe — an empty block, not a map
   'class Empty {}', //                                                   safe — so is a class body
@@ -580,7 +593,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
