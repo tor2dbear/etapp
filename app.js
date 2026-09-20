@@ -47,28 +47,37 @@
 
   // ── objects used as lookup tables ────────────────────────────────────────────
   // A JavaScript object inherits `constructor`, `toString`, `valueOf` and the rest from
-  // `Object.prototype`, so `TABLE[k]` answers for keys nobody put there. Every table
-  // below is indexed by a string from outside — a URL parameter, a term someone typed,
-  // a field written in someone else's puck — and the answers were reachable:
+  // `Object.prototype`, so `TABLE[k]` answers for keys nobody put there. Almost every
+  // table and map in this file is indexed by a string from outside — a URL parameter, a
+  // term someone typed, a field written in someone else's puck, where `agent:`, `owner:`
+  // and `tags:` are free text — so that answer is reachable, and it was: three ways, all
+  // measured, all recorded in `scripts/check-lookups.mjs`, which is the gate that keeps
+  // this true.
   //
-  //   ?sort=constructor   `LEGACY_SORT[raw]` handed back a function and the board died
-  //                       on "raw.split is not a function". Measured.
-  //   agent: constructor  grouping by Agent died on `byKey[k].push`, and the sidebar
-  //                       counted that agent as "function Object() { [native code] }1",
-  //                       because `(agent[it.agent] || 0) + 1` found a constructor
-  //                       where it expected a number. Measured, both.
+  // So nothing in this file has a prototype to inherit from: `table()` for a lookup
+  // written out in the source, `dict()` for a map that data is poured into, and no bare
+  // `{}` in value position at all — the gate refuses one, which is what makes this a
+  // rule rather than a list of the places somebody remembered. Every read site is then
+  // safe without being touched.
   //
-  // A puck is plain markdown in someone else's repo and `agent:`, `owner:` and `tags:`
-  // are free text in it, so this is not a hypothetical key. Tables start without a
-  // prototype and so do the maps built from data; every lookup site is then safe without
-  // being touched, which is why the rule is stated here and nowhere else.
+  // Not slower, measured, because a reader will wonder: a null-prototype object is in
+  // dictionary mode, but every one of these is read with a *variable* key, which takes
+  // the generic path either way and skips a prototype walk on a miss. Across a render's
+  // whole map workload — grouping, the facet counters, the comparators — it came out at
+  // 0.88–0.91× of `{}` at 138, 500 and 2000 pucks. The one loss is a constant-key read
+  // (`PROP_BY_KEY.tags`), worth 1.6µs per render against milliseconds of DOM.
+  //
+  // `table()` copies with `for…in`, so it keeps insertion order — `Object.keys(GROUPS)`
+  // is what the Display menu and ⌘K walk — and it is shallow: an object *inside* one of
+  // these tables still has `Object.prototype`, which is why the note at `valueOf` far
+  // below still stands.
   // dict:begin
   function table(o) {
     var t = Object.create(null);
     for (var k in o) t[k] = o[k];
     return t;
   }
-  function dict() { return Object.create(null); }
+  function dict() { return table(); }
   // dict:end
 
   var STATUS_LABEL = table({ now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" });
@@ -258,7 +267,7 @@
   // The picker was the one that did not, so a puck listing `auth` and `me/repo#auth`
   // showed one chip and two identical tokens, each ✕ removing both.
   function dependRefs(item) {
-    var seen = Object.create(null);
+    var seen = dict();
     var out = [];
     (item.depends || []).forEach(function (ref) {
       var key = refKey(item, ref);
@@ -1045,7 +1054,7 @@
     return o;
   }
   function viewParamObject() {
-    var o = {};
+    var o = dict();
     if (state.focus !== "all") o.view = state.focus;
     var q = serializeTerms(filterTerms());
     if (q) o.q = q;
@@ -1232,7 +1241,7 @@
         localStorage.removeItem("roadmap-" + k);
       } catch (e) {}
     });
-    var mem = {};
+    var mem = dict();
     if (old.view === "list") mem.layout = "list";
     // The flat key was written by the same released UI, so it carries the same two words.
     if (old.sort && old.sort !== DISPLAY_DEFAULTS.sort) mem.sort = STORED_SORT_WAS[old.sort] || old.sort;
@@ -1240,7 +1249,7 @@
     if (old.done === "1") mem.done = "1";
     if (old.empty === "0") mem.empty = "0";
     if (old.props) mem.props = old.props;
-    var store = Object.keys(mem).length ? { all: mem } : {};
+    var store = Object.keys(mem).length ? { all: mem } : dict();
     store.__v = STORED_SORT_V; // already in the new spelling, so it must not be upgraded again
     writeDisplayStore(store);
     return store;
@@ -1501,7 +1510,7 @@
   // Owner: a GitHub avatar (loaded from github.com/<handle>.png, hidden if it
   // fails). opts.name adds "@handle"; opts.link wraps it in a profile link.
   function ownerEl(handle, opts) {
-    opts = opts || {};
+    opts = opts || dict();
     var wrap = el(opts.link ? "a" : "span", "owner");
     if (opts.link) { wrap.href = "https://github.com/" + handle; wrap.target = "_blank"; wrap.rel = "noopener"; }
     wrap.title = "@" + handle;
@@ -2178,7 +2187,7 @@
     // the cell's own pill count, so the **widest badge this cell could need** is known
     // before anything is hidden. Measuring it rather than deriving it from a digit width
     // also keeps the reservation true across a font swap, which is the paragraph below.
-    var need = {};
+    var need = dict();
     for (i = 0; i < cells.length; i++) {
       var stale = cells[i].querySelector(".list-more");
       if (stale) cells[i].removeChild(stale);
@@ -4872,7 +4881,7 @@
       // **178** — its whole horizontal range, a list opened fully shifted sideways. Codex
       // found it (#54). Same shape and same cure as `lockedEl` in `lockScroll`, which this
       // file already chose for the identical problem: remember the box, not the question.
-      boardAt = { el: from, x: from.scrollLeft, y: from.scrollTop, group: boardEl && boardEl.dataset.group, cols: {} };
+      boardAt = { el: from, x: from.scrollLeft, y: from.scrollTop, group: boardEl && boardEl.dataset.group, cols: dict() };
       // The columns' places too, and *here* rather than at the next render: a hidden
       // scroller reports `scrollTop` as 0 (Chromium remembers it and gives it back when the
       // box is shown, but only for a box that survives). A redraw behind an open puck —
@@ -4950,7 +4959,7 @@
     // four-row view measured above would open partway down again, one box further in.
     // Caught by this rule's own check rather than by a report, which is the whole reason
     // the check for it was written the same hour.
-    colPlaces = {};
+    colPlaces = dict();
     Array.prototype.forEach.call(document.querySelectorAll(".cards[data-col]"), function (k) {
       k.scrollTop = 0;
     });
@@ -5056,7 +5065,7 @@
   // would reserve space for a control it never gets. The gutter is reserved once, by
   // `.is-tree`, and both rows land in the same place.
   function listRow(item, opts) {
-    opts = opts || {};
+    opts = opts || dict();
     var sig = signalMessages(item);
     var r = el("div", "list-row" + (sig.length ? " flagged" : "") + (item.id === selectedId ? " sel" : ""));
     r.setAttribute("data-id", item.id);
@@ -5492,7 +5501,7 @@
   function renderHiddenTray(g, groups) {
     var hidden = hiddenColumns(g, groups);
     if (!hidden.length) return;
-    trayColumns = { g: g, keys: {} };
+    trayColumns = { g: g, keys: dict() };
     hidden.forEach(function (h) { trayColumns.keys[h.key] = 1; });
     var tray = el("div", "column hidden-cols");
     var head = el("div", "col-head");
@@ -6147,7 +6156,7 @@
   function liftRoots(groups, only) {
     var none = null;
     groups.forEach(function (grp) { if (grp.key === NO_VALUE) none = grp; });
-    if (!none) return {};
+    if (!none) return dict();
     var roots = dict();
     none.items.forEach(function (it) {
       if ((it.children || []).length && (!only || only[it.id])) roots[it.id] = it;
@@ -8954,7 +8963,7 @@
     var wroteFrom = state.fromView;
     commitViews(repo, views, message)
       .then(function () {
-        DATA.config = DATA.config || {};
+        DATA.config = DATA.config || dict();
         DATA.config.views = views; // optimistic: the harvest will confirm it
         // Before the repaint, not after: every one of these callbacks adjusts the
         // provenance the repaint is about to read. Renaming the view you were editing
@@ -8981,7 +8990,7 @@
     return fetch(api, { headers: headers })
       .then(function (r) { assertOk(r, errItem); return r.json(); })
       .then(function (info) {
-        var cfg = {};
+        var cfg = dict();
         try { cfg = JSON.parse(b64decode(info.content)); } catch (e) {}
         if (views.length) cfg.views = views; else delete cfg.views;
         var out = JSON.stringify(cfg, null, 2) + "\n";
@@ -9174,7 +9183,7 @@
     // the row above it.
     if (!Object.keys(ownParams()).length) {
       toast(params.view
-        ? "✗ Nothing to save — “" + ((VIEW_DEFS[params.view] || {}).label || params.view) + "” is already a view"
+        ? "✗ Nothing to save — “" + ((VIEW_DEFS[params.view] || dict()).label || params.view) + "” is already a view"
         : "✗ Nothing to save — this is the default board", true);
       return;
     }
@@ -9349,7 +9358,7 @@
       // Read as the column it hides, not as the predicate it is: `has:priority` is
       // how "hide the No priority column" is spelled, so that is what it should say.
       else if (t.field === "has") {
-        var hl = (fieldByKey(t.values[0]) || {}).label || t.values[0];
+        var hl = (fieldByKey(t.values[0]) || dict()).label || t.values[0];
         label = t.neg ? "No " + lower(hl) : "Has " + lower(hl);
       }
       else if (f) label = f.label + ": " + t.values.map(function (v) { return valueLabel(f, v); }).join(", ");
@@ -9499,7 +9508,7 @@
   // Deploy-your-own config: title/description/source link come from
   // board.config.json (embedded in the payload), so nothing here is hardcoded
   // to one owner. Falls back to the static HTML defaults when absent.
-  var CFG = DATA.config || {};
+  var CFG = DATA.config || dict();
   // Optional ribbon banner (config-driven, e.g. the live-demo strip) — rendered
   // here so the demo's chrome isn't baked into index.html, which lets the mirror
   // ship index.html verbatim and keep the demo's structure in sync with the tool.
@@ -9735,7 +9744,7 @@
       // Link issue → Create issue. Answering with a number is what lets the write path
       // finish and put `issue:` in the file, which is the half worth demonstrating.
       if (rest === "/issues" && method === "POST") {
-        var body = {};
+        var body = dict();
         try { body = JSON.parse((opts && opts.body) || "{}"); } catch (e) {}
         var n = 1000 + (++sha);
         return json({
@@ -9749,7 +9758,7 @@
       var path = decodeURIComponent(mp[1]);
       var key = repo + ":" + path;
       if (method === "PUT") {
-        var body = {};
+        var body = dict();
         try { body = JSON.parse((opts && opts.body) || "{}"); } catch (e) {}
         if (body.content) files[key] = b64decode(body.content);
         return json({ content: { sha: "demo-" + (++sha) } }, 201);
@@ -11204,12 +11213,12 @@
   // that fires and forgets cannot leak an unhandled rejection, and one that needs a
   // second write only has to ask whether the first happened.
   function createPuck(repo, title, status, tags, agent, context, opts) {
-    opts = opts || {};
+    opts = opts || dict();
     var slug = slugify(title);
     var short = repo.split("/").pop();
     var id = short + "/" + slug;
     if (DATA.items.some(function (x) { return x.id === id; })) { toast('✗ A puck "' + slug + '" already exists here', true); return null; }
-    var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0] || {};
+    var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0] || dict();
     var meta = sourceMeta(repo);
     var path = meta.dir + "/" + slug + ".md";
     var body = puckBody(context);
@@ -11483,7 +11492,7 @@
   // priority, agent, labels) is set on the puck page after creation.
   function openNewPuckPanel(preset) {
     if (!ghToken()) return;
-    preset = preset || {};
+    preset = preset || dict();
     closeSurfaces(); // a panel owns the screen: no picker left alive underneath it
     var back = el("div", "token-backdrop");
     var close = panelCloser(back);
@@ -11607,7 +11616,7 @@
     return fetch(api, { headers: headers })
       .then(function (r) { assertOk(r, errItem); return r.json(); })
       .then(function (info) {
-        var cfg = {};
+        var cfg = dict();
         try { cfg = JSON.parse(b64decode(info.content)); } catch (e) {}
         cfg.title = next.title; cfg.description = next.description; cfg.repoUrl = next.repoUrl;
         if (next.sections) cfg.sections = next.sections;

@@ -90,6 +90,8 @@ const CASES = [
   { gate: "query", claim: "nothing decodes the URL bare",
     edit: ["app.js", 'var h = safeDecode(location.hash.replace(/^#/, ""));', 'var h = decodeURIComponent(location.hash.replace(/^#/, ""));'],
     expect: "[url-decode]" },
+  { gate: "query", claim: "a puck named after what every object inherits is matched on what it carries",
+    edit: ["app.js", "  var IS_STATES = table({", "  var IS_STATES = ({"], expect: "[inherited]" },
   { gate: "query", claim: "the fenced region is really lifted from app.js",
     edit: ["app.js", "  // q:begin", "  // (marker removed)"], expect: "fence" },
 
@@ -213,7 +215,7 @@ const CASES = [
   // looks like. The last is the first mutation in this file aimed at a gate's own
   // corpus rather than at the code it judges, which #8's review asked for.
   { gate: "lookups", claim: "a map built from data inherits nothing",
-    edit: ["app.js", "  function dict() { return Object.create(null); }", "  function dict() { return {}; }"],
+    edit: ["app.js", "  function dict() { return table(); }", "  function dict() { return Object.create({}); }"],
     expect: "[dict]" },
   { gate: "lookups", claim: "…and neither does a table",
     edit: ["app.js", "    var t = Object.create(null);", "    var t = {};"], expect: "[table]" },
@@ -223,11 +225,14 @@ const CASES = [
   { gate: "lookups", claim: "no table indexed by a variable is left bare",
     edit: ["app.js", "  var LEGACY_SORT = table({ default: DEFAULT_SORT });", "  var LEGACY_SORT = { default: DEFAULT_SORT };"],
     expect: "[bare-table]" },
-  { gate: "lookups", claim: "…nor is a map that data reaches",
+  { gate: "lookups", claim: "…nor is an empty object literal written anywhere",
     edit: ["app.js", "    var byKey = dict();\n    keys.forEach", "    var byKey = {};\n    keys.forEach"],
-    expect: "[bare-map]" },
+    expect: "[bare]" },
   { gate: "lookups", claim: "…and the shape it looks for still matches the file",
     edit: ["scripts/check-lookups.mjs", "var ([A-Z][A-Z0-9_]*) = (table", "zzz ([A-Z][A-Z0-9_]*) = (table"],
+    expect: "[coverage]" },
+  { gate: "lookups", claim: "…on the half that covers data too, which had no floor at all",
+    edit: ["scripts/check-lookups.mjs", "src.match(/\\bdict\\(\\)/g)", "src.match(/\\bzzzz\\(\\)/g)"],
     expect: "[coverage]" },
 ];
 

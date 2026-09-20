@@ -563,7 +563,15 @@ async function listPucks() {
     });
   }
   const filter = opts.status ? String(opts.status) : null;
-  const order = Object.fromEntries(STATUSES.map((s, i) => [s, i]));
+  // `Object.fromEntries` hands back an ordinary object, so `order["constructor"]` was a
+  // function rather than undefined, `??` did not fire, and the subtraction was NaN — an
+  // intransitive comparator, which is the failure the note twenty lines below records
+  // having paid for once already. A status is free text in a puck's frontmatter and this
+  // command does not check it against the vocabulary, so the key is reachable. It is
+  // latent rather than live: the listing groups by STATUSES afterwards, so the sort only
+  // orders within a group, and I could not make it misorder at any size I tried. A NaN
+  // comparator is not a thing to leave in on those grounds.
+  const order = Object.assign(Object.create(null), Object.fromEntries(STATUSES.map((s, i) => [s, i])));
   pucks.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || b.updated.localeCompare(a.updated));
   let shown = 0;
   for (const s of STATUSES) {

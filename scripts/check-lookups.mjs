@@ -33,106 +33,93 @@
 // request that introduced this file.
 //
 // Node builtins only, like the rest of scripts/.
-import fs from "node:fs";
-import path from "node:path";
-import { liftRegion, ROOT } from "./lib/region.mjs";
+import { liftRegion } from "./lib/region.mjs";
 
 const failures = [];
 const fail = (check, detail) => failures.push([check, detail]);
 
 // ── 1. the helpers, as the browser gets them ────────────────────────────────────
-const { region } = liftRegion("app.js", "dict");
+const { src, lines, region } = liftRegion("app.js", "dict");
 const { table, dict } = new Function(`"use strict";\n${region}\nreturn { table, dict };`)();
 
-// The names that cost this repository a crash, plus the rest of what every object
-// inherits. `__proto__` is in the list on purpose: on a normal object it is an accessor
-// rather than a value, so it is the one that does not merely answer wrongly but rewrites
-// the object it is assigned on.
-const INHERITED = [
-  "constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf",
-  "propertyIsEnumerable", "toLocaleString", "__proto__", "__defineGetter__",
-];
-
-for (const name of INHERITED) {
-  if (dict()[name] !== undefined) fail("dict", `a fresh dict() already answers for ${name}`);
-  if (table({})[name] !== undefined) fail("table", `a fresh table({}) already answers for ${name}`);
+// One question, not a list of inherited names. A list would be the hand-maintained
+// thing this file exists to argue against — and it is weaker: an object whose prototype
+// is `Object.prototype` with `constructor` and `toString` deleted would pass a list and
+// fail this. The three names that actually cost a crash are in the header, where they
+// belong, as history rather than as the assertion.
+for (const [what, made] of [["dict", dict()], ["table", table({})], ["table", table()]]) {
+  if (Object.getPrototypeOf(made) !== null) fail(what, `${what}() returned an object with a prototype`);
 }
-// And it still has to be a table: the values put in come back out, including under the
-// name that cost the crash, which is the case a `delete Object.prototype` trick would
-// break. `__proto__` is not in this round trip and cannot be: in a source literal it
-// sets the prototype rather than a key, so the argument never carries it — checked
-// below on `dict()`, which is the half that receives data.
+// And it still has to be a table: what goes in comes out, including under the name that
+// cost the crash. `__proto__` is not in this round trip and cannot be — in a source
+// literal it sets the prototype rather than a key, so the argument never carries it.
+// It is checked on `dict()` instead, which is the half that receives data: on a normal
+// object that assignment replaces the prototype and stores nothing, so a tag or an agent
+// actually called `__proto__` would vanish from a count and take the object with it.
 const t = table({ now: "Now", constructor: "C", toString: "T" });
 for (const [k, v] of [["now", "Now"], ["constructor", "C"], ["toString", "T"]]) {
   if (t[k] !== v) fail("table", `table() lost ${k}: ${String(t[k])} instead of ${v}`);
 }
 if (Object.keys(t).length !== 3) fail("table", `table() kept ${Object.keys(t).length} of 3 keys`);
-// The data half. On a normal object this assignment replaces the prototype and stores
-// nothing, so an agent or a tag actually called `__proto__` would vanish from a count
-// and take the object's identity with it.
 const d = dict();
 d["__proto__"] = "P";
 d["constructor"] = "C";
 if (d["__proto__"] !== "P") fail("dict", "dict() treated __proto__ as the prototype rather than a key");
 if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).length} of 2 data keys`);
 
-// ── 2. no table left bare ───────────────────────────────────────────────────────
-// What makes something a lookup table is not its shape but how it is read: somewhere it
-// is indexed with a key that is not a literal, and that key is where an outside string
-// gets in. A capitalised `var` holding an object literal that is never indexed that way
-// — `NOT_DONE`, a query term written out once — is not one, and naming it as an
-// exception would be the hand-maintained list this repository keeps being bitten by.
-const src = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
+// ── 2. nothing in app.js is built with a prototype ──────────────────────────────
+// This was two heuristics: one asking whether a capitalised table was wrapped, one
+// asking whether a lowercase map was indexed by a variable somewhere in its block. Both
+// answered "is this a lookup table?" by guessing, and both were blind — a map declared
+// as `cols: {}` inside a larger literal was neither, and it was live: `data-col` is a
+// group key, so with a puck whose agent is named `constructor` the board read the Object
+// constructor back out and assigned a function to `scrollTop`.
+//
+// So the rule is a construction instead of a guess: **an empty object literal in value
+// position is not written in this file**. `dict()` is how a map is made and `table()` is
+// how a lookup is made, and a non-empty literal is a record — it has its keys written
+// out, which is what makes it not the shape that means "something will fill this".
+// Nothing needs to decide whether a given map is "indexed by data", which is the
+// judgement that kept being wrong.
+//
+// Three spellings of `{}` are not value position and are left alone: an empty catch, an
+// empty function body, and the two-character string.
+const EXEMPT = [/catch\s*\([^)]*\)\s*$/, /function[^)]*\)\s*$/, /=>\s*$/];
+let empties = 0;
+lines.forEach((line, i) => {
+  // Prose about the rule is not the rule: this file's own comments say `{}` a dozen
+  // times, and the first run of this section flagged two of them.
+  const comment = line.indexOf("//");
+  for (const m of line.matchAll(/\{\}/g)) {
+    if (comment !== -1 && m.index > comment) continue;
+    const before = line.slice(0, m.index).trimEnd();
+    if (line[m.index - 1] === '"' || line[m.index + 2] === '"') continue;
+    if (EXEMPT.some((re) => re.test(before))) continue;
+    empties++;
+    fail("bare", `app.js:${i + 1} — an empty object literal: ${line.trim().slice(0, 70)}`);
+  }
+});
+
+// A capitalised name holding a *non-empty* literal is a lookup table, and those are
+// still a judgement call — so the narrower question stays for them: is it indexed
+// anywhere by a key that is not a literal?
 const declared = [...src.matchAll(/^ {2}var ([A-Z][A-Z0-9_]*) = (table\(\{|\{)/gm)]
-  .map((m) => ({ name: m[1], wrapped: m[2] !== "{", line: src.slice(0, m.index).split("\n").length }));
-const indexedByAVariable = (name) =>
-  new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`).test(src);
-for (const { name, wrapped, line } of declared) {
+  .map((m) => ({ name: m[1], wrapped: m[2] !== "{", at: m.index }));
+const indexedByAVariable = (name) => new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`).test(src);
+for (const { name, wrapped, at } of declared) {
   if (!wrapped && indexedByAVariable(name)) {
+    const line = src.slice(0, at).split("\n").length;
     fail("bare-table", `app.js:${line} — ${name} is indexed by a variable somewhere but built without table()`);
   }
 }
-// Anti-vacuity: if the shape stopped matching anything, this section would pass by
-// checking nothing. The tables are real and there are a couple of dozen of them.
-const wrapped = declared.filter((d) => d.wrapped).length;
-if (wrapped < 15) {
-  fail("coverage", `only ${wrapped} tables go through table() — the pattern this checks for has moved`);
-}
 
-// ── 3. and no map built from data left bare either ──────────────────────────────
-// The same question asked of the other half. Three maps were missed when this was
-// written — `renderList`'s buckets, the hidden tray's two sets, the Labels facet's
-// counts — and they were missed because nothing asked; the list of places to convert
-// was in my head, which is the hand-maintained list this repository keeps paying for.
-//
-// A local `{}` is a map when something indexes it with a key that is not a literal, and
-// the search is scoped to the block the declaration lives in, so two functions may both
-// have a `seen` without one answering for the other.
-const lines = src.split("\n");
-const blockOf = (start) => {
-  // From the declaration to the end of its enclosing block, by brace depth.
-  let depth = 0;
-  for (let i = start; i < lines.length; i++) {
-    for (const ch of lines[i]) {
-      if (ch === "{") depth++;
-      else if (ch === "}") depth--;
-    }
-    if (depth < 0) return lines.slice(start, i + 1).join("\n");
-  }
-  return lines.slice(start).join("\n");
-};
-for (let i = 0; i < lines.length; i++) {
-  // `var x = {}` / `var a = {}, b = {}`, excluding the capitalised tables above, which
-  // section 2 owns, and excluding a literal used as a value rather than a map.
-  const names = [...lines[i].matchAll(/\b([a-z][A-Za-z0-9_]*) = \{\}[,;]/g)].map((m) => m[1]);
-  if (!names.length) continue;
-  const block = blockOf(i);
-  for (const name of names) {
-    if (new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`).test(block)) {
-      fail("bare-map", `app.js:${i + 1} — ${name} is indexed by a variable in its own block but is not dict()`);
-    }
-  }
-}
+// Anti-vacuity, over both halves. If the shapes stopped matching — a reformat, a rename,
+// a regex tightened by one character — this section would pass by checking nothing, and
+// the half that covers data was written without a floor and was blind three times.
+const wrapped = declared.filter((d) => d.wrapped).length;
+const dicts = (src.match(/\bdict\(\)/g) || []).length;
+if (wrapped < 15) fail("coverage", `only ${wrapped} tables go through table() — the pattern this checks has moved`);
+if (dicts < 40) fail("coverage", `only ${dicts} maps go through dict() — the pattern this checks has moved`);
 
 if (failures.length) {
   console.error(`✗ lookups: ${failures.length} failure(s)\n`);
@@ -140,6 +127,6 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(
-  `✓ lookups: ${wrapped} tables and every map indexed by a variable start with no ` +
-    `prototype, so ${INHERITED.length} inherited names answer for no key that was not put there`
+  `✓ lookups: ${wrapped} tables and ${dicts} maps are built with no prototype, and app.js ` +
+    `writes no empty object literal at all — so no key that was not put there has an answer`
 );
