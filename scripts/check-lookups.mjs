@@ -677,10 +677,18 @@ function survey(text) {
     // all is no key.
     return Number.isNaN(n) ? null : String(n);
   };
-  const asKey = (raw) => (/^["']/.test(raw) ? unescape(raw.slice(1, -1)) : /^[-+.\d]/.test(raw) ? numberKey(raw) : raw);
+  // …and a template with nothing substituted into it, which is a string written a third way:
+  // `lookup[`now`]` is the key `now` and was read as a variable one — a red gate on valid
+  // code, the twentieth, which Codex found (#9, round 42). What makes it constant is the
+  // absence of `${`, and that is what the pattern says: a `$` that does not open one.
+  const TEMPLATE = "`(?:[^`\\\\$]|\\\\.|\\$(?!\\{))*`";
+  const asKey = (raw) => (/^["'${`}]/.test(raw) ? unescape(raw.slice(1, -1)) : /^[-+.\d]/.test(raw) ? numberKey(raw) : raw);
+  // What may be written as a key *directly* — `"a": 1`, `0: 1` — and what may be written
+  // inside brackets, where a template is legal and a bare one is not.
   const CONSTANT = `${STRING}|${NUMBER}`;
-  const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${CONSTANT})\\s*\\]`, "gu");
-  const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${CONSTANT})\\s*\\])`;
+  const BRACKETED = `${CONSTANT}|${TEMPLATE}`;
+  const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${BRACKETED})\\s*\\]`, "gu");
+  const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${BRACKETED})\\s*\\])`;
   // A path is all of its steps or none of them: one segment this cannot read leaves a path
   // that means something else, and a *shorter* path is not a safer answer — it is a different
   // question. So an unreadable one empties the whole reading, which every caller already
@@ -694,6 +702,7 @@ function survey(text) {
   // would not learn the next shape this grows. It grew `?.` once already.
   const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
   const INDEX_AT = new RegExp(INDEX, "y");
+  const TEMPLATE_AT = new RegExp(TEMPLATE, "y");
   // …and one for a run of steps, for the walk: `STEPS` itself, so the value side and the
   // index side cannot come to read a path differently.
   const STEP_TAIL = new RegExp(`(?:${STEPS})+`, "yu");
@@ -888,10 +897,9 @@ function survey(text) {
         // them are kept, the way both sides of a `||` are. An array nobody indexes is still
         // the array, which is the fixture line this must not move.
         //
-        // What it does not reach is the same selection with no name to hold it,
-        // `[{ … }][0][k]`: the two anonymous rules below read a literal's own closing brace
-        // or a parenthesis in front of it, and an array's closer is neither. A gap in reach,
-        // written down rather than implied, and the direction to err in.
+        // The same selection with no name to hold it, `[{ … }][0][k]`, was written here as a
+        // gap and Codex took it within the hour (#9, round 42). It is a rule of its own below
+        // now, and it asks this same walk rather than reading the shape a second time.
         let selected = false;
         if (c === "[" && depth === 0) {
           const close = restOfCall(i + 1);
@@ -1089,7 +1097,7 @@ function survey(text) {
   // A property of a pattern: a name, a constant key or a computed constant one — the same
   // spellings a literal's keys have — and whether a colon follows, which is what tells
   // `{ lookup }` from `{ lookup: alias }`.
-  const PROP = new RegExp(`(?:(${ID})|(${CONSTANT})|\\[\\s*(${CONSTANT})\\s*\\])\\s*(:)?`, "yu");
+  const PROP = new RegExp(`(?:(${ID})|(${CONSTANT})|\\[\\s*(${BRACKETED})\\s*\\])\\s*(:)?`, "yu");
   // What a pattern binds, and under which path of the value. Written here rather than read
   // with `keysOf`, which reads a *literal*: a pattern's grammar is not a literal's — it has
   // defaults and a rest element and no values at all — and one reader taught both grammars is
@@ -1198,7 +1206,10 @@ function survey(text) {
   // only the second spelling. The lookbehind is what keeps `f(unsafe)[k]` out: there the
   // parenthesis belongs to the call and the thing being indexed is what `f` returned, not
   // the literal — app.js has eight of those and none of them is this. Nested grouping,
-  // `((unsafe))[k]`, is not covered: a gap in reach, which is the direction to err in.
+  // `((unsafe))[k]`, was written here as a gap and has not been one since round 27, when the
+  // walk took this over: it reads the inner parenthesis as an expression like any other. The
+  // line stayed up for fifteen rounds saying otherwise, which is the cost of a note about
+  // what a *different* part of the file does. A fixture line holds it now.
   const GROUPED = `(?<![\\p{ID_Continue}$)\\]])\\(\\s*`;
   // Where a name begins. `\b` is an ASCII boundary even under the `u` flag — `\bÖVER` matches
   // nothing at all, because neither the space in front of it nor the Ö itself is a `\w`. The
@@ -1228,6 +1239,16 @@ function survey(text) {
     let i = at + 1;
     while (i < code.length && /\s/.test(code[i])) i++;
     const quote = code[i];
+    // A template with nothing substituted into it is a constant like any other, and the same
+    // pattern says so here as in the fragments above rather than a second reading of what a
+    // substitution looks like.
+    if (quote === "`") {
+      TEMPLATE_AT.lastIndex = i;
+      if (!TEMPLATE_AT.test(code)) return false;
+      i = TEMPLATE_AT.lastIndex;
+      while (i < code.length && /\s/.test(code[i])) i++;
+      return code[i] === "]";
+    }
     if (quote === '"' || quote === "'") {
       // `cover()` masked the whole literal including both quotes, so the lexer's answer to
       // "where does this string end" is one loop instead of a second implementation of how
@@ -1329,10 +1350,11 @@ function survey(text) {
   // …and a *computed* constant key is that same string one bracket further out:
   // `{ ["lookup"]: … }` is the key `lookup`, which the reading side has taken since round 10
   // — `t["lookup"]` and `t.lookup` are one path — while the writing side took neither
-  // spelling of it. Codex found it (#9, round 38). A computed key that is not constant,
-  // `{ [name]: … }` or a template, is a key this cannot know, and it is the same boundary a
-  // root bound to a call has: it reaches nothing rather than reaching wrong.
-  const COMPUTED = new RegExp(`\\[\\s*(${CONSTANT})\\s*\\]\\s*:\\s*${VALUE}`, "yu");
+  // spelling of it. Codex found it (#9, round 38), and a template with nothing substituted
+  // into it in round 42 — that one is constant, whatever it looks like. A computed key this
+  // cannot read, `{ [name]: … }` or a template with a substitution, reaches nothing rather
+  // than reaching wrong, which is the boundary a root bound to a call has.
+  const COMPUTED = new RegExp(`\\[\\s*(${BRACKETED})\\s*\\]\\s*:\\s*${VALUE}`, "yu");
   // What a bracket does to a depth count. Written twice twenty lines apart, and the second
   // copy exists because the first one was missing a case — which is the argument for there
   // being one.
@@ -1602,7 +1624,7 @@ function survey(text) {
   // grouping `(` that opens a literal rather than matched, because the literal in between
   // is whatever it is: `f({ … })[k]` is excluded by the lookbehind, since there the
   // parenthesis belongs to the call and what is indexed is the call's answer.
-  for (const m of [...code.matchAll(new RegExp(`(?:${GROUPED}|${THROUGH}\\s*)(?=\\{)`, "gu"))].filter(inCode)) {
+  for (const m of [...code.matchAll(new RegExp(`(?:(?:${GROUPED})+|${THROUGH}\\s*)(?=\\{)`, "gu"))].filter(inCode)) {
     const body = bodyOf(m.index + m[0].length);
     if (!body) continue;
     let i = skip(body.at + body.text.length + 1);
@@ -1611,13 +1633,38 @@ function survey(text) {
     // grouping parentheses that comma is the sequence operator, and `({ … }, x)[k]` indexes
     // `x`.
     if (code[i] === "," && throughAt(m[0])) i = restOfCall(i);
-    if (code[i] !== ")") continue;
-    i++;
+    // As many closers as the match had openers. `(({ … }))[k]` wraps the literal twice and
+    // was invisible for want of the second one; counting them is also what keeps
+    // `f(({ … }))[k]` out, where the outer parenthesis belongs to the call and what is
+    // indexed is the call's answer. Codex found the double (#9, round 42).
+    for (let n = (m[0].match(/\(/g) || []).length; n > 0 && i >= 0; n--) {
+      i = code[i] === ")" ? skip(i + 1) : -1;
+    }
+    if (i < 0) continue;
     // `INDEX` itself, rather than a hand-spelling of it that would not learn the next shape
     // it grows — it grew `?.` once already.
     const end = indexAt(i);
     if (end < 0 || constantKey(end - 1)) continue;
     note("bare-table", m.index, "(anonymous)", ON_THE_SPOT);
+  }
+
+  // …and a literal inside an array that is selected from, `[{ … }][0][k]`, which has no name
+  // either. The walk already reads what such a selection hands back — round 39 taught it for
+  // an initialiser — so this asks it wherever an array literal stands in value position,
+  // which is what the lookbehind says: not after a name, a `)` or a `]`, where a `[` is an
+  // index and not an array. Written into this file as a gap last round, and found within the
+  // hour (#9, round 42).
+  for (const m of [...code.matchAll(new RegExp(`(?<![\\p{ID_Continue}$)\\]])\\[`, "gu"))].filter(inCode)) {
+    const close = restOfCall(m.index + 1);
+    if (close < 0) continue;
+    const picked = indexAt(close + 1);
+    if (picked < 0) continue;
+    const selection = restOfCall(picked);
+    if (selection < 0) continue;
+    const read = indexAt(selection + 1);
+    if (read < 0 || constantKey(read - 1)) continue;
+    const { found } = readInitialiser(m.index + 1, true);
+    if (found.some((b) => hasPrototype(b.opens))) note("bare-table", m.index, "(anonymous)", ON_THE_SPOT);
   }
 
   const wrapped = [...bound.values()].flat().filter((b) => b.opens === "table(").length;
@@ -1826,12 +1873,25 @@ const FIXTURE = [
   'var DS = { 0: { now: 1 } }; var { 0: DT } = DS; DT[k];', //           …and a numeric key in a pattern
   'var DU = table({ 0: { now: 1 } }); DU[n][k];', //                     safe — a step that is not constant reaches nothing
   'var DV = table({ 0.5: { now: 1 } }); DV[.5][k];', //                  …and a fraction is a key as much as an integer
+  '[{ a: 1 }][0][k];', //                                                an element selected out of a literal array
+  '[x, { a: 1 }][0][k];', //                                             …wherever in it the literal stands
+  '[dict()][0][k];', //                                                  safe — that element is a dict
+  '(({ a: 1 }))[k];', //                                                 two grouping parentheses, not one
+  '((({ a: 1 })))[k];', //                                               …or three
+  'ident(({ a: 1 }))[k];', //                                            safe — the outer one is a call's
+  'var DW = { now: 1 }; DW[`now`];', //                                  safe — a template with nothing in it is a constant
+  'var DX = { now: 1 }; DX[`${x}`];', //                                 …and one with something in it is not
+  'var DY = table({ inner: { now: 1 } }); DY[`inner`][k];', //           a template as a path step
+  'var DZ = table({ [`inner`]: { now: 1 } }); DZ.inner[k];', //          …and as a computed key
+  'var EA = { inner: { now: 1 } }; var { [`inner`]: EB } = EA; EB[k];', // …and as one in a pattern
+  'var EC = { now: 1 }; var ED = ((EC)); ED[k];', //                     a name inside two parentheses is still the name
+  'var EE = { a: 1 }; EE[{ b: 2 }][0][k];', //                           a literal in an index is a key, not an element
   'var BL = { a: 1 }; BL[.5];', //                                       safe — a number may begin with its point
   'var BM = { a: 1 }; BM[-.5];', //                                      safe — …and with a sign in front of that
   'var BN = { a: 1 }; BN[.5e3];', //                                     safe — …and carry on as any number does
   'var BO = { a: 1 }; BO[.5 + n];', //                                   a sum that starts with one is not a constant
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -1899,8 +1959,8 @@ if (!twice || !/bindings of that name/.test(twice.what)) {
   fail("fixture", "the matcher does not say that ZI is one of several bindings of its name");
 }
 const anonymous = fixture.notes.filter((n) => n.subject === "(anonymous)").length;
-if (anonymous !== 4) {
-  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 4`);
+if (anonymous !== 8) {
+  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 8`);
 }
 for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
   fail("fixture", `the matcher reports ${n.check} on line ${n.line} of a fixture that has none: ${n.what}`);
