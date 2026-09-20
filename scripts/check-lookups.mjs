@@ -132,12 +132,25 @@ const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split("").concat(["=>"]));
 // listed is what a name can be: the reserved words are a closed set the language defines,
 // five of them stand for values, and an identifier that is not reserved is a value by
 // definition. That cannot be short by one the way the other list was.
+// Only the words a script may *never* use as a name. `get`, `set`, `of`, `as`, `from`, `let`
+// and `static` are contextual — they are ordinary identifiers almost everywhere, and app.js
+// uses three of them — so calling them keywords made `get / x` a regex and masked whatever
+// followed. Codex found it (#9, round 19), and it was mine: the inversion one round earlier
+// took "reserved" to mean "in some list of reserved-ish words" rather than "cannot be a
+// name". Erring this way is also the safe way round: a keyword read as a value scans a
+// regex body as code, which is noise, while a name read as a keyword hides code.
 const RESERVED = new Set([
-  "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
+  "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
   "do", "else", "enum", "export", "extends", "false", "finally", "for", "function", "if", "import",
   "in", "instanceof", "new", "null", "return", "super", "switch", "this", "throw", "true", "try",
-  "typeof", "var", "void", "while", "with", "yield", "let", "static", "get", "set", "of", "as", "from",
+  "typeof", "var", "void", "while", "with",
+  // …and the two that are keywords exactly where a `/` after them is a regex — inside an
+  // async function or a generator — but are legal names in a sloppy script like this one.
+  // The assertion below is what pays for that: app.js binds neither, and says so out loud
+  // rather than leaving the reading to rest on a fact nothing checks.
+  "await", "yield",
 ]);
+const CONTEXTUAL = ["await", "yield"];
 const VALUE_WORDS = new Set(["this", "super", "true", "false", "null"]);
 // …and the keywords whose `{` opens a statement rather than a value. Everything else that
 // can stand in front of a `{` at all — `return`, `case`, `typeof`, `throw`, `await` — takes
@@ -146,7 +159,7 @@ const VALUE_WORDS = new Set(["this", "super", "true", "false", "null"]);
 // the old list by accident, not by decision, which is the whole reason the fixture runs
 // first. `static` is here for a class's static block; `if`, `while`, `for`, `with` and
 // `switch` never reach this, since their `(…)` puts a `)` in front of the brace.
-const BLOCK_WORDS = new Set(["else", "do", "try", "finally", "catch", "static"]);
+const BLOCK_WORDS = new Set(["else", "do", "try", "finally", "catch"]);
 // The four heads whose closing `)` is followed by a statement rather than by more of an
 // expression — so the `/` after it opens a regex. Everything else that ends in `)` is a
 // value, and the `/` after *that* is division.
@@ -195,6 +208,12 @@ function lex(text) {
   let identStart = "";
   // What stood before an `async` that is still waiting for its `function`.
   let carried = null;
+  // How deep the brackets were when a `case` or `default` was seen. Its label is closed by a
+  // colon at *that* depth and no other: `case { a: {} }.a:` has a property colon inside the
+  // case expression, and taking that one for the label left the nested literal read as a
+  // block. Codex found it (#9, round 19).
+  let nesting = 0;
+  let labelDepth = -1;
   let pendingLabel = false;
   // A template is not one opaque run: `${…}` inside it is code, and masking through to the
   // closing backtick hid a lookup written there. Each frame is the template's text, or a
@@ -292,7 +311,7 @@ function lex(text) {
         maker = opensValue(from.last, from.word);
         carried = null;
       } else carried = null;
-      if ((ident === "case" || ident === "default") && statementPlace(last)) pendingLabel = true;
+      if ((ident === "case" || ident === "default") && statementPlace(last)) { pendingLabel = true; labelDepth = nesting; }
       identStart = last;
       word = ident;
       last = RESERVED.has(ident) && !VALUE_WORDS.has(ident) ? "kw" : "w";
@@ -300,12 +319,15 @@ function lex(text) {
       continue;
     }
     if (c === ":") {
-      last = pendingLabel || (last === "w" && statementPlace(identStart)) ? ":label" : ":";
-      pendingLabel = false;
+      const closesLabel = pendingLabel && nesting === labelDepth;
+      last = closesLabel || (last === "w" && statementPlace(identStart)) ? ":label" : ":";
+      if (closesLabel) pendingLabel = false;
       word = "";
       i++;
       continue;
     }
+    if (c === "(" || c === "[" || c === "{") nesting++;
+    else if (c === ")" || c === "]" || c === "}") nesting--;
     if (c === "(") heads.push(word);
     if (c === "{") {
       let kind;
@@ -412,6 +434,12 @@ function survey(text) {
     const found = [];
     const open = [];
     let depth = 0;
+    // Grouping parentheses are transparent to `depth` so that `x = ({ … })` binds the
+    // literal — but they still enclose, and a comma inside one is a sequence operator rather
+    // than the end of the declarator: `var x = (sideEffect(), { … })` stopped the read before
+    // the literal. Codex found it (#9, round 19). Counted separately, because the whole point
+    // of the transparency is that it does not count in `depth`.
+    let groups = 0;
     let before = "=";
     for (let i = from; i < code.length; i++) {
       if (mask[i] || !/\S/.test(code[i])) continue;
@@ -431,17 +459,20 @@ function survey(text) {
         // call's is not, because `x = f({ … })` binds whatever `f` answered.
         const grouping = c === "(" && !/[\w$)\]]/.test(before);
         open.push(grouping);
-        if (!grouping) depth++;
+        if (grouping) groups++;
+        else depth++;
         before = c;
         continue;
       }
       if (c === ")" || c === "]" || c === "}") {
         if (!open.length) break;
-        if (!open.pop()) depth--;
+        if (open.pop()) groups--;
+        else depth--;
         before = c;
         continue;
       }
-      if (depth === 0 && (c === ";" || c === ",")) break;
+      if (depth === 0 && c === ";") break;
+      if (depth === 0 && groups === 0 && c === ",") break;
       before = c;
     }
     return found;
@@ -660,6 +691,9 @@ const FIXTURE = [
   'var L2 = other || { a: 1 }; L2[k];', //                               …or the right of a fallback
   'var L3 = [{ a: 1 }]; L3[k];', //                                      safe — an element, not the binding
   'var L4 = function (a) { return a; }; L4[k];', //                      safe — a body, not a map
+  'var get = 1, M1; var m1 = get / (M1 = { now: 1 }, M1[k]) / 2;', //     a contextual keyword as a name
+  'var O1 = (sideEffect(), { now: 1 }); O1[k];', //                      a comma inside grouping parens
+  'var O2 = (a, b); O2[k];', //                                          safe — no literal in it at all
   'async function rw() { await /{}/.test(""); }', //                     safe — a regex after a keyword
   'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
@@ -678,7 +712,24 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1"];
+// The empty-literal rule gets its own two lines, because what they assert is a `bare` note
+// rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
+// is the shape that made a case label swallow a property colon — the nested literal was then
+// read as a block and the ban on empty object literals quietly did not apply inside it.
+const EMPTY_FIXTURE = [
+  'function ms(x) { switch (x) { case { a: {} }.a: break; } }', // one, inside a case expression
+  'function mt(x) { switch (x) { case 1: {} default: {} } }', //  none — case arms are blocks
+].join("\n");
+const empties = survey(EMPTY_FIXTURE).notes;
+const bares = empties.filter((n) => n.check === "bare").map((n) => n.line);
+if (bares.join(",") !== "1") {
+  fail("fixture", `the empty-literal rule reports on line(s) ${bares.join(", ") || "none"} of its fixture, where it should report on line 1 alone`);
+}
+for (const n of empties.filter((n) => n.check !== "bare")) {
+  fail("fixture", `the empty-literal fixture also produced ${n.check} on line ${n.line}: ${n.what}`);
+}
+
 const fixture = survey(FIXTURE);
 // Distinct subjects, not distinct sites: a conditional binds the same name twice and both
 // branches are reported, each at its own line, which is right and is not two findings for
@@ -704,6 +755,14 @@ for (const n of notes) fail(n.check, `app.js:${n.line} — ${n.what}`);
 // read as division is exactly that, and Codex demonstrated it rather than arguing it. So
 // the fixture carries that line too. A judge with its reach written down beats a judge
 // described as though it settled the question.
+// Two words above are treated as keywords although a sloppy script may legally use them as
+// names, which is the trade round 19 made explicit. This is what pays for it: if app.js ever
+// binds one, the reading of every `/` after it is wrong, and the gate says so instead of
+// masking whatever follows.
+for (const m of [...code.matchAll(new RegExp(`\\b(?:var|let|const|function)\\s+(${CONTEXTUAL.join("|")})\\b|\\b(${CONTEXTUAL.join("|")})\\s*=(?![=>])`, "g"))]) {
+  fail("lex", `app.js binds \`${m[1] || m[2]}\` as a name, and the lexer reads it as a keyword — see RESERVED`);
+}
+
 for (const [what, text] of [["app.js", code], ["the fixture", fixture.code]]) {
   try {
     new vm.Script(text, { filename: "blanked" });
