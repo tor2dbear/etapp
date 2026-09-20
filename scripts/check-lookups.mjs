@@ -232,7 +232,17 @@ function lex(text) {
   // there too. An arrow's parameter list is *not* covered: `({}) => {}` and `({})[k]` differ
   // only in what follows the `)`, and guessing would cost the round-22 rule that reads the
   // second one. app.js is ES5 throughout and writes neither.
-  let paramsAt = -1;
+  // Which parentheses are open, how deep each one is, and the empty literals written
+  // directly inside it. A parenthesis turns out to be a *parameter list* only at its `)` —
+  // when what follows is `=>` or a body — so the braces inside it are re-read then. The rule
+  // it replaces named the two shapes it knew, `function` and `catch`, and called everything
+  // else a literal: `({}) => 1`, `class Z { m({}) {} }`, `var p = { m({}) {} }` and
+  // `(a, {}) => a` were all red gates on valid code. Codex found them (#9, round 34), the
+  // fourteenth. A head that is `if`, `while`, `for` or `with` is never a parameter list,
+  // which the `heads` stack already knows.
+  const parens = [];
+  const closerOf = new Map();
+  const braceAt = [];
   // A `:` is two things as well: the one in `{ a: 1 }` puts what follows in expression
   // position, and the one in `case 1:` or `outer:` does not — so `case 1: {}` was read as
   // an empty object literal and failed CI on a valid switch arm. Codex found it (#9, round
@@ -393,16 +403,22 @@ function lex(text) {
       continue;
     }
     if (c === "(" || c === "[" || c === "{") nesting++;
-    else if (c === ")" || c === "]" || c === "}") { nesting--; if (nesting < paramsAt) paramsAt = -1; }
+    else if (c === ")" || c === "]" || c === "}") nesting--;
     if (c === "(") {
-      if ((maker !== null && nesting === makerAt + 1) || word === "catch") paramsAt = nesting;
+      parens.push({ depth: nesting, braces: [] });
       heads.push(word);
     }
     if (c === "{") {
       let kind;
-      if (paramsAt >= 0 && nesting === paramsAt + 1 && (last === "(" || last === ",")) kind = "block";
-      else if (maker !== null && nesting === makerAt + 1) { kind = maker ? "fnvalue" : "block"; maker = null; }
+      if (maker !== null && nesting === makerAt + 1) { kind = maker ? "fnvalue" : "block"; maker = null; }
       else kind = last !== "=>" && opensValue(last, word) ? "literal" : "block";
+      // A brace in argument position directly inside a parenthesis may yet turn out to be a
+      // parameter's pattern; the `)` decides.
+      const holder = parens[parens.length - 1];
+      if (kind === "literal" && holder && nesting === holder.depth + 1 && (last === "(" || last === ",")) {
+        holder.braces.push(i);
+      }
+      braceAt.push(i);
       braces.push(kind);
       kinds.set(i, kind);
       if (top() && top().kind === "sub") top().depth++;
@@ -412,9 +428,27 @@ function lex(text) {
       top().depth--;
     }
     if (/\S/.test(c)) {
-      if (c === ")") last = CONTROL.has(heads.pop()) ? ")head" : ")";
+      if (c === ")") {
+        const head = heads.pop();
+        const holder = parens.pop();
+        // `=>` or a body after the `)` makes it a parameter list, and every empty literal
+        // written straight inside it a pattern. Read at the `)` because that is the first
+        // place the answer exists.
+        if (holder && holder.braces.length && !CONTROL.has(head)) {
+          let j = i + 1;
+          while (j < text.length && /\s/.test(text[j])) j++;
+          if (text[j] === "{" || (text[j] === "=" && text[j + 1] === ">")) {
+            for (const at of holder.braces) {
+              kinds.set(at, "block");
+              if (closerOf.has(at)) closes.set(closerOf.get(at), "block");
+            }
+          }
+        }
+        last = CONTROL.has(head) ? ")head" : ")";
+      }
       else if (c === "}") {
         const was = braces.pop();
+        closerOf.set(braceAt.pop(), i);
         closes.set(i, was);
         last = was !== "block" ? "}expr" : "}";
       }
@@ -1230,11 +1264,16 @@ const EMPTY_FIXTURE = [
   '({} = src);', //                                               ·   a destructuring assignment
   '({ a: {} } = src);', //                                        ·   …and one nested inside a pattern
   '[{}] = arr;', //                                               ·   …and one inside an array pattern
+  'var ar = ({}) => 1;', //                                       ·   an arrow's parameter
+  'var na = (a, {}) => a;', //                                    ·   …and one beside a named parameter
+  'class Me { m({}) {} }', //                                     ·   a method's parameter
+  'var sh = { m({}) {} };', //                                    ·   …and a shorthand method's
+  'if ({}) { ar(); }', //                                        15 — a condition is not a parameter list
 ].join("\n");
 const empties = survey(EMPTY_FIXTURE).notes;
 const bares = empties.filter((n) => n.check === "bare").map((n) => n.line);
-if (bares.join(",") !== "1,6,7") {
-  fail("fixture", `the empty-literal rule reports on line(s) ${bares.join(", ") || "none"} of its fixture, where it should report on 1, 6 and 7`);
+if (bares.join(",") !== "1,6,7,15") {
+  fail("fixture", `the empty-literal rule reports on line(s) ${bares.join(", ") || "none"} of its fixture, where it should report on 1, 6, 7 and 15`);
 }
 for (const n of empties.filter((n) => n.check !== "bare")) {
   fail("fixture", `the empty-literal fixture also produced ${n.check} on line ${n.line}: ${n.what}`);
