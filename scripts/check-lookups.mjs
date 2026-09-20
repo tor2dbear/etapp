@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in thirteen different ways over eleven
-// rounds of review. Eleven were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in fifteen different ways over twelve
+// rounds of review. Twelve were the same defect: the scan could not see a shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -121,7 +121,7 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // built a line where the masked span held a live lookup. Both brackets are classified by
 // what they close now. What is deliberately *not* claimed is that no third shape exists.
 // The fixture is where the next one gets written down.
-const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split(""));
+const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split("").concat(["=>"]));
 const REGEX_WORDS = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else"]);
 // The four heads whose closing `)` is followed by a statement rather than by more of an
 // expression — so the `/` after it opens a regex. Everything else that ends in `)` is a
@@ -148,8 +148,11 @@ function lex(text) {
   // `(a + b) / 2` are the same character after the same bracket, and the only difference
   // is four characters further back.
   const heads = [];
-  // …and what each open brace was: a value, or a block.
+  // …and what each open brace was: a value, or a block. `kinds` keeps that by position,
+  // because the empty-literal rule needs the same answer — `catch {}` and `class E {}` are
+  // blocks, and the list of exemptions that used to stand in for this could not say so.
   const braces = [];
+  const kinds = new Map();
   // A template is not one opaque run: `${…}` inside it is code, and masking through to the
   // closing backtick hid a lookup written there. Each frame is the template's text, or a
   // substitution and how deep its braces are.
@@ -224,7 +227,9 @@ function lex(text) {
     }
     if (c === "(") heads.push(word);
     if (c === "{") {
-      braces.push(VALUE_AFTER.has(last) || VALUE_WORDS.has(word) ? "value" : "block");
+      const kind = last !== "=>" && (VALUE_AFTER.has(last) || VALUE_WORDS.has(word)) ? "value" : "block";
+      braces.push(kind);
+      kinds.set(i, kind);
       if (top() && top().kind === "sub") top().depth++;
     }
     if (c === "}" && top() && top().kind === "sub") {
@@ -238,16 +243,28 @@ function lex(text) {
       // is not the operator that `+` usually is. `a + +b` collapses to the same token
       // and is division at the same place, so the one rule covers both.
       else if ((c === "+" || c === "-") && last === c) last = "++";
+      // An arrow's `>` is not the comparison this would otherwise read: `x => {}` opens a
+      // block, and `x => /re/.test(y)` opens a regex. One token says both.
+      else if (c === ">" && last === "=") last = "=>";
       else last = c;
       word = /[\w$]/.test(c) ? word + c : "";
     }
     i++;
   }
-  return { code: out.join(""), mask };
+  return { code: out.join(""), mask, kinds };
 }
 
+// A key written as a string is the string it denotes, not the characters between the
+// quotes: `"a\\-b"` and `"a-b"` are one key. Only the escapes JavaScript gives a different
+// character to — everything else stands for itself, which is what the last branch says.
+const ESCAPES = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", 0: "\0" };
+const unescape = (raw) => raw.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (all, what) => {
+  if (what[0] === "u" || what[0] === "x") return String.fromCharCode(parseInt(what.slice(1), 16));
+  return what in ESCAPES ? ESCAPES[what] : what;
+});
+
 function survey(text) {
-  const { code, mask } = lex(text);
+  const { code, mask, kinds } = lex(text);
   const notes = [];
   const lineOf = (index) => code.slice(0, index).split("\n").length;
   const seen = new Set();
@@ -263,11 +280,16 @@ function survey(text) {
   // Whitespace included, and over the whole source rather than line by line: `{ }` and a
   // literal broken across two lines are the same empty object, and both sailed past a
   // `/\{\}/` that matched only the bare token — measured, with the gate still reporting
-  // that the file writes none. Three spellings are not a map and are left alone: an empty
-  // catch, an empty function body, and the two-character string.
-  const EXEMPT = [/catch\s*\([^)]*\)\s*$/, /function[^)]*\)\s*$/, /=>\s*$/];
+  // that the file writes none.
+  //
+  // An empty *block* is not an empty map, and which one a `{}` is was a list of three
+  // exemptions — an empty catch, an empty function body, an arrow — written from the
+  // shapes app.js happened to contain. `try {} catch {}` with no binding and `class E {}`
+  // are neither, and both were reported as empty object literals: a red gate on valid
+  // code, which Codex found (#9, round 12). The lexer already answers this question for
+  // the `/` after a `}`, so it answers it here too, and the list is gone.
   for (const m of [...code.matchAll(/\{\s*\}/g)].filter(inCode)) {
-    if (EXEMPT.some((re) => re.test(code.slice(0, m.index).trimEnd()))) continue;
+    if (kinds.get(m.index) !== "value") continue;
     note("bare", m.index, null, `an empty object literal: ${m[0].replace(/\s+/g, " ")}`);
   }
 
@@ -351,7 +373,10 @@ function survey(text) {
   // may be quoted — app.js writes 143 of them — and the quoted spelling is read only when
   // what it quotes could be reached by a property path in the first place.
   const KEY = /([A-Za-z_$][\w$]*)\s*:\s*(table\(|dict\(\)|\{|)/y;
-  const QUOTED = /["']([A-Za-z_$][\w$]*)["']\s*:\s*(table\(|dict\(\)|\{|)/y;
+  // A quoted key is a *string*, and `"status-name"` is as much a key as `status` is —
+  // restricting it to identifier shapes meant `t["status-name"][k]` reached nothing.
+  // Codex found it (#9, round 12).
+  const QUOTED = /"((?:[^"\\]|\\.)*)"\s*:\s*(table\(|dict\(\)|\{|)|'((?:[^'\\]|\\.)*)'\s*:\s*(table\(|dict\(\)|\{|)/y;
   const keysOf = (body) => {
     const keys = new Map();
     let depth = 0;
@@ -365,11 +390,15 @@ function survey(text) {
       }
       if (depth !== 0) continue;
       if (!quoted && i > 0 && /[\w$]/.test(body.text[i - 1])) continue;
+      // Only the quote that *opens* a string — an escaped one inside it is masked too.
+      if (quoted && i > 0 && body.mask[i - 1] === 1) continue;
       const re = quoted ? QUOTED : KEY;
       re.lastIndex = i;
       const m = re.exec(body.text);
       if (!m) continue;
-      if (!keys.has(m[1])) keys.set(m[1], { opens: m[2], at: body.at + i + m[0].length - m[2].length });
+      const name = m[1] !== undefined ? m[1] : m[3];
+      const opens = m[1] !== undefined ? m[2] : m[4];
+      if (!keys.has(unescape(name))) keys.set(unescape(name), { opens, at: body.at + i + m[0].length - opens.length });
       i = re.lastIndex - 1;
     }
     return keys;
@@ -413,10 +442,11 @@ function survey(text) {
   // `t.status[k]` and `t["status"][k]` are the same read, so a constant bracket segment is
   // a path segment like any other. Only a *constant* one: `t[name][k]` is a key this cannot
   // know, and it is the same boundary as a root bound to a call.
-  const SEGMENT = /\.\s*([A-Za-z_$][\w$]*)|\[\s*["']([A-Za-z_$][\w$]*)["']\s*\]/g;
-  const PATH = /\b([A-Za-z_$][\w$]*)((?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[\s*["'][A-Za-z_$][\w$]*["']\s*\])+)\s*\[\s*[^"'\]]/g;
+  const STRING = `"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'`;
+  const SEGMENT = new RegExp(`\\.\\s*([A-Za-z_$][\\w$]*)|\\[\\s*(${STRING})\\s*\\]`, "g");
+  const PATH = new RegExp(`\\b([A-Za-z_$][\\w$]*)((?:\\s*\\.\\s*[A-Za-z_$][\\w$]*|\\s*\\[\\s*(?:${STRING})\\s*\\])+)\\s*\\[\\s*[^"'\\]]`, "g");
   for (const m of [...code.matchAll(PATH)].filter(inCode)) {
-    const path = [...m[2].matchAll(SEGMENT)].map((piece) => piece[1] || piece[2]);
+    const path = [...m[2].matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
     const subject = `${m[1]}.${path.join(".")}`;
     for (const k of reached(m[1], path)) {
       if (k.opens === "{") note("bare-table", k.at, subject, `${subject} reaches an object literal built without table()`);
@@ -434,7 +464,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Eleven rounds of review found thirteen
+// every other line is here because it must *not* be. Twelve rounds of review found fifteen
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -461,6 +491,10 @@ const FIXTURE = [
   'var B1 = table({ s: { a: 1 } }); B1["s"][k];', //                     a constant bracket segment
   'var B2 = { valueOf: function () { return 1; } } / (B3 = { now: 1 }, B3[k]) / 2;', // division, not a regex
   'function f11(k) { var n = 1, P1; return n++ / (P1 = { now: 1 }, P1[k]) / 2; }', // after a postfix update
+  'var C1 = table({ "a-b": { x: 1 } }); C1["a-b"][k];', //               a key no identifier could spell
+  'var C3 = table({ "a\\"b": { x: 1 } }); C3["a\\"b"][k];', //             …and one with an escape in it
+  'function pA() { try { pA(); } catch {} }', //                         safe — an empty block, not a map
+  'class Empty {}', //                                                   safe — so is a class body
   'var B4 = table({ s: { a: 1 } }); B4["s"]["a"];', //                   safe — every key is a literal
   'function rt() { if (true) /{}/.test(""); }', //                       safe — a regex, not division
   'var G5 = table({ a: 1 }); var G6 = G5; G6[k];', //                    safe — the alias holds a table
@@ -471,7 +505,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b'];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
