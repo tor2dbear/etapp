@@ -122,6 +122,13 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // built a line where the masked span held a live lookup. Both brackets are classified by
 // what they close now. What is deliberately *not* claimed is that no third shape exists.
 // The fixture is where the next one gets written down.
+// Every pattern in this file is built with `u`, and not one of them is built without it,
+// because the fragments above are written in `\p{…}` and a pattern that leaves the flag off
+// reads those as the literal characters of their spelling. Round 37 found that in one
+// lookbehind and set the flag there; round 45 put `EDGE` into the factory list and the same
+// bug came back in a pattern written before either. So the flag is not a decision at each
+// site any more: it is what `pattern()` is for.
+const pattern = (source, flags = "") => new RegExp(source, `${flags}u`);
 // JavaScript's identifier alphabet is not ASCII: `var café = { … }; café[k]` bound nothing
 // at all. Codex found it (#9, round 33). One fragment and two tests, used by every pattern
 // and every character check that reads a name, so the alphabet cannot be right in one place
@@ -140,9 +147,16 @@ const asName = (raw) => (raw.indexOf("\\") < 0 ? raw : unescape(raw));
 // The lexer reads a whole name with the same fragment the patterns use, rather than a start
 // test and an end test that could drift apart — and a sticky match always moves, where two
 // tests that disagreed left the scan standing still and the gate never finished.
-const IDENT = new RegExp(ID, "yu");
+const IDENT = pattern(ID, "y");
 const IDENT_PART = /[\p{ID_Continue}$\u200C\u200D]/u;
 
+// Where a name *begins*: not in the middle of another one, and not after a `.`, where the
+// name belongs to something else. Round 24 taught the writing side that a property is not a
+// name and round 42 taught the anonymous side the same thing about a bracket; this is the one
+// spelling of it, which the calls below and the index side both use. They had it written out
+// twice with the characters in a different order, which is the same fact twice and one of
+// them would have drifted.
+const EDGE = "(?<![.\\p{ID_Continue}$])";
 // The calls that hand back the very object they were given — what each one answers is its
 // *first argument*. `Object.freeze({ … })` is that literal, prototype and all, so the
 // reading looks *through* them rather than treating them as factories: a factory entry
@@ -175,10 +189,15 @@ const THROUGH_CALLS = ["freeze", "seal", "preventExtensions", "defineProperty", 
 // call and its argument reported — the sixteenth red gate on valid code, since a method
 // called `freeze` on somebody else's object answers whatever it likes. `a.Object.freeze(`
 // is out with it. Found looking for the rest of round 37's family, not named by it.
-const THROUGH = `(?<![\\p{ID_Continue}$.])Object\\s*\\.\\s*(?:${THROUGH_CALLS.join("|")})\\s*\\(`;
+// `Object(x)` is in the family too, and it is the whole of it in one call: with an argument
+// it hands that argument back — the object itself, or a wrapper for a primitive — and with
+// none it makes a new ordinary object, which is the factory below. `new Object(x)` is the
+// same function. Codex found it (#9, round 45), and the old factory list had the `new` form
+// as *always* a factory, so `new Object(dict())` was a hazard it is not.
+const THROUGH = `${EDGE}(?:Object\\s*\\.\\s*(?:${THROUGH_CALLS.join("|")})|(?:new\\s+)?Object)\\s*\\(`;
 // `u`, or the alphabet in the lookbehind is six literal characters and the test is silently
 // something else — the same flag the patterns that embed this one already carry.
-const THROUGH_END = new RegExp(`${THROUGH}$`, "u");
+const THROUGH_END = pattern(`${THROUGH}$`);
 
 const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split("").concat(["=>"]));
 // The keyword side of the same question, and it is written as an inversion because the
@@ -653,8 +672,8 @@ function survey(text) {
   // One list. Written twice, a factory added to only one of them made the gate go *quiet*
   // rather than red — recorded as an opener that `hasPrototype` then denies, or found by
   // neither — which is the failure this file exists to catch, in the file itself.
-  const FACTORIES = `Object\\.fromEntries\\(|JSON\\.parse\\(|new Object\\(|Object\\.create\\(\\s*\\{`;
-  const FACTORY = new RegExp(FACTORIES);
+  const FACTORIES = `${EDGE}(?:Object\\.fromEntries\\(|JSON\\.parse\\(|(?:new\\s+)?Object\\s*\\(\\s*\\)|Object\\.create\\(\\s*\\{)`;
+  const FACTORY = pattern(FACTORIES);
   // What a name is bound to is an *expression*, not a token. `var x = flag ? { … } : { … }`
   // holds one of two literals and `var x = y || { … }` may hold one, and matching the opener
   // immediately after the `=` saw neither — Codex found the conditional (#9, round 18).
@@ -667,7 +686,7 @@ function survey(text) {
   // there the literal is an argument or an element, and what the name holds is the call's
   // answer or the array. The read stops at the `;` or `,` that ends the declarator, or at
   // the bracket that closes whatever the expression sits inside.
-  const OPENER = new RegExp(`table\\(|dict\\(\\)|${FACTORIES}|\\{`, "y");
+  const OPENER = pattern(`table\\(|dict\\(\\)|${FACTORIES}|\\{`, "y");
   const bound = new Map();
   // Words a value is never held under.
   const ALIAS_SKIP = new Set(["function", "new", "typeof", "return", "true", "false", "null", "undefined", "this", "void", "delete", "in", "of", "case"]);
@@ -733,7 +752,7 @@ function survey(text) {
   // not.
   const CONSTANT = `${STRING}|${NUMBER}`;
   const BRACKETED = `${CONSTANT}|${WORD}|${TEMPLATE}`;
-  const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${BRACKETED})\\s*\\]`, "gu");
+  const SEGMENT = pattern(`\\.\\s*(${ID})|\\[\\s*(${BRACKETED})\\s*\\]`, "g");
   const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${BRACKETED})\\s*\\])`;
   // A path is all of its steps or none of them: one segment this cannot read leaves a path
   // that means something else, and a *shorter* path is not a safer answer — it is a different
@@ -747,12 +766,12 @@ function survey(text) {
   // because three places ask "does an index start here" and a hand-spelling in any of them
   // would not learn the next shape this grows. It grew `?.` once already.
   const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
-  const INDEX_AT = new RegExp(INDEX, "y");
-  const TEMPLATE_AT = new RegExp(TEMPLATE, "y");
-  const WORD_AT = new RegExp(WORD, "yu");
+  const INDEX_AT = pattern(INDEX, "y");
+  const TEMPLATE_AT = pattern(TEMPLATE, "y");
+  const WORD_AT = pattern(WORD, "y");
   // …and one for a run of steps, for the walk: `STEPS` itself, so the value side and the
   // index side cannot come to read a path differently.
-  const STEP_TAIL = new RegExp(`(?:${STEPS})+`, "yu");
+  const STEP_TAIL = pattern(`(?:${STEPS})+`, "y");
   // The position just past the `[` of an index that starts here, or -1.
   const indexAt = (at) => {
     INDEX_AT.lastIndex = at;
@@ -1085,9 +1104,9 @@ function survey(text) {
   const ROOT = (tag) => `(?:\\(\\s*(?<p${tag}>${ID})\\s*\\)|(?<n${tag}>${ID}))`;
   const KEYWORD = `(?:\\b(?:var|let|const)\\s+)?`;
   const TAIL = `(?<steps>(?:${STEPS})*)\\s*\\)?\\s*(?:\\|\\||&&|\\?\\?)?=(?![=>])`;
-  const TARGET = new RegExp(
+  const TARGET = pattern(
     `(?<![\\p{ID_Continue}$.)\\]])(?:${KEYWORD}\\(\\s*${ROOT("g")}|${KEYWORD}${ROOT("b")})${TAIL}`,
-    "gu"
+    "g"
   );
   for (const m of [...code.matchAll(TARGET)].filter(inCode)) {
     const g = m.groups;
@@ -1127,7 +1146,7 @@ function survey(text) {
   // Only an `=`. A pattern in a `for … of` head or a parameter list binds an element or an
   // argument, which is not a path of anything this can read, and those are the unresolvable
   // roots the success line has always named.
-  const PATTERN_AT = new RegExp(`(?:\\b(?:var|let|const)\\s+|(?<![\\p{ID_Continue}$.)\\]])\\(\\s*)(?=[{[])`, "gu");
+  const PATTERN_AT = pattern(`(?:\\b(?:var|let|const)\\s+|(?<![\\p{ID_Continue}$.)\\]])\\(\\s*)(?=[{[])`, "g");
   // A pattern's parts are separated by commas at its own level; this is where the next one
   // starts, whatever was in between.
   const afterEntry = (from, close) => {
@@ -1144,7 +1163,7 @@ function survey(text) {
   // A property of a pattern: a name, a constant key or a computed constant one — the same
   // spellings a literal's keys have — and whether a colon follows, which is what tells
   // `{ lookup }` from `{ lookup: alias }`.
-  const PROP = new RegExp(`(?:(${ID})|(${CONSTANT})|\\[\\s*(${BRACKETED})\\s*\\])\\s*(:)?`, "yu");
+  const PROP = pattern(`(?:(${ID})|(${CONSTANT})|\\[\\s*(${BRACKETED})\\s*\\])\\s*(:)?`, "y");
   // What a pattern binds, and under which path of the value. Written here rather than read
   // with `keysOf`, which reads a *literal*: a pattern's grammar is not a literal's — it has
   // defaults and a rest element and no values at all — and one reader taught both grammars is
@@ -1267,7 +1286,7 @@ function survey(text) {
   // same. Round 24 taught the writing side that a property is not a name; this is the same
   // sentence on the reading side, and it turned up while writing a fixture line for one of
   // `/code-review`'s findings rather than from the finding itself.
-  const EDGE = `(?<![.\\p{ID_Continue}$])`;
+
   // `x[k]` and `x?.[k]` are one read, and a `.` may be optional wherever it appears in a
   // path. app.js writes neither spelling — it is ES5 throughout — but a gate that goes
   // blind on an ordinary refactor is the thing this file keeps being reviewed for.
@@ -1365,7 +1384,7 @@ function survey(text) {
       indexedNames.set(
         name,
         indexedGroup.has(name) ||
-          [...code.matchAll(new RegExp(`${rooted(spellings(name))}${INDEX}`, "gu"))].some(computed)
+          [...code.matchAll(pattern(`${rooted(spellings(name))}${INDEX}`, "g"))].some(computed)
       );
     }
     return indexedNames.get(name);
@@ -1410,14 +1429,14 @@ function survey(text) {
   // how the first version of this matched nothing at all.
   // The wrapper is stepped over and not captured, so `opens` stays the opener itself.
   const VALUE = `(?:${THROUGH}\\s*)?(table\\(|dict\\(\\)|\\{|${ID}|)`;
-  const KEY = new RegExp(`(${ID})\\s*(?::\\s*${VALUE}|(?=[,}]|$))`, "yu");
+  const KEY = pattern(`(${ID})\\s*(?::\\s*${VALUE}|(?=[,}]|$))`, "y");
   // A constant key is the value it denotes: `"status-name"` is as much a key as `status` is,
   // and `0` is as much one as `"0"`. Restricting it to identifier shapes meant
   // `t["status-name"][k]` reached nothing — Codex found that (#9, round 12), and the numeric
   // half of the same sentence in round 41. One capture for the whole key rather than one per
   // quote: the two alternatives each carried their own copy of `VALUE`, which is two places
   // for the next round to teach and the shape every duplicated fragment here has had.
-  const CONSTANT_KEY = new RegExp(`(${CONSTANT})\\s*:\\s*${VALUE}`, "yu");
+  const CONSTANT_KEY = pattern(`(${CONSTANT})\\s*:\\s*${VALUE}`, "y");
   // …and a *computed* constant key is that same string one bracket further out:
   // `{ ["lookup"]: … }` is the key `lookup`, which the reading side has taken since round 10
   // — `t["lookup"]` and `t.lookup` are one path — while the writing side took neither
@@ -1425,7 +1444,7 @@ function survey(text) {
   // into it in round 42 — that one is constant, whatever it looks like. A computed key this
   // cannot read, `{ [name]: … }` or a template with a substitution, reaches nothing rather
   // than reaching wrong, which is the boundary a root bound to a call has.
-  const COMPUTED = new RegExp(`\\[\\s*(${BRACKETED})\\s*\\]\\s*:\\s*${VALUE}`, "yu");
+  const COMPUTED = pattern(`\\[\\s*(${BRACKETED})\\s*\\]\\s*:\\s*${VALUE}`, "y");
   // What a bracket does to a depth count. Written twice twenty lines apart, and the second
   // copy exists because the first one was missing a case — which is the argument for there
   // being one.
@@ -1588,10 +1607,10 @@ function survey(text) {
   // the transparency is needed, and the one round 36 left — it taught the *literal* form,
   // `Object.freeze({ … })[k]`, in the rule below.
   const grouped = [];
-  for (const m of [...code.matchAll(new RegExp(`(?:${GROUPED}|${THROUGH}\\s*)`, "gu"))].filter(inCode)) {
+  for (const m of [...code.matchAll(pattern(`(?:${GROUPED}|${THROUGH}\\s*)`, "g"))].filter(inCode)) {
     const { holds, at } = readInitialiser(m.index + m[0].length, true, !!throughAt(m[0]));
     if (!holds.length || code[at] !== ")") continue;
-    const tail = new RegExp(`((?:${STEPS})*)${INDEX}`, "yu");
+    const tail = pattern(`((?:${STEPS})*)${INDEX}`, "y");
     tail.lastIndex = at + 1;
     const after = tail.exec(code);
     if (!after || constantKey(tail.lastIndex - 1)) continue;
@@ -1604,7 +1623,7 @@ function survey(text) {
   // all. An unresolvable root yields nothing, so silence and safety look the same from
   // outside — and a refactor that moved the tables behind factories would take the reach to
   // zero while leaving both other floors satisfied and the success line green.
-  const INDEXED = new RegExp(`${rooted(`(${ID})`)}${INDEX}`, "gu");
+  const INDEXED = pattern(`${rooted(`(${ID})`)}${INDEX}`, "g");
   const sites = [...code.matchAll(INDEXED)].filter(computed);
   const resolved = sites.filter((m) => bindingsOf(asName(m[1] !== undefined ? m[1] : m[2])).length).length;
 
@@ -1667,9 +1686,9 @@ function survey(text) {
   // optional let a step match a bare name, and `(?:…)+` over that is the textbook
   // catastrophic backtrack: the gate stopped finishing at all rather than answering wrong,
   // which `check-checks` would have called a killed gate rather than a failing one.
-  const PATH = new RegExp(
+  const PATH = pattern(
     `${rooted(`(${ID})`)}((?:${STEPS})+)${INDEX}`,
-    "gu"
+    "g"
   );
   const reads = [...code.matchAll(PATH)].filter(computed)
     .map((m) => ({ roots: [asName(m[1] !== undefined ? m[1] : m[2])], path: segmentsOf(m[3]) }))
@@ -1697,7 +1716,7 @@ function survey(text) {
   // grouping `(` that opens a literal rather than matched, because the literal in between
   // is whatever it is: `f({ … })[k]` is excluded by the lookbehind, since there the
   // parenthesis belongs to the call and what is indexed is the call's answer.
-  for (const m of [...code.matchAll(new RegExp(`(?:(?:${GROUPED})+|${THROUGH}\\s*)(?=\\{)`, "gu"))].filter(inCode)) {
+  for (const m of [...code.matchAll(pattern(`(?:(?:${GROUPED})+|${THROUGH}\\s*)(?=\\{)`, "g"))].filter(inCode)) {
     const body = bodyOf(m.index + m[0].length);
     if (!body) continue;
     let i = skip(body.at + body.text.length + 1);
@@ -1727,7 +1746,7 @@ function survey(text) {
   // which is what the lookbehind says: not after a name, a `)` or a `]`, where a `[` is an
   // index and not an array. Written into this file as a gap last round, and found within the
   // hour (#9, round 42).
-  for (const m of [...code.matchAll(new RegExp(`(?<![\\p{ID_Continue}$)\\]])\\[`, "gu"))].filter(inCode)) {
+  for (const m of [...code.matchAll(pattern(`(?<![\\p{ID_Continue}$)\\]])\\[`, "g"))].filter(inCode)) {
     const close = restOfCall(m.index + 1);
     if (close < 0) continue;
     const picked = indexAt(close + 1);
@@ -1976,12 +1995,19 @@ const FIXTURE = [
   'var ET = { now: 1 }; E\\u0054[k];', //                                …wherever the name is written
   'var EU = table({ look\\u0070: { now: 1 } }); EU.lookp[k];', //        …including a key of a literal
   'var EV = { inner: { now: 1 } }; var { inn\\u0065r: EW } = EV; EW[k];', // …and a pattern's key
+  'var EX = Object(); EX[k];', //                                        a call that makes an ordinary object
+  'var EY = new Object(); EY[k];', //                                    …however it is called
+  'var EZ = Object(dict()); EZ[k];', //                                  safe — with an argument it hands that back
+  'var FA = new Object(dict()); FA[k];', //                              safe — …and the `new` form is the same function
+  'var FB = Object({ a: 1 }); FB[k];', //                                …which is a literal when the argument is one
+  'var FC = { a: 1 }; var FD = Object(FC); FD[k];', //                   …and a name when it is a name
+  'var FE = viewParamObject(); FE[k];', //                               safe — a name that merely ends in it is somebody else's
   'var BL = { a: 1 }; BL[.5];', //                                       safe — a number may begin with its point
   'var BM = { a: 1 }; BM[-.5];', //                                      safe — …and with a sign in front of that
   'var BN = { a: 1 }; BN[.5e3];', //                                     safe — …and carry on as any number does
   'var BO = { a: 1 }; BO[.5 + n];', //                                   a sum that starts with one is not a constant
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "EF.😀", "EG.😀", "EH.9007199254740993", "EI.9007199254740993", "EL", "EM.true", "EN.true", "EP", "EQ", "ER.10000000000", "ES.lookup", "escaped", "ET", "EU.lookp", "EW", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "EF.😀", "EG.😀", "EH.9007199254740993", "EI.9007199254740993", "EL", "EM.true", "EN.true", "EP", "EQ", "ER.10000000000", "ES.lookup", "escaped", "ET", "EU.lookp", "EW", "EX", "EY", "FB", "FC", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -2084,16 +2110,33 @@ for (const n of notes) fail(n.check, `app.js:${n.line} — ${n.what}`);
 // names, which is the trade round 19 made explicit. This is what pays for it: if app.js ever
 // binds one, the reading of every `/` after it is wrong, and the gate says so instead of
 // masking whatever follows.
-// Every position a name can stand in, which is simply: anywhere but after a `.`. Listing
-// the binding forms instead — `var`, `let`, `const`, `function`, `x =` — left the parameter
-// position out, where `function f(await) { return await / 2; }` is exactly the hazard this
-// is here to catch. And the scan read the whole file rather than its *code*, so the words
-// inside a string counted: `var s = "var await = 1"` failed the gate. Both from
-// `/code-review`. app.js contains neither word anywhere today, so the strong form costs
-// nothing and has no list to keep.
-for (const m of [...code.matchAll(new RegExp(`(?<![.\\p{ID_Continue}$])(${CONTEXTUAL.join("|")})(?![\\p{ID_Continue}$])`, "gu"))]) {
+// …and only where the reading can actually go wrong, which is a `/` after one of them. This
+// asked for every *mention* of the word and nothing else: the strong form, on the argument
+// that app.js contains neither and so it costs nothing. It costs the next person, who writes
+// `await Promise.resolve()` in an async function and finds a required gate red on valid
+// code — the twenty-second, and the first one this file talked itself into rather than
+// overlooked. Codex found it (#9, round 45).
+//
+// The narrow form is the inversion round 18 already made here: keyword or name, the two
+// readings differ in exactly one place — `await /re/.test(x)` is a regex where the word is a
+// keyword and `await / 2` is division where it is a name — so that is the shape to refuse,
+// and everything else is left alone. What this gives up is a file that legitimately writes
+// the first of those, which the message says out loud instead of masking half a line.
+//
+// The two claims on this are both *additions* to app.js — a binding and a parameter, each
+// followed by the division that makes it matter. The narrowing itself has no claim, and
+// cannot: it is a fact about what this does *not* do to a file app.js is not, and the
+// meta-check breaks things to see them caught rather than to see them left alone.
+//
+// Listing the *binding* forms instead — `var`, `let`, `const`, `function`, `x =` — is what
+// was tried before the strong form and it left the parameter position out, where
+// `function f(await) { return await / 2; }` is exactly the hazard. This asks about the `/`
+// rather than about the binding, so it has no list of positions to keep. The `mask` check is
+// still the other half: `var s = "await / 2"` is a string, and both of those were
+// `/code-review`'s.
+for (const m of [...code.matchAll(pattern(`${EDGE}(${CONTEXTUAL.join("|")})(?![\\p{ID_Continue}$])\\s*/`, "g"))]) {
   if (mask[m.index]) continue;
-  fail("lex", `app.js uses \`${m[1]}\` as a name, and the lexer reads it as a keyword — see RESERVED`);
+  fail("lex", `app.js writes \`${m[1]}\` in front of a \`/\`, and the lexer cannot settle whether that is a regex or a division — see RESERVED`);
 }
 
 for (const [what, text] of [["app.js", code], ["the fixture", fixture.code]]) {
@@ -2131,8 +2174,9 @@ console.log(
     `${safeLines} it says not to, ${resolved} of ${reads} variable-keyed reads in app.js have a root it resolves, ` +
     `app.js still parses with its comments ` +
     `blanked, and in it ${wrapped} tables and ${dicts} maps are built with no prototype, no empty object literal is ` +
-    `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.create({…}) — ` +
-    `on its own or handed back by Object.${THROUGH_CALLS.join("/")}, whose first argument is what they answer — ` +
+    `written at all, and no object literal or Object.fromEntries/JSON.parse/Object()/Object.create({…}) — ` +
+    `on its own or handed back by Object.${THROUGH_CALLS.join("/")} or by Object(…), whose first argument is what ` +
+    `they answer — ` +
     `that a variable indexes — under its own name, under a name it was assigned to — in parentheses, as a branch ` +
     `of a conditional, as the last of a sequence, as either side of a fallback or as an element selected out ` +
     `of an array literal — under a name read out of one by a property path or by a destructuring — or ` +
