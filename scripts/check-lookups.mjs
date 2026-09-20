@@ -655,6 +655,17 @@ function survey(text) {
   // Words a value is never held under.
   const ALIAS_SKIP = new Set(["function", "new", "typeof", "return", "true", "false", "null", "undefined", "this", "void", "delete", "in", "of", "case"]);
 
+  // A match that ends at its `[`, so the bracket can be read — and one sticky reader of it,
+  // because three places ask "does an index start here" and a hand-spelling in any of them
+  // would not learn the next shape this grows. It grew `?.` once already.
+  const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
+  const INDEX_AT = new RegExp(INDEX, "y");
+  // The position just past the `[` of an index that starts here, or -1.
+  const indexAt = (at) => {
+    INDEX_AT.lastIndex = at;
+    return INDEX_AT.test(code) ? INDEX_AT.lastIndex : -1;
+  };
+
   // Whether a parenthesis is a transparent call's, asked of the text that runs up to and
   // including it — a position in some places and a match in others, one reading in all of
   // them. Round 36 wrote the test twice and round 37 needed it in two more places, which is
@@ -771,13 +782,16 @@ function survey(text) {
           // …except in a transparent call, where the first argument is the whole value and
           // the rest of the list is not read at all. In grouping parentheses the same comma
           // is the sequence operator, which starts the question again instead.
-          if (outer[outer.length - 1].through) {
+          const group = outer[outer.length - 1];
+          if (group.through) {
             const end = restOfCall(i);
             if (end < 0) break;
             i = end - 1;
             continue;
           }
-          branch(false);
+          // …and in a selected array it separates elements, every one of which may be the
+          // one selected, so what it reads is kept rather than dropped.
+          branch(!!group.selected);
         }
         // `lookup = alias = unsafe` hands `lookup` what the inner assignment is worth, which
         // is `unsafe` and not `alias` — so the target is discarded and the reading carries on
@@ -801,7 +815,24 @@ function survey(text) {
         // A grouping parenthesis is transparent — `x = ({ … })` binds the literal — while a
         // call's is not, because `x = f({ … })` binds whatever `f` answered.
         const through = c === "(" && !!throughAt(code.slice(Math.max(0, i - 40), i + 1));
-        const grouping = through ||
+        // An array literal that is *selected from* hands back one of its elements, so it is
+        // transparent the way grouping parentheses are: `var t = [{ … }][0]` holds the
+        // literal where `var t = [{ … }]` holds the array, and the index after its closer is
+        // the whole difference. Codex found it (#9, round 39). *Which* element it hands back
+        // is a question about the key, and every element is a possible answer — so all of
+        // them are kept, the way both sides of a `||` are. An array nobody indexes is still
+        // the array, which is the fixture line this must not move.
+        //
+        // What it does not reach is the same selection with no name to hold it,
+        // `[{ … }][0][k]`: the two anonymous rules below read a literal's own closing brace
+        // or a parenthesis in front of it, and an array's closer is neither. A gap in reach,
+        // written down rather than implied, and the direction to err in.
+        let selected = false;
+        if (c === "[" && depth === 0) {
+          const close = restOfCall(i + 1);
+          selected = close >= 0 && indexAt(close + 1) >= 0;
+        }
+        const grouping = through || selected ||
           (c === "(" && before !== ")" && before !== "]" && !IDENT_PART.test(before));
         // A call or an index is not the name that precedes it — `f(source)` holds whatever
         // `f` answered, not `source`.
@@ -810,7 +841,7 @@ function survey(text) {
           current = [];
         }
         if (grouping) {
-          outer.push({ list, poisoned, through });
+          outer.push({ list, poisoned, through, selected });
           list = [];
           current = [];
           poisoned = false;
@@ -830,6 +861,14 @@ function survey(text) {
           list = saved.list;
           poisoned = saved.poisoned;
           current = inner;
+          // The index that did the selecting is part of it, not a read of what it selected:
+          // left in the text, `[source][0]` poisons the very operand it just picked, and the
+          // literal survives only because the openers were already written down.
+          if (saved.selected) {
+            const after = indexAt(i + 1);
+            const close = after >= 0 ? restOfCall(after) : -1;
+            if (close >= 0) i = close;
+          }
         } else depth--;
         before = c;
         continue;
@@ -984,6 +1023,12 @@ function survey(text) {
   // with one and is computed all the same. Codex found it (#9, round 22). So the bracket is
   // read: a sole string or number is a constant key, and anything else — a name, a
   // concatenation, a call — is data.
+  // What starts a number, which is a digit *or* a decimal point in front of one: `[.5]` and
+  // `[-.5]` are as constant as `[0.5]` is, and both were read as variable keys and reported —
+  // the nineteenth red gate on valid code, which Codex found (#9, round 39). Round 33 widened
+  // the *body* of a number to every spelling JavaScript has and left its first character as
+  // the one digit test it had always been; this is that sentence finished.
+  const numberAt = (j) => /\d/.test(code[j]) || (code[j] === "." && /\d/.test(code[j + 1]));
   const constantKey = (at) => {
     let i = at + 1;
     while (i < code.length && /\s/.test(code[i])) i++;
@@ -993,7 +1038,7 @@ function survey(text) {
       // "where does this string end" is one loop instead of a second implementation of how
       // an escape works — the two had been living 480 lines apart.
       while (i < code.length && mask[i]) i++;
-    } else if (/\d/.test(quote) || ((quote === "-" || quote === "+") && /\d/.test(code[i + 1]))) {
+    } else if (numberAt(i) || ((quote === "-" || quote === "+") && numberAt(i + 1))) {
       // Every spelling JavaScript has for a number, not just the two this file writes:
       // `[1e3]`, `[0x10]`, `[-1]`, `[1_000]` and `[1n]` are all constant keys, and each was
       // read as a variable one and reported. A red gate on valid code, the eleventh, which
@@ -1010,7 +1055,6 @@ function survey(text) {
     while (i < code.length && /\s/.test(code[i])) i++;
     return code[i] === "]";
   };
-  // A match that ends at its `[`, so the bracket can be read.
   // Forward to the next character that is code. Six places stepped over whitespace by hand,
   // two of them consulting `mask` and four not, with nothing saying why.
   const skip = (i) => {
@@ -1018,7 +1062,6 @@ function survey(text) {
     return i;
   };
   const computed = (m) => inCode(m) && !constantKey(m.index + m[0].length - 1);
-  const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
   // A name spliced into a pattern is not a name any more: `$` is an identifier character
   // and a regex anchor, so `$LOOK[k]` and `LOOK$[k]` matched nothing while `plain[k]` was
   // reported. `/code-review` found it, one round after the alphabet widened to admit far
@@ -1299,9 +1342,8 @@ function survey(text) {
     i++;
     // `INDEX` itself, rather than a hand-spelling of it that would not learn the next shape
     // it grows — it grew `?.` once already.
-    const index = new RegExp(INDEX, "y");
-    index.lastIndex = i;
-    if (!index.exec(code) || constantKey(index.lastIndex - 1)) continue;
+    const end = indexAt(i);
+    if (end < 0 || constantKey(end - 1)) continue;
     note("bare-table", m.index, "(anonymous)", ON_THE_SPOT);
   }
 
@@ -1469,8 +1511,19 @@ const FIXTURE = [
   'var AZ = table({ ["a-b"]: { now: 1 } }); AZ["a-b"][k];', //           …and one no identifier could spell
   'var BA = table({ ["s"]: dict() }); BA.s[k];', //                      safe — a computed key holding a dict
   'var BB = table({ [nameBB]: { now: 1 } }); BB.x[k];', //               safe — a key this cannot know reaches nothing
+  'var BC = [{ a: 1 }][0]; BC[k];', //                                   an element selected out of an array
+  'var BD = [{ a: 1 }][i]; BD[k];', //                                   …however the element is chosen
+  'var BE = [dict()][0]; BE[k];', //                                     safe — that element is a dict
+  'var BF = { a: 1 }; var BG = [BF][0]; BG[k];', //                      …and a name selected out of one
+  'var BH = [{ a: 1 }].slice(); BH[k];', //                              safe — a call's answer, not an element
+  'var BI = [dict(), { a: 1 }][0]; BI[k];', //                           one element of two, either of which it may be
+  'var BP = { a: 1 }; var BQ = [BP, dict()][0]; BQ[k];', //              …and the element before a comma is one too
+  'var BL = { a: 1 }; BL[.5];', //                                       safe — a number may begin with its point
+  'var BM = { a: 1 }; BM[-.5];', //                                      safe — …and with a sign in front of that
+  'var BN = { a: 1 }; BN[.5e3];', //                                     safe — …and carry on as any number does
+  'var BO = { a: 1 }; BO[.5 + n];', //                                   a sum that starts with one is not a constant
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -1623,7 +1676,8 @@ console.log(
     `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.create({…}) — ` +
     `on its own or handed back by Object.${THROUGH_CALLS.join("/")}, whose first argument is what they answer — ` +
     `that a variable indexes — under its own name, under a name it was assigned to — in parentheses, as a branch ` +
-    `of a conditional, as the last of a sequence or as either side of a fallback — or through a property path, ` +
+    `of a conditional, as the last of a sequence, as either side of a fallback or as an element selected out ` +
+    `of an array literal — or through a property path, ` +
     `which a name may have been assigned onto — is left ` +
     `with a prototype`
 );
