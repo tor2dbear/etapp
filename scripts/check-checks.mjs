@@ -39,6 +39,7 @@ const GATES = {
   format: ["python3", "scripts/check-format.py"],
   markdown: ["python3", "scripts/check-markdown.py"],
   dependencies: ["python3", "scripts/check-dependencies.py"],
+  lookups: ["node", "scripts/check-lookups.mjs"],
 };
 
 // Each entry: the claim in the gate's own words, the gate that makes it, and the edit
@@ -180,7 +181,7 @@ const CASES = [
     edit: ["scripts/dep-probe.mjs", "for (let i = 0; i < 1000; i++) CASES.push(randomGraph(i));\n", ""],
     expect: "[coverage]" },
   { gate: "dependencies", claim: "the two agree on what is settled",
-    edit: ["app.js", 'var TERMINAL = { done: 1, cancelled: 1 };', 'var TERMINAL = { done: 1 };'],
+    edit: ["app.js", 'var TERMINAL = table({ done: 1, cancelled: 1 });', 'var TERMINAL = table({ done: 1 });'],
     expect: "[agree]" },
   { gate: "dependencies", claim: "`blocks` is the mirror of `blockedBy`",
     edit: ["app.js", "      live.forEach(function (d) { d.blocks.push(it.id); });\n", ""],
@@ -205,6 +206,26 @@ const CASES = [
     expect: "[signal]" },
   { gate: "dependencies", claim: "…and the fence the board's half is lifted through",
     edit: ["app.js", "  // dep:begin\n", ""], expect: "exactly one" },
+
+  // A lookup table that answers for `constructor` is one line away at all times: the
+  // fix is that the tables have no prototype, so the mutations take that away again —
+  // from the helpers, from one table, and from the check's own idea of what a table
+  // looks like. The last is the first mutation in this file aimed at a gate's own
+  // corpus rather than at the code it judges, which #8's review asked for.
+  { gate: "lookups", claim: "a map built from data inherits nothing",
+    edit: ["app.js", "  function dict() { return Object.create(null); }", "  function dict() { return {}; }"],
+    expect: "[dict]" },
+  { gate: "lookups", claim: "…and neither does a table",
+    edit: ["app.js", "    var t = Object.create(null);", "    var t = {};"], expect: "[table]" },
+  { gate: "lookups", claim: "…and a table keeps every key it was given",
+    edit: ["app.js", "    for (var k in o) t[k] = o[k];", "    for (var k in o) if (k !== \"toString\") t[k] = o[k];"],
+    expect: "[table]" },
+  { gate: "lookups", claim: "no table indexed by a variable is left bare",
+    edit: ["app.js", "  var LEGACY_SORT = table({ default: DEFAULT_SORT });", "  var LEGACY_SORT = { default: DEFAULT_SORT };"],
+    expect: "[bare-table]" },
+  { gate: "lookups", claim: "…and the shape it looks for still matches the file",
+    edit: ["scripts/check-lookups.mjs", "var ([A-Z][A-Z0-9_]*) = (table", "zzz ([A-Z][A-Z0-9_]*) = (table"],
+    expect: "[coverage]" },
 ];
 
 // A recursive copy of the whole directory, `.git` included. The copy *is* the working

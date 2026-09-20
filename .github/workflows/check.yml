@@ -96,6 +96,16 @@ jobs:
       - name: Markdown judge
         run: python3 scripts/check-markdown.py
 
+      # Can a lookup table answer for a key nobody put in it? Every table on the board is
+      # indexed by a string from outside — a URL parameter, a typed term, a field in
+      # someone else's puck — and `?sort=constructor` killed the board, while a puck with
+      # `agent: constructor` killed it again through the grouping and had the sidebar
+      # counting "function Object() { [native code] }1". The tables have no prototype
+      # now; this asks that they still do not, and that the next one added goes the same
+      # way.
+      - name: Lookup tables
+        run: node scripts/check-lookups.mjs
+
       # `depends:` is authored once and derived twice: by the harvester for the payload,
       # and again by the board, because one that waited for the next harvest would show
       # `blockedBy` and `blocks` disagreeing between renders. Two implementations of one

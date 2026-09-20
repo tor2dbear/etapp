@@ -29,17 +29,23 @@ import { liftRegion } from "./lib/region.mjs";
 // The whole app.js source, read once — section 6 below scans it for unguarded URL
 // decodes and used to read the 656 KB file a second time to do so.
 const { src: APP_SRC, region: GRAMMAR } = liftRegion("app.js", "q");
+// The grammar's tables go through `table()`, which the board defines once for every
+// lookup table it has — outside this fence, in its own. Lifted rather than supplied:
+// a hand-written `table` here would be a second answer to "what does a lookup table
+// inherit", which is the question that file exists to settle.
+const { region: DICT } = liftRegion("app.js", "dict");
 
 function loadGrammar() {
-  // No prelude. There was one, supplying `TERMINAL` and `isFlagged` by hand because
-  // they sat outside the fence — and the hand-written `isFlagged` was `!!i.flagged`,
-  // a field app.js never sets, so `is:flagged` was checked against a predicate that
-  // could not fire. Both definitions moved inside the fence instead. If the region
-  // ever reaches for a name it does not define, this throws rather than being handed
-  // a stub that agrees with nothing.
+  // No prelude *written here*. There was one, supplying `TERMINAL` and `isFlagged` by
+  // hand because they sat outside the fence — and the hand-written `isFlagged` was
+  // `!!i.flagged`, a field app.js never sets, so `is:flagged` was checked against a
+  // predicate that could not fire. Both definitions moved inside the fence instead.
+  // What is prepended above is lifted from the file too, so the same rule holds: if the
+  // region reaches for a name nothing defines, this throws rather than being handed a
+  // stub that agrees with nothing.
   // eslint-disable-next-line no-new-func
   return new Function(
-    `"use strict";${GRAMMAR};` +
+    `"use strict";${DICT};${GRAMMAR};` +
       "return { parseQuery, serializeTerms, tokenize, runQuery, FIELDS, IS_STATES, FIELD_ALIAS, IS_ALIAS };"
   )();
 }

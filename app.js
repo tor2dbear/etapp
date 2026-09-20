@@ -45,15 +45,41 @@
     requestAnimationFrame(function () { document.body.classList.remove("preload"); });
   });
 
-  var STATUS_LABEL = { now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" };
+  // ── objects used as lookup tables ────────────────────────────────────────────
+  // A JavaScript object inherits `constructor`, `toString`, `valueOf` and the rest from
+  // `Object.prototype`, so `TABLE[k]` answers for keys nobody put there. Every table
+  // below is indexed by a string from outside — a URL parameter, a term someone typed,
+  // a field written in someone else's puck — and the answers were reachable:
+  //
+  //   ?sort=constructor   `LEGACY_SORT[raw]` handed back a function and the board died
+  //                       on "raw.split is not a function". Measured.
+  //   agent: constructor  grouping by Agent died on `byKey[k].push`, and the sidebar
+  //                       counted that agent as "function Object() { [native code] }1",
+  //                       because `(agent[it.agent] || 0) + 1` found a constructor
+  //                       where it expected a number. Measured, both.
+  //
+  // A puck is plain markdown in someone else's repo and `agent:`, `owner:` and `tags:`
+  // are free text in it, so this is not a hypothetical key. Tables start without a
+  // prototype and so do the maps built from data; every lookup site is then safe without
+  // being touched, which is why the rule is stated here and nowhere else.
+  // dict:begin
+  function table(o) {
+    var t = Object.create(null);
+    for (var k in o) t[k] = o[k];
+    return t;
+  }
+  function dict() { return Object.create(null); }
+  // dict:end
+
+  var STATUS_LABEL = table({ now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" });
   // Terminal statuses: settled, hidden from the active board unless "show done" is on.
   // `TERMINAL` lives inside the `q:` fence with the query grammar that reads it —
   // see the note there. Hoisted `var`, and every read is inside a function.
   // Priority is an optional, ordered field (highest → lowest). Absence = none.
   var PRIORITIES = ["urgent", "high", "medium", "low"];
-  var PRIORITY_LABEL = { urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
+  var PRIORITY_LABEL = table({ urgent: "Urgent", high: "High", medium: "Medium", low: "Low" });
   // A small priority badge: filled signal bars, Linear-style. Level → filled bars.
-  var PRIORITY_BARS = { urgent: 3, high: 3, medium: 2, low: 1 };
+  var PRIORITY_BARS = table({ urgent: 3, high: 3, medium: 2, low: 1 });
   // `null` is a value here, not a missing one — `priority` is urgent/high/medium/low **or
   // null = none** — so the badge draws its own emptiness rather than leaving that to a
   // caller. It needed no new artwork and cannot drift from the filled form, because the
@@ -85,7 +111,7 @@
   function agentLabel(a) { return a ? a.charAt(0).toUpperCase() + a.slice(1) : a; }
   // Picker options: the default disciplines ∪ any agent already in use in the data.
   function agentOptions() {
-    var set = {};
+    var set = dict();
     AGENT_DISCIPLINES.forEach(function (a) { set[a] = true; });
     (DATA.items || []).forEach(function (it) { if (it.agent) set[it.agent] = true; });
     return Object.keys(set).sort();
@@ -167,7 +193,7 @@
     // it has been through a saved view).
     fields: null,
   };
-  var PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
+  var PRIORITY_RANK = table({ urgent: 0, high: 1, medium: 2, low: 3 });
   // Display preferences persist (they're settings, not a transient filter) — but they
   // persist *to the view they were set in*, not to the board as a whole. There is no
   // read here any more, and that is the point: which memory to restore is a question
@@ -582,7 +608,7 @@
   // A stub is a second implementation; this file has spent six rounds on that lesson.
   // q:begin
   // term:begin
-  var TERMINAL = { done: 1, cancelled: 1 };
+  var TERMINAL = table({ done: 1, cancelled: 1 });
   // term:end
   function isFlagged(item) { return (item.signals || []).length > 0; }
   function lower(s) { return String(s).toLowerCase(); }
@@ -590,7 +616,7 @@
 
   // Fields are what a puck actually carries. `dateOf` marks the ones that compare
   // with >=/<=/>/< instead of matching a value.
-  var FIELDS = {
+  var FIELDS = table({
     status: { vals: function (i) { return [i.status]; } },
     priority: { vals: function (i) { return i.priority ? [i.priority] : []; } },
     agent: { vals: function (i) { return i.agent ? [i.agent] : []; } },
@@ -612,13 +638,13 @@
     updated: { dateOf: function (i) { return i.updated; } },
     created: { dateOf: function (i) { return i.created; } },
     target: { dateOf: function (i) { return i.target; } },
-  };
-  var FIELD_ALIAS = { label: "tag", labels: "tag", tags: "tag", repos: "repo", prio: "priority", discipline: "agent", etapp: "parent", epic: "parent" };
+  });
+  var FIELD_ALIAS = table({ label: "tag", labels: "tag", tags: "tag", repos: "repo", prio: "priority", discipline: "agent", etapp: "parent", epic: "parent" });
 
   // `is:` is the namespace for states that aren't fields — they're derived from the
   // data (by the harvester or here), so giving each its own field would invent a
   // second truth. Negate with `-is:blocked`.
-  var IS_STATES = {
+  var IS_STATES = table({
     // Ready is "pick one up, or hand it to an agent" — and a parent is neither. It
     // has no work of its own; what you take is one of its parts. Dog-fooding made
     // that concrete: `gui-hantverk` was unblocked (it declares no `depends:`) and
@@ -640,14 +666,14 @@
     parent: function (i) { return !!(i.children || []).length; },
     member: function (i) { return !!i.parentRef; },
     standalone: isStandalone,
-  };
+  });
   // Spellings that mean an existing state. Canonicalised at parse rather than
   // registered as a second predicate — which is how `orphan` used to be carried, and
   // it left the facet panel unable to tick the row a live `is:orphan` term had
   // selected, because the panel looks its values up by name. `parent` joins it here
   // rather than in `IS_STATES`, so every link and saved view written before the
   // rename keeps working *and* keeps showing.
-  var IS_ALIAS = { etapp: "parent", epic: "parent", orphan: "standalone" };
+  var IS_ALIAS = table({ etapp: "parent", epic: "parent", orphan: "standalone" });
   // The three states cover every puck between them, and the only ones counted twice
   // are the sub-parents — which genuinely are both. That's the check that the split
   // is the right one: `is:parent` + `is:member` + `is:standalone` leaves nothing out.
@@ -801,15 +827,15 @@
   // and hiding it there would make the sidebar's count disagree with the board.
   // Standalone does carry it — an inbox puck is standalone by definition, and
   // without the exclusion the row would just re-count the inbox.
-  var VIEWS = {
+  var VIEWS = table({
     all: "-status:inbox", ready: "is:ready", inbox: "status:inbox",
     parents: "is:parent", standalone: "-status:inbox is:standalone", attention: "is:flagged",
-  };
+  });
   // Which views can reach the archive at all, and therefore have to obey the toggle.
   // `ready` and `inbox` can't (their statuses are never terminal), and `attention`
   // *wants* to — a flagged done puck is exactly what that view is for. The rest are
   // the ones that would otherwise show landed work unasked.
-  var ARCHIVABLE = { all: 1, parents: 1, standalone: 1 };
+  var ARCHIVABLE = table({ all: 1, parents: 1, standalone: 1 });
   var NOT_DONE = { field: "is", op: "is", values: ["done"], neg: true };
 
   // The two fields the sidebar navigates by. They are ordinary query fields; what makes
@@ -1089,7 +1115,7 @@
   // `q` and `collapsed` carry values the URL can't take raw: a search string, and the
   // NUL that keys the "none" bucket (see NO_VALUE) — unencoded, the parser drops it
   // and a shared link loses the fold it was supposed to carry.
-  var ENCODED_KEYS = { q: 1, collapsed: 1 };
+  var ENCODED_KEYS = table({ q: 1, collapsed: 1 });
   function viewParams() {
     var p = [];
     var o = viewParamObject();
@@ -1152,7 +1178,7 @@
   // deliberately narrowing the chain to just `priority` in the new menu would be rewritten
   // back on the next load: the round-trip bug again, one storey up.
   var STORED_SORT_V = 2;
-  var STORED_SORT_WAS = { priority: "priority,updated", status: "status,order" };
+  var STORED_SORT_WAS = table({ priority: "priority,updated", status: "status,order" });
   function upgradeStoredSort(store) {
     if (!store || store.__v >= STORED_SORT_V) return false;
     Object.keys(store).forEach(function (view) {
@@ -1313,7 +1339,7 @@
     try { return decodeURIComponent(v); } catch (e) { return v; }
   }
   function readUrl() {
-    var s = location.search.replace(/^\?/, ""), got = {};
+    var s = location.search.replace(/^\?/, ""), got = dict();
     if (s) s.split("&").forEach(function (kv) {
       var i = kv.indexOf("=");
       got[i < 0 ? kv : kv.slice(0, i)] = i < 0 ? "" : safeDecode(kv.slice(i + 1).replace(/\+/g, " "));
@@ -1494,7 +1520,7 @@
   // inherits currentColor so they track light/dark + the repo accent. To add
   // one: drop its path 'd' string(s) into ICONS and reference by name. ──
   var SVGNS = "http://www.w3.org/2000/svg";
-  var ICONS = {
+  var ICONS = table({
     slash: ["M1.25 7.5a6.25 6.25 0 1 0 12.5 0 6.25 6.25 0 1 0 -12.5 0", "m3.08125 3.08125 8.8375 8.8375"],
     // alert-triangle (Feather), scaled to the 15 grid the set draws on. The set had no
     // warning mark, so the drift flag was the literal "⚠" — a text character sitting
@@ -1612,7 +1638,7 @@
             "M4.5 11.25c0.4142 0 0.75 -0.3358 0.75 -0.75s-0.3358 -0.75 -0.75 -0.75",
             "M10.5 11.25c-0.4142 0 -0.75 -0.3358 -0.75 -0.75s0.3358 -0.75 0.75 -0.75",
             "M10.5 11.25c0.4142 0 0.75 -0.3358 0.75 -0.75s-0.3358 -0.75 -0.75 -0.75"],
-  };
+  });
   function icon(name, cls) {
     var svg = document.createElementNS(SVGNS, "svg");
     svg.setAttribute("viewBox", "-0.5 -0.5 16 16");
@@ -1941,7 +1967,7 @@
         return f;
       } },
   ];
-  var PROP_BY_KEY = {};
+  var PROP_BY_KEY = dict();
   PROPS.forEach(function (f) { PROP_BY_KEY[f.key] = f; });
   var DATE_PROPS = PROPS.filter(function (f) { return f.where === "date"; }).map(function (f) { return f.key; });
   // The default set is the board as it shipped: everything on, with the dates left to the
@@ -1963,7 +1989,7 @@
   // *shows* target — show the date the ordering is about — while this rule's instinct
   // would be to suppress it. It is not the same sentence twice: the grouping buckets by
   // month ("Sep 2026") and the row says "in 5 days". The column is coarser than the row.
-  var GROUP_SAYS = { status: 1, repo: 1, agent: 1, priority: 1, parent: 1 };
+  var GROUP_SAYS = table({ status: 1, repo: 1, agent: 1, priority: 1, parent: 1 });
   function groupSays(key) { return !!GROUP_SAYS[key] && effectiveGroup() === key; }
   function propOn(key) {
     if (!state.props) return !groupSays(key);
@@ -2012,7 +2038,7 @@
   // shows more than one: two bare date strings side by side say nothing about which is
   // which, and `dateEl` used to hardcode *"Last updated"* into both its tooltip and its
   // accessible name — so the second date was not merely unlabelled but read out wrong.
-  var DATE_LABEL = { created: "Created", updated: "Updated", target: "Target" };
+  var DATE_LABEL = table({ created: "Created", updated: "Updated", target: "Target" });
   function oneDate(item, field, cls, label, mark) {
     if (field === "target") {
       if (item.target) return targetEl(item.target, cls); // already says "◷" and names itself
@@ -5121,7 +5147,7 @@
   // all plain text out of a harvest, so a NUL-prefixed string cannot collide with one.
   var TRAY_KEY = "\u0000tray";
   function presentKeys(items, keyOf, rank) {
-    var seen = {}, out = [];
+    var seen = dict(), out = [];
     items.forEach(function (it) { var k = keyOf(it); if (!seen[k]) { seen[k] = 1; out.push(k); } });
     return out.sort(function (a, b) {
       if (a === NO_VALUE) return 1; // "none" always sits last
@@ -5129,7 +5155,7 @@
       return rank ? rank(a) - rank(b) : a.localeCompare(b);
     });
   }
-  var GROUPS = {
+  var GROUPS = table({
     // No grouping at all: one bucket, no heading. **First in the table, which is what the
     // menus read** — both the Display list and ⌘K walk `Object.keys(GROUPS)`. "None" is the
     // one entry that is not a field to bucket by but the absence of one, so it belongs at
@@ -5256,12 +5282,12 @@
       labelOf: function (k) { return k === NO_VALUE ? "No priority" : (PRIORITY_LABEL[k] || k); },
       write: function (item, k) { changePriority(item, k === NO_VALUE ? null : k); },
     },
-  };
+  });
   // The groupings that need the list. `parent` is a hierarchy and cannot be columns;
   // `none` is the absence of columns, which is the same thing said the other way. One
   // table rather than two `=== "parent"` tests, because the second one is exactly how the
   // first came to be forgotten in `effectiveParams`.
-  var LIST_ONLY = { parent: 1, none: 1 };
+  var LIST_ONLY = table({ parent: 1, none: 1 });
   // Grouping by a field the view has already fixed makes one group named after the
   // view — "INBOX 11" under a header that says "Inbox 11". Derived from the columns
   // the view can show rather than from the view's name, so a future single-status
@@ -5329,7 +5355,7 @@
   function groupsOf(visible) {
     var g = activeGroup();
     var keys = g.keys(visible);
-    var byKey = {};
+    var byKey = dict();
     keys.forEach(function (k) { byKey[k] = []; });
     visible.forEach(function (it) {
       var k = g.keyOf(it);
@@ -6479,7 +6505,7 @@
   // are already what the old key names said, and moving them from the name to a control is
   // the whole change. `asc`/`desc` stay the spelling in the URL, where they mean the
   // literal order of the underlying value.
-  var SORT_FIELDS = {
+  var SORT_FIELDS = table({
     // `order` is the one field with no direction, and the reason is not symmetry: reversing
     // it would silently switch **dragging** off, since `manualRank()` asks for the exact key
     // `order` at the head of the chain. A control whose only visible effect is to disable a
@@ -6507,7 +6533,7 @@
       date: "created" },
     title: { label: "Title", def: "asc", asc: "A → Z", desc: "Z → A",
       text: function (i) { return i.title; } },
-  };
+  });
   var SORT_ORDER = Object.keys(SORT_FIELDS); // the catalogue's order, which the picker keeps
   // A key is a field, optionally suffixed with its direction. The suffix is written only
   // when the direction is *not* the field's default, so the shortest spelling is the
@@ -6577,7 +6603,7 @@
   // then the grammar here is clean, whereas an expansion in this map is forever and takes the
   // one-key chain's spelling with it. Before concluding that nothing reads a value, ask what
   // the *running app* writes — searching the repo answered no twice, and was wrong twice.
-  var LEGACY_SORT = { default: DEFAULT_SORT };
+  var LEGACY_SORT = table({ default: DEFAULT_SORT });
   // The keys a value actually names — **possibly none**, which is the whole reason this is
   // split out from `parseSort`. A reader that always hands back a chain cannot tell "this
   // said nothing I understand" from "this said the default", and the two are different
@@ -6585,7 +6611,7 @@
   function parseSortKeys(v) {
     var raw = String(v == null ? "" : v).trim();
     if (LEGACY_SORT[raw]) raw = LEGACY_SORT[raw];
-    var out = [], seen = {};
+    var out = [], seen = dict();
     raw.split(",").forEach(function (k) {
       k = k.trim();
       var f = sortField(k);
@@ -6829,10 +6855,10 @@
   }
 
   // The consistent view-header reflects the current focus + how many are shown.
-  var VIEW_TITLES = {
+  var VIEW_TITLES = table({
     all: "All pucks", ready: "Ready to take", inbox: "Inbox",
     parents: "Parents", standalone: "Standalone", attention: "Needs attention",
-  };
+  });
   function repoNameOf(repo) {
     for (var i = 0; i < DATA.sources.length; i++) if (DATA.sources[i].repo === repo) return DATA.sources[i].name;
     return repo.split("/").pop();
@@ -6912,7 +6938,7 @@
       }));
     }
     var repoQ = withOthers("repo"), agentQ = withOthers("agent");
-    var repo = {}, agent = {};
+    var repo = dict(), agent = dict();
     DATA.items.forEach(function (it) {
       if (runQuery(it, repoQ)) repo[it.repo] = (repo[it.repo] || 0) + 1;
       if (it.agent && runQuery(it, agentQ)) agent[it.agent] = (agent[it.agent] || 0) + 1;
@@ -7115,7 +7141,7 @@
   // The views, named once and read by both the sidebar and the ⌘K palette — a new
   // view can't now appear in one and be missing from the other, which is exactly
   // what happened to Parents (a sidebar row with no command).
-  var VIEW_DEFS = {
+  var VIEW_DEFS = table({
     // Only Inbox carries a glyph, and that is the point rather than an oversight:
     // it is the one row that is a *room* and not a slice of the board (see
     // VIEW_GROUPS), so it stands in its own section and wears the mark of one.
@@ -7126,7 +7152,7 @@
     standalone: { label: "Standalone", title: "Pucks in no tree — the loose ones" },
     ready: { label: "Ready", title: "Unblocked now/next — pick one up or hand it to an agent" },
     attention: { label: "Needs attention", title: "Pucks whose declared status disagrees with reality" },
-  };
+  });
   // Two kinds of row, answering two different questions — *Views* is the slice you
   // chose to look at, *Signals* is the board's own opinion about it. Inbox is
   // neither: it's a room you go to in order to empty it, so it stands above both
@@ -7396,7 +7422,7 @@
   // answers *which* pucks — the two never overlap. Filter shows what it's doing
   // with chips/a count; Display shows a dot when anything differs from default,
   // because "showing more" must never read as "you have narrowed something".
-  var DISPLAY_DEFAULTS = { view: "board", sort: null, group: "status", showDone: false, showEmpty: true };
+  var DISPLAY_DEFAULTS = table({ view: "board", sort: null, group: "status", showDone: false, showEmpty: true });
   var displayBtn = document.getElementById("displayBtn");
   var displayDot = document.getElementById("displayDot");
   function displayDirty() {
@@ -8035,7 +8061,7 @@
     if (!q) return cmds; // empty ⌘K → the command palette home
     var matchedCmds = cmds.filter(function (c) { return c.label.toLowerCase().indexOf(q) !== -1; });
     // Discipline shortcuts: matching labels not already active, as filter actions.
-    var tagCounts = {};
+    var tagCounts = dict();
     DATA.items.forEach(function (it) { it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
     var tags = Object.keys(tagCounts)
       .filter(function (t) { return t.indexOf(q) !== -1 && filterValues("tag", false).indexOf(t) === -1; })
@@ -8387,7 +8413,7 @@
 
   searchInput.addEventListener("input", function (e) {
     var typed = parseQuery(e.target.value.trim());
-    var typedFields = {};
+    var typedFields = dict();
     typed.forEach(function (t) { if (t.field !== "text") typedFields[t.field + (t.neg ? "!" : "")] = 1; });
     // Predicates you didn't touch survive; a field you typed replaces that field.
     var kept = paletteBase.filter(function (t) { return !typedFields[t.field + (t.neg ? "!" : "")]; });
@@ -8510,7 +8536,7 @@
     {
       key: "owner", label: "Owner",
       values: function () {
-        var seen = {};
+        var seen = dict();
         DATA.items.forEach(function (it) { if (it.owner) seen[it.owner] = 1; });
         return Object.keys(seen).sort().map(function (o) { return { value: o, label: "@" + o }; });
       },
@@ -9353,10 +9379,10 @@
   // to FILTER_FIELDS keeps that decision intact: this is how a term is *written*, not a
   // dimension you can filter by. Reachable in one click ever since a repo column could
   // be hidden; before that it needed a hand-typed query, which is why it sat unseen.
-  var PLACE_FIELDS = {
+  var PLACE_FIELDS = table({
     repo: { label: "Repo", value: function (v) { return repoNameOf(resolveRepo(v) || v) || v; } },
     agent: { label: "Agent", value: function (v) { return agentLabel(v); } },
-  };
+  });
 
   function valueLabel(f, v) {
     var all = f.values();
