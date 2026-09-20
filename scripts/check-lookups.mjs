@@ -551,6 +551,11 @@ function survey(text) {
         else if (c === "|") branch(true);
         else if (c === "&") branch(false);
         else if (c === "," && groups > 0) branch(false);
+        // `lookup = alias = unsafe` hands `lookup` what the inner assignment is worth, which
+        // is `unsafe` and not `alias` — so the target is discarded and the reading carries on
+        // to the right of it. The character before is what tells this `=` from the one in
+        // `!=`, `<=` or `>=`, where an operand was already read and must stay poisoned.
+        else if (c === "=" && !/[!<>+\-*/%&|^=]/.test(before)) branch(false);
         else if (!/[([{)\]}]/.test(c) && c !== ";" && c !== ",") {
           poisoned = true;
           current = [];
@@ -980,6 +985,9 @@ const FIXTURE = [
   'var WT; WT ||= { now: 1 }; WT[k];', //                               a literal put there by a logical assignment
   'var WU = { now: 1 }; var WV; WV ??= WU; WV[k];', //                  …and a name put there by one
   'var WW = { now: 1 }; var WX = 0; WX += WW; WX[k];', //               safe — a sum is not the thing added to it
+  'var XA = { now: 1 }; var XB, XC; XC = XB = XA; XC[k];', //           a chain of assignments, worth its right-hand side
+  'var XD = { now: 1 }; var XE = (n != XD); XE[k];', //                 safe — the `=` of a comparison is not one
+  'var XF = { now: 1 }; var XG = function () { return XF; }; XG[k];', // safe — a function, not what it returns
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -1003,7 +1011,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
