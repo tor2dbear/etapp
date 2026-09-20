@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in twenty-three different ways over
-// eighteen rounds of review. Eighteen were the same defect: the scan could not see a
+// that is not a literal — and it has now been wrong in twenty-eight different ways over
+// twenty rounds of review. Twenty were the same defect: the scan could not see a
 // shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
@@ -269,7 +269,7 @@ function lex(text) {
       word = "";
       continue;
     }
-    if (c === "/" && (last === "" || last === "kw" || last === ")head" || REGEX_AFTER.has(last))) {
+    if (c === "/" && (last === "" || last === "kw" || last === ")head" || last === ":label" || REGEX_AFTER.has(last))) {
       // A character class can hold an unescaped `/`, so the closing one is only the one
       // outside `[…]`. An opener with no closer on its line was not a regex after all.
       let j = i + 1;
@@ -549,11 +549,14 @@ function survey(text) {
   // literal, an array of them, or a function body is not mistaken for one of these. A key
   // may be quoted — app.js writes 143 of them — and the quoted spelling is read only when
   // what it quotes could be reached by a property path in the first place.
-  const KEY = /([A-Za-z_$][\w$]*)\s*:\s*(table\(|dict\(\)|\{|)/y;
+  // The opener a key's value starts with — and a bare identifier counts, because
+  // `table({ status: inner })` protects nothing about what `inner` holds. Ordered so that
+  // `dict()` and `table(` win over the identifier that starts them.
+  const KEY = /([A-Za-z_$][\w$]*)\s*:\s*(table\(|dict\(\)|\{|[A-Za-z_$][\w$]*|)/y;
   // A quoted key is a *string*, and `"status-name"` is as much a key as `status` is —
   // restricting it to identifier shapes meant `t["status-name"][k]` reached nothing.
   // Codex found it (#9, round 12).
-  const QUOTED = /"((?:[^"\\]|\\.)*)"\s*:\s*(table\(|dict\(\)|\{|)|'((?:[^'\\]|\\.)*)'\s*:\s*(table\(|dict\(\)|\{|)/y;
+  const QUOTED = /"((?:[^"\\]|\\.)*)"\s*:\s*(table\(|dict\(\)|\{|[A-Za-z_$][\w$]*|)|'((?:[^'\\]|\\.)*)'\s*:\s*(table\(|dict\(\)|\{|[A-Za-z_$][\w$]*|)/y;
   const keysOf = (body) => {
     const keys = new Map();
     let depth = 0;
@@ -588,18 +591,37 @@ function survey(text) {
   // nothing. A root this cannot resolve — a parameter, a function result — yields
   // nothing, which is the boundary: it is the same boundary a name bound to a call has
   // always had, and it is here rather than in a claim.
+  const bindingsOf = (name) => [...spread(name, heldFrom)].flatMap((held) => bound.get(held) || []);
   const reached = (root, path) => {
     const hits = [];
-    const roots = [...spread(root, heldFrom)].flatMap((name) => bound.get(name) || []);
-    for (const b of roots) {
-      let body = isLiteral(b.opens) ? bodyOf(b.at) : null;
-      for (let s = 0; body && s < path.length; s++) {
-        const k = keysOf(body).get(path[s]);
-        if (!k) break;
-        if (s === path.length - 1) { hits.push(k); break; }
-        body = k.opens === "{" || k.opens === "table(" ? bodyOf(k.at) : null;
+    const seen = new Set();
+    // A step lands on a literal, on a `dict()`, or on a *name* — and the name is the one
+    // that was missing: `table({ status: inner })` says nothing about what `inner` holds, so
+    // the path is followed into that binding instead of stopping at a value it cannot read.
+    // Codex found it (#9, round 20). The `seen` set is because a name can lead back to
+    // itself and the walk has to end.
+    const step = (bindings, at) => {
+      for (const b of bindings) {
+        if (!isLiteral(b.opens)) continue;
+        const body = bodyOf(b.at);
+        if (!body) continue;
+        const k = keysOf(body).get(path[at]);
+        if (!k) continue;
+        const last = at === path.length - 1;
+        if (k.opens === "{" || k.opens === "table(") {
+          if (last) hits.push(k);
+          else step([k], at + 1);
+          continue;
+        }
+        if (k.opens === "dict()" || k.opens === "") continue;
+        if (seen.has(k.opens + "@" + at)) continue;
+        seen.add(k.opens + "@" + at);
+        const next = bindingsOf(k.opens);
+        if (last) hits.push(...next);
+        else step(next, at + 1);
       }
-    }
+    };
+    step(bindingsOf(root), 0);
     return hits;
   };
 
@@ -635,7 +657,7 @@ function survey(text) {
     const path = [...m[3].matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
     const subject = `${root}.${path.join(".")}`;
     for (const k of reached(root, path)) {
-      if (k.opens === "{") note("bare-table", k.at, subject, `${subject} reaches an object literal built without table()`);
+      if (hasPrototype(k.opens)) note("bare-table", k.at, subject, `${subject} reaches an object with a prototype`);
     }
   }
   // And a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all.
@@ -650,7 +672,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Eighteen rounds of review found
+// every other line is here because it must *not* be. Twenty rounds of review found
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -694,6 +716,9 @@ const FIXTURE = [
   'var get = 1, M1; var m1 = get / (M1 = { now: 1 }, M1[k]) / 2;', //     a contextual keyword as a name
   'var O1 = (sideEffect(), { now: 1 }); O1[k];', //                      a comma inside grouping parens
   'var O2 = (a, b); O2[k];', //                                          safe — no literal in it at all
+  'var Q0 = { now: 1 }; var Q1 = table({ s: Q0 }); Q1.s[k];', //         a property whose value is a name
+  'var Q2 = dict(); var Q3 = table({ s: Q2 }); Q3.s[k];', //             safe — that name holds a dict
+  'function rl(x) { switch (x) { case 1: /{}/.test(""); } }', //         safe — a regex after a label
   'async function rw() { await /{}/.test(""); }', //                     safe — a regex after a keyword
   'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
@@ -712,7 +737,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
