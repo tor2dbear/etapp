@@ -218,6 +218,13 @@ const BLOCK_WORDS = new Set(["else", "do", "try", "finally", "catch", "var", "co
 // expression — so the `/` after it opens a regex. Everything else that ends in `)` is a
 // value, and the `/` after *that* is division.
 const CONTROL = new Set(["if", "while", "for", "with"]);
+// …and the heads whose `(…)` is never a parameter list, which is those four and one more.
+// `switch` is not a `CONTROL` head — the `/` after its `)` is not a regex, because a switch
+// body is a `{` and nothing else — but that body is exactly what the parameter-list rule
+// reads as the mark of one, so `switch ({})` had its literal reclassified as a pattern and
+// went unreported. A miss rather than a red gate, and the same misreading as `for await`:
+// the answer was right for four heads and the question was about five.
+const NOT_PARAMS = new Set([...CONTROL, "switch"]);
 // And `}` is three, for the same reason. A `{` in expression position opens an object
 // literal, which is a *value*, so the `/` after its `}` is division — `{ … } / x`. A `{`
 // anywhere else opens a block, and a statement follows its `}`, so a `/` there opens a
@@ -336,7 +343,15 @@ function lex(text) {
       // below lands on the same verdict by a different route. So it is a correctness fix
       // with an unobservable effect, which is a thing worth writing down rather than
       // covering with a mutation that would not bite.
-      if (c === "$" && text[i + 1] === "{") { cover(i, i + 2); i += 2; nesting++; nest.push({ kind: "sub", depth: 0 }); last = "{"; word = ""; continue; }
+      if (c === "$" && text[i + 1] === "{") {
+        cover(i, i + 2); i += 2; nesting++; nest.push({ kind: "sub", depth: 0 });
+        // A substitution is an expression, and everything written inside it is a value. The
+        // level stack below has to hear about this brace, because it will hear about the `}`
+        // that closes it — and a push that never happened is a *pop* of somebody else's
+        // level, which is how `(a = { x: `${y}`, z: {} })` lost the value it was inside.
+        if (parens.length) parens[parens.length - 1].levels.push({ value: true, afterEq: false });
+        last = "{"; word = ""; continue;
+      }
       cover(i, i + 1);
       i++;
       continue;
@@ -451,19 +466,41 @@ function lex(text) {
     if (c === "(" || c === "[" || c === "{") nesting++;
     else if (c === ")" || c === "]" || c === "}") nesting--;
     if (c === "(") {
-      parens.push({ depth: nesting, braces: [] });
+      // `levels` is the bracket nesting *inside* this parenthesis, which is what says whether
+      // a brace is a binding position. See the `{` below.
+      parens.push({ depth: nesting, braces: [], levels: [{ value: false, afterEq: false }] });
       heads.push(word === "await" && prev === "for" ? "for" : word);
     }
+    // A pattern nests, and round 34 read only its first level: `function f({ value: {} }) {}`
+    // had its inner brace reported, and so did `([{}]) => 1`, `({ a: [{}] })` and
+    // `({ a: { b: {} } })` — the eighteenth red gate on valid code, which Codex found
+    // (#9, round 38). What a default value does *not* do is nest: in `({ a = {} })` and
+    // `(a = [1, {}])` the brace after the `=` is an expression, and an empty object literal
+    // there is one — the fixture has said so since round 7 and must keep saying it. So each
+    // bracket level inside the parenthesis carries whether it is a *value*, which everything
+    // inside it inherits, and each level carries whether an `=` has started a default, which
+    // the next comma ends. "Reclassify the pattern recursively" would have taken the defaults
+    // with it.
+    const holder = parens[parens.length - 1];
+    const level = holder && holder.levels[holder.levels.length - 1];
+    if (level) {
+      if (c === ",") level.afterEq = false;
+      // The character before is what tells this `=` from `==`, `<=`, `!=` and an arrow.
+      else if (c === "=" && !/[!<>+\-*/%&|^=]/.test(last) && text[i + 1] !== "=" && text[i + 1] !== ">") level.afterEq = true;
+    }
+    // A binding position: a level that is not a value, not past an `=`, and a brace written
+    // where a parameter or a pattern's part is written rather than where a value is.
+    const binding = !!level && !level.value && !level.afterEq &&
+      (last === "(" || last === "," || last === ":" || last === "[");
+    if (holder && (c === "{" || c === "[")) holder.levels.push({ value: !binding, afterEq: false });
+    if (holder && (c === "}" || c === "]") && holder.levels.length > 1) holder.levels.pop();
     if (c === "{") {
       let kind;
       if (maker !== null && nesting === makerAt + 1) { kind = maker ? "fnvalue" : "block"; maker = null; }
       else kind = last !== "=>" && opensValue(last, word) ? "literal" : "block";
-      // A brace in argument position directly inside a parenthesis may yet turn out to be a
+      // A brace in a binding position inside a parenthesis may yet turn out to be a
       // parameter's pattern; the `)` decides.
-      const holder = parens[parens.length - 1];
-      if (kind === "literal" && holder && nesting === holder.depth + 1 && (last === "(" || last === ",")) {
-        holder.braces.push(i);
-      }
+      if (kind === "literal" && binding) holder.braces.push(i);
       braceAt.push(i);
       braces.push(kind);
       kinds.set(i, kind);
@@ -480,7 +517,7 @@ function lex(text) {
         // `=>` or a body after the `)` makes it a parameter list, and every empty literal
         // written straight inside it a pattern. Read at the `)` because that is the first
         // place the answer exists.
-        if (holder && holder.braces.length && !CONTROL.has(head)) {
+        if (holder && holder.braces.length && !NOT_PARAMS.has(head)) {
           let j = i + 1;
           while (j < text.length && /\s/.test(text[j])) j++;
           if (text[j] === "{" || (text[j] === "=" && text[j + 1] === ">")) {
@@ -1041,8 +1078,17 @@ function survey(text) {
   const KEY = new RegExp(`(${ID})\\s*(?::\\s*${VALUE}|(?=[,}]|$))`, "yu");
   // A quoted key is a *string*, and `"status-name"` is as much a key as `status` is —
   // restricting it to identifier shapes meant `t["status-name"][k]` reached nothing.
-  // Codex found it (#9, round 12).
-  const QUOTED = new RegExp(`"(${DQ})"\\s*:\\s*${VALUE}|'(${SQ})'\\s*:\\s*${VALUE}`, "yu");
+  // Codex found it (#9, round 12). One capture for the whole quoted key rather than one per
+  // quote: the two alternatives each carried their own copy of `VALUE`, which is two places
+  // for the next round to teach and the shape every duplicated fragment here has had.
+  const QUOTED = new RegExp(`(${STRING})\\s*:\\s*${VALUE}`, "yu");
+  // …and a *computed* constant key is that same string one bracket further out:
+  // `{ ["lookup"]: … }` is the key `lookup`, which the reading side has taken since round 10
+  // — `t["lookup"]` and `t.lookup` are one path — while the writing side took neither
+  // spelling of it. Codex found it (#9, round 38). A computed key that is not constant,
+  // `{ [name]: … }` or a template, is a key this cannot know, and it is the same boundary a
+  // root bound to a call has: it reaches nothing rather than reaching wrong.
+  const COMPUTED = new RegExp(`\\[\\s*(${STRING})\\s*\\]\\s*:\\s*${VALUE}`, "yu");
   // What a bracket does to a depth count. Written twice twenty lines apart, and the second
   // copy exists because the first one was missing a case — which is the argument for there
   // being one.
@@ -1054,21 +1100,33 @@ function survey(text) {
       const c = body.text[i];
       const quoted = body.mask[i] === 1;
       if (quoted && !(c === '"' || c === "'")) continue;
-      if (!quoted && delta(c)) { depth += delta(c); continue; }
-      if (depth !== 0) continue;
-      if (!quoted && i > 0 && IDENT_PART.test(body.text[i - 1])) continue;
-      // Only the quote that *opens* a string — an escaped one inside it is masked too.
-      if (quoted && i > 0 && body.mask[i - 1] === 1) continue;
-      const re = quoted ? QUOTED : KEY;
-      re.lastIndex = i;
-      const m = re.exec(body.text);
-      if (!m) continue;
-      const name = m[1] !== undefined ? m[1] : m[3];
-      // A shorthand property is its own value, and stands where it is written.
-      const short = m[1] !== undefined && m[2] === undefined;
-      const opens = short ? name : m[1] !== undefined ? m[2] : m[4];
+      // Three spellings, one position: a name, a quoted string, or a computed constant. The
+      // bracket a computed key opens with is the bracket the depth counter is watching for,
+      // so the match is tried *before* the counter takes it — `["lookup"]:` is a key and
+      // `[0]` is an index — and the counter takes it when there is no key here after all.
+      const here =
+        depth === 0 &&
+        !(!quoted && i > 0 && IDENT_PART.test(body.text[i - 1])) &&
+        // Only the quote that *opens* a string — an escaped one inside it is masked too.
+        !(quoted && i > 0 && body.mask[i - 1] === 1);
+      const re = quoted ? QUOTED : c === "[" ? COMPUTED : KEY;
+      let m = null;
+      if (here) {
+        re.lastIndex = i;
+        m = re.exec(body.text);
+      }
+      if (!m) {
+        if (!quoted) depth += delta(c);
+        continue;
+      }
+      // A quoted key, however it is spelled, is the string it denotes; a bare one is itself,
+      // and a shorthand is its own value and stands where it is written.
+      const bare = re === KEY;
+      const name = bare ? m[1] : unescape(m[1].slice(1, -1));
+      const short = bare && m[2] === undefined;
+      const opens = short ? name : m[2];
       const at = short ? body.at + i : body.at + i + m[0].length - opens.length;
-      if (!keys.has(unescape(name))) keys.set(unescape(name), { opens, at });
+      if (!keys.has(name)) keys.set(name, { opens, at });
       // The match consumed the token the value *opens* with, and the scan then jumps past
       // it — so the brackets inside it never reached the depth counter while their closers
       // did. Depth went to -1 at the end of the first nested literal, and from there every
@@ -1406,8 +1464,13 @@ const FIXTURE = [
   'var AS = table({ s: Object.defineProperty({ a: 1 }, "x", { value: 1 }) }); AS.s[k];', // …and a value read through one
   'var AT = table({ s: Object.defineProperty(dict(), "value", { value: { a: 1 } }) }); AT.s[k]; AT.value[k];', // safe — a descriptor's keys are not the literal's
   'var AU = myObject.freeze({ a: 1 }); AU[k];', //                       safe — somebody else's freeze answers what it likes
+  'var AV = { now: 1 }; var AW = table({ ["lookup"]: AV }); AW.lookup[k];', // a computed constant key
+  'var AX = { now: 1 }; var AY = table({ [\'lookup\']: AX }); AY.lookup[k];', // …however it is quoted
+  'var AZ = table({ ["a-b"]: { now: 1 } }); AZ["a-b"][k];', //           …and one no identifier could spell
+  'var BA = table({ ["s"]: dict() }); BA.s[k];', //                      safe — a computed key holding a dict
+  'var BB = table({ [nameBB]: { now: 1 } }); BB.x[k];', //               safe — a key this cannot know reaches nothing
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -1434,11 +1497,22 @@ const EMPTY_FIXTURE = [
   'for (var {} of rows) { ident(); }', //                         ·   …and one the keyword already answered
   'async function fa() { for await ({} of rows) { ident(); } }', // ·  …and one in an await head
   'async function fw() { for await (const x of y) /{}/.test(x); }', // · a regex in that head's body
+  'function np({ value: {} }) {}', //                             ·   a pattern inside a pattern
+  'function nq([{}]) {}', //                                      ·   …and one inside an array pattern
+  'function nr({ a: [{}] }) {}', //                               ·   …and one inside both
+  'var ns = ({ a: {} }) => 1;', //                                ·   …and one in an arrow's
+  'function nt({ a: { b: {} } }) {}', //                          ·   …three levels down
+  'function nu({ a = {} }) {}', //                               27 — a default value in a pattern is a value
+  'function nv(a = [1, {}]) {}', //                              28 — …and so is one in an array
+  'function nw(a = b ? c : {}) {}', //                           29 — …and one after a colon that binds nothing
+  'function nx(x) { switch ({}) { case 1: break; } }', //        30 — a switch head is not a parameter list
+  'function ny(a = 1, { b: {} }) {}', //                          ·   the comma that ends a default
+  'function nz(a = { x: `${y}`, z: {} }) {}', //                 32 — a substitution is a value too
 ].join("\n");
 const empties = survey(EMPTY_FIXTURE).notes;
 const bares = empties.filter((n) => n.check === "bare").map((n) => n.line);
-if (bares.join(",") !== "1,6,7,15") {
-  fail("fixture", `the empty-literal rule reports on line(s) ${bares.join(", ") || "none"} of its fixture, where it should report on 1, 6, 7 and 15`);
+if (bares.join(",") !== "1,6,7,15,27,28,29,30,32") {
+  fail("fixture", `the empty-literal rule reports on line(s) ${bares.join(", ") || "none"} of its fixture, where it should report on 1, 6, 7, 15, 27, 28, 29, 30 and 32`);
 }
 for (const n of empties.filter((n) => n.check !== "bare")) {
   fail("fixture", `the empty-literal fixture also produced ${n.check} on line ${n.line}: ${n.what}`);
