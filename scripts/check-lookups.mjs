@@ -920,7 +920,14 @@ function survey(text) {
   // The opener a key's value starts with — and a bare identifier counts, because
   // `table({ status: inner })` protects nothing about what `inner` holds. Ordered so that
   // `dict()` and `table(` win over the identifier that starts them.
-  const KEY = new RegExp(`(${ID})\\s*:\\s*(table\\(|dict\\(\\)|\\{|${ID}|)`, "yu");
+  // …or no colon at all: `{ inner }` is the key `inner` holding whatever `inner` holds, and
+  // reading only the colon form meant `table({ inner })` certified a path that reaches a
+  // bare literal. Codex found it (#9, round 35). The lookahead is what keeps a method out:
+  // in `{ m() {} }` the name is followed by `(`, so it is neither a shorthand property nor
+  // a key. End-of-text counts as well, because what is read here is the *inside* of the
+  // literal: the last shorthand in `{ inner }` has no comma and no brace after it, which is
+  // how the first version of this matched nothing at all.
+  const KEY = new RegExp(`(${ID})\\s*(?::\\s*(table\\(|dict\\(\\)|\\{|${ID}|)|(?=[,}]|$))`, "yu");
   // A quoted key is a *string*, and `"status-name"` is as much a key as `status` is —
   // restricting it to identifier shapes meant `t["status-name"][k]` reached nothing.
   // Codex found it (#9, round 12).
@@ -947,8 +954,11 @@ function survey(text) {
       const m = re.exec(body.text);
       if (!m) continue;
       const name = m[1] !== undefined ? m[1] : m[3];
-      const opens = m[1] !== undefined ? m[2] : m[4];
-      if (!keys.has(unescape(name))) keys.set(unescape(name), { opens, at: body.at + i + m[0].length - opens.length });
+      // A shorthand property is its own value, and stands where it is written.
+      const short = m[1] !== undefined && m[2] === undefined;
+      const opens = short ? name : m[1] !== undefined ? m[2] : m[4];
+      const at = short ? body.at + i : body.at + i + m[0].length - opens.length;
+      if (!keys.has(unescape(name))) keys.set(unescape(name), { opens, at });
       // The match consumed the token the value *opens* with, and the scan then jumps past
       // it — so the brackets inside it never reached the depth counter while their closers
       // did. Depth went to -1 at the end of the first nested literal, and from there every
@@ -1226,6 +1236,10 @@ const FIXTURE = [
   'var ZN = table({ s: { a: 1 } }); (flag ? ZN : dict()).s[k];', //     …and a path read off one
   'var ZO = dict(); (flag ? ZO : dict())[k];', //                       safe — every branch is a dict
   'var ZP = { now: 1 }; ident(ZP)[k];', //                              safe — a call’s answer, not the name in it
+  'var ZQ = { now: 1 }; var ZR = table({ ZQ }); ZR.ZQ[k];', //           a shorthand property, which is its own value
+  'var ZS = { now: 1 }; var ZT = { a: 1, ZS }; ZT.ZS[k];', //            …beside a key that is spelled out
+  'var ZU = dict(); var ZV = table({ ZU }); ZV.ZU[k];', //               safe — a shorthand holding a dict
+  'var ZW = table({ m() {} }); ZW.m[k];', //                            safe — a method is not a shorthand property
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -1248,7 +1262,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
