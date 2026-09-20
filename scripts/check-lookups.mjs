@@ -35,9 +35,9 @@
 // Node builtins only, like the rest of scripts/.
 import vm from "node:vm";
 import { liftRegion } from "./lib/region.mjs";
+import { reporter } from "./lib/report.mjs";
 
-const failures = [];
-const fail = (check, detail) => failures.push([check, detail]);
+const { fail, report } = reporter("lookups");
 
 // ── 1. the helpers, as the browser gets them ────────────────────────────────────
 const { src, region } = liftRegion("app.js", "dict");
@@ -505,7 +505,11 @@ function survey(text) {
   // what it is: nothing here can see through `makeThing()` into a `return { … }`, and the
   // success line says so rather than claiming the file is clean of a thing it cannot see.
   // `Object.create(null)` is deliberately absent — that is the cure, not the hazard.
-  const FACTORY = /Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{/;
+  // One list. Written twice, a factory added to only one of them made the gate go *quiet*
+  // rather than red — recorded as an opener that `hasPrototype` then denies, or found by
+  // neither — which is the failure this file exists to catch, in the file itself.
+  const FACTORIES = `Object\\.fromEntries\\(|JSON\\.parse\\(|new Object\\(|Object\\.(?:assign|create)\\(\\s*\\{`;
+  const FACTORY = new RegExp(FACTORIES);
   // What a name is bound to is an *expression*, not a token. `var x = flag ? { … } : { … }`
   // holds one of two literals and `var x = y || { … }` may hold one, and matching the opener
   // immediately after the `=` saw neither — Codex found the conditional (#9, round 18).
@@ -518,11 +522,11 @@ function survey(text) {
   // there the literal is an argument or an element, and what the name holds is the call's
   // answer or the array. The read stops at the `;` or `,` that ends the declarator, or at
   // the bracket that closes whatever the expression sits inside.
-  const OPENER = /table\(|dict\(\)|Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{|\{/y;
+  const OPENER = new RegExp(`table\\(|dict\\(\\)|${FACTORIES}|\\{`, "y");
   const bound = new Map();
   // Words a value is never held under.
   const ALIAS_SKIP = new Set(["function", "new", "typeof", "return", "true", "false", "null", "undefined", "this", "void", "delete", "in", "of", "case"]);
-  const NAME = new RegExp(ID, "yu");
+
   // The walk answers two questions about an initialiser: which openers it contains, and
   // whether it *is* a bare name. `var lookup = (source)` was invisible while
   // `var lookup = ({ … })` was not, because the openers were read by this walk — which is
@@ -572,9 +576,9 @@ function survey(text) {
     // Grouping parentheses are transparent to `depth` so that `x = ({ … })` binds the
     // literal — but they still enclose, and a comma inside one is a sequence operator rather
     // than the end of the declarator: `var x = (sideEffect(), { … })` stopped the read before
-    // the literal. Codex found it (#9, round 19). Counted separately, because the whole point
-    // of the transparency is that it does not count in `depth`.
-    let groups = 0;
+    // the literal. Codex found it (#9, round 19). How many are open is `outer.length`, the
+    // stack they already push their poison onto; a second counter alongside it could only
+    // ever have said the same thing or been wrong.
     let before = "=";
     for (let i = from; i < code.length; i++) {
       if (mask[i] || !/\S/.test(code[i])) continue;
@@ -582,8 +586,8 @@ function survey(text) {
       if (depth === 0) {
         if (IDENT_PART.test(c)) {
           if (before !== "." && !IDENT_PART.test(before)) {
-            NAME.lastIndex = i;
-            const word = NAME.exec(code);
+            IDENT.lastIndex = i;
+            const word = IDENT.exec(code);
             if (!word) poisoned = true;
             else if (!poisoned) current = [word[0]];
           }
@@ -591,7 +595,7 @@ function survey(text) {
         else if (c === ":") branch(true);
         else if (c === "|") branch(true);
         else if (c === "&") branch(false);
-        else if (c === "," && groups > 0) branch(false);
+        else if (c === "," && outer.length) branch(false);
         // `lookup = alias = unsafe` hands `lookup` what the inner assignment is worth, which
         // is `unsafe` and not `alias` — so the target is discarded and the reading carries on
         // to the right of it. The character before is what tells this `=` from the one in
@@ -625,17 +629,14 @@ function survey(text) {
           list = [];
           current = [];
           poisoned = false;
-        }
+        } else depth++;
         open.push(grouping);
-        if (grouping) groups++;
-        else depth++;
         before = c;
         continue;
       }
       if (c === ")" || c === "]" || c === "}") {
         if (!open.length) break;
         if (open.pop()) {
-          groups--;
           // The last operand inside is the parenthesis's value, and the parenthesis is then
           // one operand of what encloses it — which is where it was, poison and all.
           commit();
@@ -649,7 +650,7 @@ function survey(text) {
         continue;
       }
       if (depth === 0 && c === ";") break;
-      if (depth === 0 && groups === 0 && c === ",") break;
+      if (depth === 0 && !outer.length && c === ",") break;
       before = c;
     }
     commit();
@@ -666,7 +667,11 @@ function survey(text) {
   // that `t["status"]` and `t.status` are one path; round 24 then built a *writer* that knew
   // only dots, so `o["lookup"] = { … }` was recorded under nothing. Codex found it (#9,
   // round 25) — the same failure to look for the mirror that round 17 was.
-  const STRING = `"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'`;
+  // One spelling of "a quoted body, escapes and all", used by both the fragment that finds
+  // a constant path segment and the one that reads a quoted key.
+  const DQ = `(?:[^"\\\\]|\\\\.)*`;
+  const SQ = `(?:[^'\\\\]|\\\\.)*`;
+  const STRING = `"${DQ}"|'${SQ}'`;
   const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${STRING})\\s*\\]`, "gu");
   const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${STRING})\\s*\\])`;
   const segmentsOf = (text) =>
@@ -718,16 +723,30 @@ function survey(text) {
   // fixture is for, since the rule I would have written from reading the code was wrong.
   // Nothing is lost by ignoring an unpaired one: `x) = 1` is not a thing JavaScript parses,
   // and what makes this a target is the name and the `=`, not the parentheses.
-  const ROOT = `(?:\\(\\s*(${ID})\\s*\\)|(${ID}))`;
-  const TARGET = new RegExp(`(?<![\\p{ID_Continue}$.)\\]])(?:\\b(?:var|let|const)\\s+)?(\\(?)\\s*${ROOT}((?:${STEPS})*)\\s*(\\)?)\\s*(?:\\|\\||&&|\\?\\?)?=(?![=>])`, "gu");
+  //
+  // Every alternative begins with a character that must be there — a `(` or the first letter
+  // of a name — and that is not a style choice. Written with one optional `(\(?)\s*` in
+  // front, the pattern could match the empty string at any position, so V8 had no first-set
+  // to filter on and tried all 663 000 offsets of app.js instead of the 32 000 that begin a
+  // name. Measured: **1647 ms of a 1830 ms gate, down to 36 ms** when the parenthesis moved
+  // into its own branch, with all 2262 matches identical. Named groups, because duplicating
+  // the root renumbers the positional ones.
+  const ROOT = (tag) => `(?:\\(\\s*(?<p${tag}>${ID})\\s*\\)|(?<n${tag}>${ID}))`;
+  const KEYWORD = `(?:\\b(?:var|let|const)\\s+)?`;
+  const TAIL = `(?<steps>(?:${STEPS})*)\\s*\\)?\\s*(?:\\|\\||&&|\\?\\?)?=(?![=>])`;
+  const TARGET = new RegExp(
+    `(?<![\\p{ID_Continue}$.)\\]])(?:${KEYWORD}\\(\\s*${ROOT("g")}|${KEYWORD}${ROOT("b")})${TAIL}`,
+    "gu"
+  );
   for (const m of [...code.matchAll(TARGET)].filter(inCode)) {
-    const root = m[2] !== undefined ? m[2] : m[3];
-    const steps = segmentsOf(m[4]);
+    const g = m.groups;
+    const root = g.pg !== undefined ? g.pg : g.ng !== undefined ? g.ng : g.pb !== undefined ? g.pb : g.nb;
+    const steps = segmentsOf(g.steps);
     const path = steps.length ? `${root}.${steps.join(".")}` : null;
     const { found, holds } = readInitialiser(m.index + m[0].length);
+    const into = path ? members : bound;
+    const key = path || root;
     for (const opener of found) {
-      const into = path ? members : bound;
-      const key = path || root;
       if (!into.has(key)) into.set(key, []);
       into.get(key).push(opener);
     }
@@ -785,12 +804,10 @@ function survey(text) {
     while (i < code.length && /\s/.test(code[i])) i++;
     const quote = code[i];
     if (quote === '"' || quote === "'") {
-      i++;
-      while (i < code.length) {
-        if (code[i] === "\\") { i += 2; continue; }
-        if (code[i] === quote) { i++; break; }
-        i++;
-      }
+      // `cover()` masked the whole literal including both quotes, so the lexer's answer to
+      // "where does this string end" is one loop instead of a second implementation of how
+      // an escape works — the two had been living 480 lines apart.
+      while (i < code.length && mask[i]) i++;
     } else if (/\d/.test(quote) || ((quote === "-" || quote === "+") && /\d/.test(code[i + 1]))) {
       // Every spelling JavaScript has for a number, not just the two this file writes:
       // `[1e3]`, `[0x10]`, `[-1]`, `[1_000]` and `[1n]` are all constant keys, and each was
@@ -809,15 +826,29 @@ function survey(text) {
     return code[i] === "]";
   };
   // A match that ends at its `[`, so the bracket can be read.
+  // Forward to the next character that is code. Six places stepped over whitespace by hand,
+  // two of them consulting `mask` and four not, with nothing saying why.
+  const skip = (i) => {
+    while (i < code.length && (mask[i] || /\s/.test(code[i]))) i++;
+    return i;
+  };
   const computed = (m) => inCode(m) && !constantKey(m.index + m[0].length - 1);
   const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
   // A name spliced into a pattern is not a name any more: `$` is an identifier character
   // and a regex anchor, so `$LOOK[k]` and `LOOK$[k]` matched nothing while `plain[k]` was
   // reported. `/code-review` found it, one round after the alphabet widened to admit far
   // more characters than `$`.
-  const quote = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Both halves of the anonymous rule say it the same way, because the fixture counts them
+  // as one claim.
+  const ON_THE_SPOT = "an object literal indexed on the spot, without table()";
+  const escapeRe = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Where a name stands to be indexed: bare, or inside grouping parentheses. Both readers
+  // need it, and they had it written out in two orders — `GROUPED`/`EDGE` are the pair three
+  // rounds went into, and a fix to one spelling would have missed the other, which is the
+  // missing mirror of rounds 17, 25 and 26.
+  const rooted = (name) => `(?:${EDGE}${name}|${GROUPED}${name}\\s*\\))`;
   const indexedByAVariable = (name) =>
-    [...code.matchAll(new RegExp(`(?:${EDGE}${quote(name)}|${GROUPED}${quote(name)}\\s*\\))${INDEX}`, "gu"))].some(computed);
+    [...code.matchAll(new RegExp(`${rooted(escapeRe(name))}${INDEX}`, "gu"))].some(computed);
 
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
   // argument, so both openers are "the next `{` that is code".
@@ -854,7 +885,11 @@ function survey(text) {
   // restricting it to identifier shapes meant `t["status-name"][k]` reached nothing.
   // Codex found it (#9, round 12).
   const VALUE = `(table\\(|dict\\(\\)|\\{|${ID}|)`;
-  const QUOTED = new RegExp(`"((?:[^"\\\\]|\\\\.)*)"\\s*:\\s*${VALUE}|'((?:[^'\\\\]|\\\\.)*)'\\s*:\\s*${VALUE}`, "yu");
+  const QUOTED = new RegExp(`"(${DQ})"\\s*:\\s*${VALUE}|'(${SQ})'\\s*:\\s*${VALUE}`, "yu");
+  // What a bracket does to a depth count. Written twice twenty lines apart, and the second
+  // copy exists because the first one was missing a case — which is the argument for there
+  // being one.
+  const delta = (ch) => ("{[(".includes(ch) ? 1 : "}])".includes(ch) ? -1 : 0);
   const keysOf = (body) => {
     const keys = new Map();
     let depth = 0;
@@ -862,10 +897,7 @@ function survey(text) {
       const c = body.text[i];
       const quoted = body.mask[i] === 1;
       if (quoted && !(c === '"' || c === "'")) continue;
-      if (!quoted) {
-        if (c === "{" || c === "[" || c === "(") { depth++; continue; }
-        if (c === "}" || c === "]" || c === ")") { depth--; continue; }
-      }
+      if (!quoted && delta(c)) { depth += delta(c); continue; }
       if (depth !== 0) continue;
       if (!quoted && i > 0 && IDENT_PART.test(body.text[i - 1])) continue;
       // Only the quote that *opens* a string — an escaped one inside it is masked too.
@@ -882,10 +914,7 @@ function survey(text) {
       // did. Depth went to -1 at the end of the first nested literal, and from there every
       // later key of the parent was skipped and the nested one's keys were read as the
       // parent's: a miss and a false positive from the same line. `/code-review` found it.
-      for (const ch of opens) {
-        if (ch === "{" || ch === "[" || ch === "(") depth++;
-        else if (ch === "}" || ch === "]" || ch === ")") depth--;
-      }
+      for (const ch of opens) depth += delta(ch);
       i = re.lastIndex - 1;
     }
     return keys;
@@ -915,7 +944,7 @@ function survey(text) {
         const k = keysOf(body).get(path[at]);
         if (!k) continue;
         const last = at === path.length - 1;
-        if (k.opens === "{" || k.opens === "table(") {
+        if (isLiteral(k.opens)) {
           if (last) hits.push(k);
           else step([k], at + 1);
           continue;
@@ -962,9 +991,8 @@ function survey(text) {
   // optional let a step match a bare name, and `(?:…)+` over that is the textbook
   // catastrophic backtrack: the gate stopped finishing at all rather than answering wrong,
   // which `check-checks` would have called a killed gate rather than a failing one.
-  const STEP = STEPS;
   const PATH = new RegExp(
-    `(?:${GROUPED}(${ID})\\s*\\)|${EDGE}(${ID}))((?:${STEP})+)${INDEX}`,
+    `${rooted(`(${ID})`)}((?:${STEPS})+)${INDEX}`,
     "gu"
   );
   for (const m of [...code.matchAll(PATH)].filter(computed)) {
@@ -981,7 +1009,7 @@ function survey(text) {
   // index, which the lexer has known all along.
   for (const m of [...code.matchAll(/\}\s*\[/g)].filter(computed)) {
     if (closes.get(m.index) !== "literal") continue;
-    note("bare-table", m.index, "(anonymous)", "an object literal indexed on the spot, without table()");
+    note("bare-table", m.index, "(anonymous)", ON_THE_SPOT);
   }
   // …and the same literal with grouping parentheses around it, `({ … })[k]`, which the
   // adjacency above cannot see. Codex found it (#9, round 22). Walked forward from a
@@ -991,15 +1019,15 @@ function survey(text) {
   for (const m of [...code.matchAll(new RegExp(`${GROUPED}(?=\\{)`, "g"))].filter(inCode)) {
     const body = bodyOf(m.index + m[0].length);
     if (!body) continue;
-    let i = body.at + body.text.length + 1;
-    while (i < code.length && /\s/.test(code[i])) i++;
+    let i = skip(body.at + body.text.length + 1);
     if (code[i] !== ")") continue;
     i++;
-    while (i < code.length && /\s/.test(code[i])) i++;
-    if (code[i] === "?" && code[i + 1] === ".") i += 2;
-    while (i < code.length && /\s/.test(code[i])) i++;
-    if (code[i] !== "[" || constantKey(i)) continue;
-    note("bare-table", m.index, "(anonymous)", "an object literal indexed on the spot, without table()");
+    // `INDEX` itself, rather than a hand-spelling of it that would not learn the next shape
+    // it grows — it grew `?.` once already.
+    const index = new RegExp(INDEX, "y");
+    index.lastIndex = i;
+    if (!index.exec(code) || constantKey(index.lastIndex - 1)) continue;
+    note("bare-table", m.index, "(anonymous)", ON_THE_SPOT);
   }
 
   const wrapped = [...bound.values()].flat().filter((b) => b.opens === "table(").length;
@@ -1114,7 +1142,6 @@ const FIXTURE = [
   '({ now: 1 })[k];', //                                                 an inline literal inside parens
   'ident({ now: 1 })[k];', //                                            safe — the call's answer, not the literal
   'async function rw() { await /{}/.test(""); }', //                     safe — a regex after a keyword
-  'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
   'var J1; var j1 = async function () {} / (J1 = { now: 1 }, J1[k]) / 2;', // async before the keyword
   'async function jd() {} var J2 = { a: 1 }; J2.a;', //                  safe — still a declaration
@@ -1177,6 +1204,17 @@ for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
   fail("fixture", `the matcher reports ${n.check} on line ${n.line} of a fixture that has none: ${n.what}`);
 }
 
+// A matcher that fails its own fixture has not earned the right to say anything about
+// app.js, and scanning 663 KB to produce findings nobody will read is most of what
+// `check-checks` spends its time on: 67 of this gate's claims trip the fixture, and each
+// one paid 1.86 s for a survey whose output is discarded. Measured, that is about two
+// minutes of the meta-check's CPU.
+//
+// It also decides which half speaks when a break trips both: the fixture names it and the
+// judges below never run. One claim moved from `[lex]` to `[fixture]` for that reason, and
+// it is the same defect caught by the earlier of the two checks that can see it.
+report();
+
 const { notes, wrapped, dicts, code, mask } = survey(src);
 for (const n of notes) fail(n.check, `app.js:${n.line} — ${n.what}`);
 
@@ -1220,11 +1258,7 @@ for (const [what, text] of [["app.js", code], ["the fixture", fixture.code]]) {
 if (wrapped < 15) fail("coverage", `only ${wrapped} tables go through table() — the pattern this checks has moved`);
 if (dicts < 40) fail("coverage", `only ${dicts} maps go through dict() — the pattern this checks has moved`);
 
-if (failures.length) {
-  console.error(`✗ lookups: ${failures.length} failure(s)\n`);
-  for (const [check, detail] of failures) console.error(`  [${check}] ${detail}`);
-  process.exit(1);
-}
+report();
 // What the success line may say is the whole subject of this file's review history: six
 // of the seven findings were a check claiming more than it held. So it names what was
 // read — a literal, and the handful of platform factories above — rather than the file

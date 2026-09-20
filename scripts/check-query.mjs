@@ -25,6 +25,7 @@
 // Node builtins only, like the rest of scripts/.
 import { lcg } from "./lib/fuzz.mjs";
 import { liftRegion } from "./lib/region.mjs";
+import { reporter } from "./lib/report.mjs";
 
 // The whole app.js source, read once — section 6 below scans it for unguarded URL
 // decodes and used to read the 656 KB file a second time to do so.
@@ -56,8 +57,7 @@ const rt = (s) => G.serializeTerms(G.parseQuery(s));
 // nothing saying why they differed — a fuzz that breaks tends to break in floods, and
 // the first handful name the defect as well as a hundred do.
 const BAIL = 8;
-const failures = [];
-const fail = (check, detail) => failures.push([check, detail]);
+const { failures, fail, report } = reporter("query grammar");
 
 // ── the corpus ───────────────────────────────────────────────────────────────
 // Every documented form in AGENTS.md, every alias, and the shapes that broke.
@@ -201,10 +201,11 @@ const ITEM = {
 // A puck whose free-text fields are named after things every object inherits. `agent:`,
 // `owner:` and `tags:` are written by hand in someone else's repository, and `tags` is
 // the one the harvester does not slugify, so `__proto__` arrives at the board as typed.
+// Built from `ITEM` rather than beside it: a field added to the board's shape and not to
+// this copy would leave the check asking its question of a puck the board never produces.
 const POLLUTED = {
-  id: "p", title: "polluted", body: "", tags: ["__proto__", "toString"], repo: "o/r",
-  repoName: "R", status: "now", issue: null, parentRef: null, children: [], blockedBy: [],
-  signals: [], native: true, priority: null, agent: "constructor", owner: "valueOf",
+  ...ITEM,
+  id: "p", title: "polluted", tags: ["__proto__", "toString"], agent: "constructor", owner: "valueOf",
 };
 // Each of these asks a table a question under a key it inherits. The answer has to be
 // the honest one — the puck matches on the value it really carries and nothing else —
@@ -309,12 +310,7 @@ for (const name of ["flagged", "blocked", "blocking", "parent", "member", "adapt
   });
 }
 
-if (failures.length) {
-  console.error(`✗ query grammar: ${failures.length} failure(s)\n`);
-  for (const [check, detail] of failures) console.error(`  [${check}] ${detail}`);
-  console.error(`\n(fuzz seed ${SEED} — the same inputs every run)`);
-  process.exit(1);
-}
+report(`(fuzz seed ${SEED} — the same inputs every run)`);
 console.log(
   `✓ query: ${checked} inputs parse without throwing and round-trip to a fixed point, ` +
     `no token vanishes, ${MEANS.length} documented forms parse as AGENTS.md describes, ` +

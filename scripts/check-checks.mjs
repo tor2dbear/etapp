@@ -242,7 +242,7 @@ const CASES = [
   // itself, so the last three take the lexer apart in the three ways it was wrong or could
   // be, and the parser is what answers.
   { gate: "lookups", claim: "the matcher's own fixture notices a keyword it stops treating as optional",
-    edit: ["scripts/check-lookups.mjs", "(?:\\\\b(?:var|let|const)\\\\s+)?(\\\\(?)", "(?:\\\\b(?:var|let|const)\\\\s+)(\\\\(?)"],
+    edit: ["scripts/check-lookups.mjs", "  const KEYWORD = `(?:\\\\b(?:var|let|const)\\\\s+)?`;", "  const KEYWORD = `(?:\\\\b(?:var|let|const)\\\\s+)`;"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a property path it stops following to the end",
     edit: ["scripts/check-lookups.mjs", "          if (last) hits.push(k);",
@@ -253,12 +253,12 @@ const CASES = [
       "  const KEY = new RegExp(`(${ID})\\\\s*:\\\\s*(table\\\\(|dict\\\\(\\\\)|zzzz|${ID}|)`, \"yu\");"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and that path spelled with brackets on the assignment side",
-    edit: ["scripts/check-lookups.mjs", "    const steps = segmentsOf(m[4]);",
-      "    const steps = [...m[4].matchAll(/\\.\\s*([A-Za-z_$][\\w$]*)/g)].map((piece) => piece[1]);"],
+    edit: ["scripts/check-lookups.mjs", "    const steps = segmentsOf(g.steps);",
+      "    const steps = [...g.steps.matchAll(/\\.\\s*([A-Za-z_$][\\w$]*)/g)].map((piece) => piece[1]);"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and a member assignment, which binds a path and not a name",
-    edit: ["scripts/check-lookups.mjs", "      const into = path ? members : bound;\n      const key = path || root;",
-      "      const into = bound;\n      const key = root;"],
+    edit: ["scripts/check-lookups.mjs", "    const into = path ? members : bound;\n    const key = path || root;",
+      "    const into = bound;\n    const key = root;"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and what a member assignment put at the end of a path",
     edit: ["scripts/check-lookups.mjs", "    for (const b of members.get(full) || []) if (hasPrototype(b.opens)) hits.push(b);",
@@ -273,7 +273,7 @@ const CASES = [
       "  const computed = (m) => inCode(m) && code[m.index + m[0].length] !== '\"' && code[m.index + m[0].length] !== \"'\";"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and grouping parentheses around an inline literal",
-    edit: ["scripts/check-lookups.mjs", "    if (code[i] !== \"[\" || constantKey(i)) continue;",
+    edit: ["scripts/check-lookups.mjs", "    if (!index.exec(code) || constantKey(index.lastIndex - 1)) continue;",
       "    continue;"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and a reserved word standing as a property name",
@@ -301,7 +301,7 @@ const CASES = [
       "      const closesLabel = pendingLabel && !owed;"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and a comma inside grouping parentheses, which ends nothing",
-    edit: ["scripts/check-lookups.mjs", "      if (depth === 0 && groups === 0 && c === \",\") break;",
+    edit: ["scripts/check-lookups.mjs", "      if (depth === 0 && !outer.length && c === \",\") break;",
       "      if (depth === 0 && c === \",\") break;"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and a name the lexer reads as a keyword but a script may legally bind",
@@ -351,8 +351,8 @@ const CASES = [
     edit: ["scripts/check-lookups.mjs", "    if (kinds.get(m.index) !== \"literal\") continue;", "    if (false) continue;"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a quoted key no identifier could spell",
-    edit: ["scripts/check-lookups.mjs", "  const QUOTED = new RegExp(`\"((?:[^\"\\\\\\\\]|\\\\\\\\.)*)\"\\\\s*:\\\\s*${VALUE}|'((?:[^'\\\\\\\\]|\\\\\\\\.)*)'\\\\s*:\\\\s*${VALUE}`, \"yu\");",
-      "  const QUOTED = new RegExp(`\"(${ID})\"\\\\s*:\\\\s*${VALUE}|'((?:[^'\\\\\\\\]|\\\\\\\\.)*)'\\\\s*:\\\\s*${VALUE}`, \"yu\");"],
+    edit: ["scripts/check-lookups.mjs", "  const QUOTED = new RegExp(`\"(${DQ})\"\\\\s*:\\\\s*${VALUE}|'(${SQ})'\\\\s*:\\\\s*${VALUE}`, \"yu\");",
+      "  const QUOTED = new RegExp(`\"(${ID})\"\\\\s*:\\\\s*${VALUE}|'(${SQ})'\\\\s*:\\\\s*${VALUE}`, \"yu\");"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a postfix update, after which a slash is division",
     edit: ["scripts/check-lookups.mjs", "      else if ((c === \"+\" || c === \"-\") && last === c) last = \"++\";",
@@ -373,7 +373,7 @@ const CASES = [
       "const CONTROL = new Set([]);"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a receiver it stops keeping when the path’s root is not a name",
-    edit: ["scripts/check-lookups.mjs", "`(?<![\\\\p{ID_Continue}$.)\\\\]])(?:\\\\b(?:var|let|const)", "`(?:\\\\b(?:var|let|const)"],
+    edit: ["scripts/check-lookups.mjs", "`(?<![\\\\p{ID_Continue}$.)\\\\]])(?:${KEYWORD}", "`(?:${KEYWORD}"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a name assigned onto a property, which is that path’s and not the root’s",
     edit: ["scripts/check-lookups.mjs", "      if (path) link(memberHolds, path, held);", "      if (false) link(memberHolds, path, held);"],
@@ -431,8 +431,8 @@ const CASES = [
       "        else if (c === \"=\") branch(false);"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and grouping parentheses around a target, or around its root",
-    edit: ["scripts/check-lookups.mjs", "  const ROOT = `(?:\\\\(\\\\s*(${ID})\\\\s*\\\\)|(${ID}))`;",
-      "  const ROOT = `(?:zzzz(${ID})zzzz|(${ID}))`;"],
+    edit: ["scripts/check-lookups.mjs", "  const ROOT = (tag) => `(?:\\\\(\\\\s*(?<p${tag}>${ID})\\\\s*\\\\)|(?<n${tag}>${ID}))`;",
+      "  const ROOT = (tag) => `(?:zzzz(?<p${tag}>${ID})zzzz|(?<n${tag}>${ID}))`;"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a conditional inside a case expression, which owes the colon",
     edit: ["scripts/check-lookups.mjs", "    if (c === \"?\" && pendingLabel && nesting === labelDepth && text[i + 1] !== \".\" && text[i + 1] !== \"?\" && last !== \"?\") ternaries++;\n", ""],
@@ -458,11 +458,11 @@ const CASES = [
       "} else if (/\\d/.test(quote)) {"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a key after a nested literal, which the depth counter must not lose",
-    edit: ["scripts/check-lookups.mjs", "      for (const ch of opens) {\n        if (ch === \"{\" || ch === \"[\" || ch === \"(\") depth++;\n        else if (ch === \"}\" || ch === \"]\" || ch === \")\") depth--;\n      }\n", ""],
+    edit: ["scripts/check-lookups.mjs", "      for (const ch of opens) depth += delta(ch);\n", ""],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a name spliced into a pattern, where `$` is an anchor and not a letter",
-    edit: ["scripts/check-lookups.mjs", "  const quote = (name) => name.replace(/[.*+?^${}()|[\\]\\\\]/g, \"\\\\$&\");",
-      "  const quote = (name) => name;"],
+    edit: ["scripts/check-lookups.mjs", "  const escapeRe = (name) => name.replace(/[.*+?^${}()|[\\]\\\\]/g, \"\\\\$&\");",
+      "  const escapeRe = (name) => name;"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and the literal a wrapper opens, which is the one at it",
     edit: ["scripts/check-lookups.mjs", "    if (code[open] !== \"{\") return null;",
@@ -490,13 +490,23 @@ const CASES = [
     edit: ["scripts/check-lookups.mjs", "      cover(i, j);\n      i = j;\n      last = c;",
       "      cover(i, i);\n      i = j;\n      last = c;"],
     expect: "[fixture]" },
+  // Like the regex claim below it, this break trips the fixture first — the gate stops there
+  // and the parser never speaks. The judge keeps a claim of its own, the next one: a block
+  // comment's closing `*/`, which the fixture has no instance of and app.js has four.
   { gate: "lookups", claim: "a `//` inside a string is not the start of a comment",
     edit: ["scripts/check-lookups.mjs", "    if (c === '\"' || c === \"'\") {", "    if (c === \"\\u0000\") {"],
+    expect: "[fixture]" },
+  { gate: "lookups", claim: "…and where a block comment ends, which only the parser notices",
+    edit: ["scripts/check-lookups.mjs", "      const j = end === -1 ? text.length : end + 2;", "      const j = end === -1 ? text.length : end;"],
     expect: "[lex]" },
+  // The fixture answers this one before the parser does — the line it added in round 6, a
+  // regex holding a quote, is exactly this break — and since the gate stops when its own
+  // fixture fails, `[fixture]` is the tag that arrives. The judge still has three claims of
+  // its own for breaks the fixture does not see.
   { gate: "lookups", claim: "…and a regex is not a pair of quotes either",
     edit: ["scripts/check-lookups.mjs", "const REGEX_AFTER = new Set(\"(,=:[!&|?{};+-*%~^<>\".split(\"\").concat([\"=>\"]));",
       "const REGEX_AFTER = new Set([]);"],
-    expect: "[lex]" },
+    expect: "[fixture]" },
   { gate: "lookups", claim: "…and the shape it counts as wrapped still matches the file",
     edit: ["scripts/check-lookups.mjs", "filter((b) => b.opens === \"table(\")", "filter((b) => b.opens === \"zzzzz(\")"],
     expect: "[coverage]" },
@@ -848,7 +858,7 @@ process.on("exit", cleanup);
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { cleanup(); process.exit(130); });
 const failures = [];
 
-// Thirty-three claims say each gate can fail. Nothing has ever said the one thing this
+// Every claim below says a gate can fail. Nothing has ever said the one thing this
 // file promises about itself: that a run leaves the real tree exactly as it found it.
 // Every breach of it so far — a worktree pointer, an inherited `GIT_INDEX_FILE`, a split
 // index, a symlink — was found by a reviewer or by a contributor whose own files came
@@ -918,7 +928,7 @@ function run(argv, cwd) {
     // claim counted as held. Measured: tag printed, SIGKILL, `status=null`, verdict
     // "held". `spawnSync` had carried a `signal` that made this visible; the async
     // rewrite dropped it and nothing noticed, because a timeout is the one outcome
-    // none of the 33 cases produce.
+    // none of the cases produce.
     let killed = false;
     const kill = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, TIMEOUT);
     child.on("error", (error) => { clearTimeout(kill); resolve({ error, out }); });
@@ -929,10 +939,6 @@ function run(argv, cwd) {
   });
 }
 
-// `python3` missing, or a gate that hangs, is not a held claim — and `r.stdout` is
-// `null` when the spawn itself failed, so the old `r.stdout + r.stderr` was `0` and
-// `.trim()` threw a TypeError over the top of the real reason.
-const output = (r) => [r.stdout, r.stderr].filter(Boolean).join("").trim();
 const firstLines = (out) => out.split("\n").filter(Boolean).slice(0, 2).join(" / ").slice(0, 160);
 
 // Did the gate fail *for this claim*? Three of the judges report every failure as
