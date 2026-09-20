@@ -522,12 +522,24 @@ function survey(text) {
   // first from a name collision rather than a misclassification. Codex found it (#9, round
   // 24). So the receiver is kept: the path goes in its own map, where only the path rule
   // can reach it, and the bare name is not recorded at all.
+  // How a path is spelled and how it is read back as a key — defined here because both the
+  // assignment side and the reading side need the same answer. Round 10 taught the reader
+  // that `t["status"]` and `t.status` are one path; round 24 then built a *writer* that knew
+  // only dots, so `o["lookup"] = { … }` was recorded under nothing. Codex found it (#9,
+  // round 25) — the same failure to look for the mirror that round 17 was.
+  const STRING = `"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'`;
+  const SEGMENT = new RegExp(`\\.\\s*([A-Za-z_$][\\w$]*)|\\[\\s*(${STRING})\\s*\\]`, "g");
+  const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*[A-Za-z_$][\\w$]*|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${STRING})\\s*\\])`;
+  const segmentsOf = (text) =>
+    [...text.matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
   const members = new Map();
-  for (const m of [...code.matchAll(/(?:\b(?:var|let|const)\s+)?((?:[A-Za-z_$][\w$]*\s*(?:\?\.|\.)\s*)*)([A-Za-z_$][\w$]*)\s*=(?![=>])/g)].filter(inCode)) {
-    const path = m[1].trim() ? m[1].replace(/\s|\?/g, "") + m[2] : null;
+  const TARGET = new RegExp(`(?:\\b(?:var|let|const)\\s+)?([A-Za-z_$][\\w$]*)((?:${STEPS})*)\\s*=(?![=>])`, "g");
+  for (const m of [...code.matchAll(TARGET)].filter(inCode)) {
+    const steps = segmentsOf(m[2]);
+    const path = steps.length ? `${m[1]}.${steps.join(".")}` : null;
     for (const opener of openersIn(m.index + m[0].length)) {
       const into = path ? members : bound;
-      const key = path || m[2];
+      const key = path || m[1];
       if (!into.has(key)) into.set(key, []);
       into.get(key).push(opener);
     }
@@ -717,20 +729,18 @@ function survey(text) {
   // `t.status[k]` and `t["status"][k]` are the same read, so a constant bracket segment is
   // a path segment like any other. Only a *constant* one: `t[name][k]` is a key this cannot
   // know, and it is the same boundary as a root bound to a call.
-  const STRING = `"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'`;
-  const SEGMENT = new RegExp(`\\.\\s*([A-Za-z_$][\\w$]*)|\\[\\s*(${STRING})\\s*\\]`, "g");
   // Each step starts with its own punctuation — `.`, `?.` or `[`. Writing the dot as
   // optional let a step match a bare name, and `(?:…)+` over that is the textbook
   // catastrophic backtrack: the gate stopped finishing at all rather than answering wrong,
   // which `check-checks` would have called a killed gate rather than a failing one.
-  const STEP = `\\s*(?:\\?\\.|\\.)\\s*[A-Za-z_$][\\w$]*|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${STRING})\\s*\\]`;
+  const STEP = STEPS;
   const PATH = new RegExp(
     `(?:${GROUPED}([A-Za-z_$][\\w$]*)\\s*\\)|\\b([A-Za-z_$][\\w$]*))((?:${STEP})+)${INDEX}`,
     "g"
   );
   for (const m of [...code.matchAll(PATH)].filter(computed)) {
     const root = m[1] !== undefined ? m[1] : m[2];
-    const path = [...m[3].matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
+    const path = segmentsOf(m[3]);
     const subject = `${root}.${path.join(".")}`;
     for (const k of reached(root, path)) {
       if (hasPrototype(k.opens)) note("bare-table", k.at, subject, `${subject} reaches an object with a prototype`);
@@ -818,6 +828,7 @@ const FIXTURE = [
   'function rq(a) { return a; } var R3 = { x: 1 }; R3.x;', //            safe — an ordinary body still is one
   'var U0 = dict(); U0.tbl = { now: 1 }; U0.tbl[k];', //                 a table assigned onto a property
   'var U1 = dict(); U1.tbl = { now: 1 }; var U2 = table({ tbl: dict() }); U2.tbl[k];', // safe — a namesake, indexed elsewhere
+  'var U3 = dict(); U3["tbl"] = { now: 1 }; U3["tbl"][k];', //            …and the same path spelled with brackets
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -841,7 +852,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then

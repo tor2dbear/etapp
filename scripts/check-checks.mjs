@@ -232,7 +232,8 @@ const CASES = [
     edit: ["app.js", "entry = table({ name: name })", "entry = { name: name }"],
     expect: "[bare-table]" },
   { gate: "lookups", claim: "…and the one object on the board that arrives parsed from outside it",
-    edit: ["app.js", "        var o = table(JSON.parse(raw));", "        var o = JSON.parse(raw);"],
+    edit: ["app.js", "        var parsed = JSON.parse(raw);\n        if (parsed && typeof parsed === \"object\") {\n          var o = table(parsed);",
+      "        var parsed = JSON.parse(raw);\n        if (parsed && typeof parsed === \"object\") {\n          var o = parsed;"],
     expect: "[bare-table]" },
   // Five of the six findings this gate collected in review were one defect — the scan
   // could not see a shape — so the scan runs against a fixture that names every shape, and
@@ -241,8 +242,8 @@ const CASES = [
   // itself, so the last three take the lexer apart in the three ways it was wrong or could
   // be, and the parser is what answers.
   { gate: "lookups", claim: "the matcher's own fixture notices a keyword it stops treating as optional",
-    edit: ["scripts/check-lookups.mjs", "/(?:\\b(?:var|let|const)\\s+)?((?:[A-Za-z_$][\\w$]*\\s*(?:\\?\\.|\\.)\\s*)*)([A-Za-z_$][\\w$]*)\\s*=(?![=>])/g",
-      "/(?:\\b(?:var|let|const)\\s+)((?:[A-Za-z_$][\\w$]*\\s*(?:\\?\\.|\\.)\\s*)*)([A-Za-z_$][\\w$]*)\\s*=(?![=>])/g"],
+    edit: ["scripts/check-lookups.mjs", "`(?:\\\\b(?:var|let|const)\\\\s+)?([A-Za-z_$][\\\\w$]*)((?:${STEPS})*)\\\\s*=(?![=>])`",
+      "`(?:\\\\b(?:var|let|const)\\\\s+)([A-Za-z_$][\\\\w$]*)((?:${STEPS})*)\\\\s*=(?![=>])`"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a property path it stops following to the end",
     edit: ["scripts/check-lookups.mjs", "          if (last) hits.push(k);",
@@ -252,9 +253,13 @@ const CASES = [
     edit: ["scripts/check-lookups.mjs", "  const KEY = /([A-Za-z_$][\\w$]*)\\s*:\\s*(table\\(|dict\\(\\)|\\{|[A-Za-z_$][\\w$]*|)/y;",
       "  const KEY = /([A-Za-z_$][\\w$]*)\\s*:\\s*(table\\(|dict\\(\\)|zzzz|[A-Za-z_$][\\w$]*|)/y;"],
     expect: "[fixture]" },
+  { gate: "lookups", claim: "\u2026and that path spelled with brackets on the assignment side",
+    edit: ["scripts/check-lookups.mjs", "    const steps = segmentsOf(m[2]);",
+      "    const steps = [...m[2].matchAll(/\\.\\s*([A-Za-z_$][\\w$]*)/g)].map((piece) => piece[1]);"],
+    expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and a member assignment, which binds a path and not a name",
-    edit: ["scripts/check-lookups.mjs", "      const into = path ? members : bound;\n      const key = path || m[2];",
-      "      const into = bound;\n      const key = m[2];"],
+    edit: ["scripts/check-lookups.mjs", "      const into = path ? members : bound;\n      const key = path || m[1];",
+      "      const into = bound;\n      const key = m[1];"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "\u2026and what a member assignment put at the end of a path",
     edit: ["scripts/check-lookups.mjs", "    for (const b of members.get(`${root}.${path.join(\".\")}`) || []) if (hasPrototype(b.opens)) hits.push(b);",

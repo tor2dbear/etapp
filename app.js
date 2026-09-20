@@ -1216,8 +1216,17 @@
         // is the rule holding rather than a bug closing: the object is indexed by a name,
         // so it has no prototype, and the next reader of `focus` does not have to know
         // that a lookup three functions away is what makes their line safe.
-        var o = table(JSON.parse(raw));
-        if (o && typeof o === "object") {
+        // Checked *before* wrapping, not after. `table()` answers with an object whatever it
+        // is given, so a store that parses to `null` — or to a number, or to a string, where
+        // `for…in` hands back its indices and `"x"` becomes `{ 0: "x" }` — came out truthy
+        // and shaped like a store, and this returned it instead of falling through to
+        // `migrateDisplay()`. The legacy `roadmap-*` keys were then silently skipped. That
+        // was a regression this pull request introduced when it added the `table()`, and
+        // Codex found it (#9, round 25). An array still passes, as it did before this
+        // change; that one is not mine and is left alone.
+        var parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          var o = table(parsed);
           displayMem = o;
           // Written back, or the stamp never lands and the upgrade runs again next load.
           if (upgradeStoredSort(o)) writeDisplayStore(o);
