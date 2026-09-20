@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in seven different ways, once per
-// round of review. Six were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in eight different ways, once per
+// round of review. Seven were the same defect: the scan could not see a shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -230,6 +230,37 @@ function survey(text) {
   const isLiteral = (opens) => opens === "{" || opens === "table(";
   const hasPrototype = (opens) => opens === "{" || FACTORY.test(opens);
 
+  // `var source = { now: 1 }; var lookup = source; lookup[k]` — the object is one name and
+  // the index is another, and asking only about the name that was bound certified it. So
+  // the plain `a = b` assignments are edges, walked in both directions: from a binding
+  // *out* to whatever may be holding its value when the index happens, and from an index
+  // *back* to the binding whose literal it reaches. Only a bare identifier on the right —
+  // `a = b.c`, `a = b(…)` and `a = b[…]` are all something this cannot follow, and they
+  // are the boundary the success line names.
+  const ALIAS_SKIP = new Set(["function", "new", "typeof", "return", "true", "false", "null", "undefined", "this", "void", "delete", "in", "of", "case"]);
+  const holders = new Map();
+  const heldFrom = new Map();
+  const link = (map, key, value) => {
+    if (!map.has(key)) map.set(key, new Set());
+    map.get(key).add(value);
+  };
+  for (const m of [...code.matchAll(/(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*[;,)\n]/g)].filter(inCode)) {
+    if (ALIAS_SKIP.has(m[2]) || m[1] === m[2]) continue;
+    link(holders, m[2], m[1]);
+    link(heldFrom, m[1], m[2]);
+  }
+  const spread = (start, edges) => {
+    const out = new Set([start]);
+    const queue = [start];
+    while (queue.length) {
+      const one = queue.pop();
+      for (const next of edges.get(one) || []) if (!out.has(next)) { out.add(next); queue.push(next); }
+    }
+    return out;
+  };
+  const indexedByAVariable = (name) =>
+    [...code.matchAll(new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`, "g"))].some(inCode);
+
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
   // argument, so both openers are "the next `{` that is code".
   const bodyOf = (from) => {
@@ -284,7 +315,8 @@ function survey(text) {
   // always had, and it is here rather than in a claim.
   const reached = (root, path) => {
     const hits = [];
-    for (const b of bound.get(root) || []) {
+    const roots = [...spread(root, heldFrom)].flatMap((name) => bound.get(name) || []);
+    for (const b of roots) {
       let body = isLiteral(b.opens) ? bodyOf(b.at) : null;
       for (let s = 0; body && s < path.length; s++) {
         const k = keysOf(body).get(path[s]);
@@ -299,11 +331,13 @@ function survey(text) {
   // `name[k]` — the binding itself, read with a key that is not a literal.
   for (const [name, bindings] of bound) {
     if (!bindings.some((b) => hasPrototype(b.opens))) continue;
-    if (![...code.matchAll(new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`, "g"))].some(inCode)) continue;
+    const by = [...spread(name, holders)].find(indexedByAVariable);
+    if (!by) continue;
     for (const b of bindings) {
       if (!hasPrototype(b.opens)) continue;
       const built = b.opens === "{" ? "without table()" : `with ${b.opens.replace(/\s+/g, "")}…) and not passed through table()`;
-      note("bare-table", b.at, name, `${name} is indexed by a variable somewhere but built ${built}`);
+      const how = by === name ? "is indexed by a variable somewhere" : `is indexed by a variable somewhere as \`${by}\``;
+      note("bare-table", b.at, name, `${name} ${how} but built ${built}`);
     }
   }
   // `root.a.b[k]` — the value at the end of the path, not the root at the start of it.
@@ -326,7 +360,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Seven rounds of review found seven
+// every other line is here because it must *not* be. Eight rounds of review found eight
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -344,6 +378,10 @@ const FIXTURE = [
   'var F3 = Object.assign({ a: 1 }, x); F3[k];', //                      …and one that starts as a literal
   'var F4 = Object.create(null); F4[k];', //                             safe — that is the cure
   'var F5 = table(JSON.parse("{}")); F5[k];', //                         safe — the factory is wrapped
+  'var G1 = { a: 1 }; var G2 = G1; G2[k];', //                           indexed under another name
+  'var G3 = { b: { a: 1 } }; var G4 = G3; G4.b[k];', //                  …and a path from the alias
+  'var G7 = { a: 1 }; var G8; G8 = G7; G8[k];', //                       an alias with no keyword either
+  'var G5 = table({ a: 1 }); var G6 = G5; G6[k];', //                    safe — the alias holds a table
   'var m = table({ n: dict() }); m.n[k];', //                            safe — the value is a dict
   'var o = table({ p: 1 }); o[k];', //                                   safe — the table is wrapped
   'var q = { r: 1 }; q["r"];', //                                        safe — a literal key
@@ -351,7 +389,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
@@ -399,5 +437,6 @@ console.log(
   `✓ lookups: the matcher sees all ${REPORTED.length} spellings in its fixture, app.js still parses with its comments ` +
     `blanked, and in it ${wrapped} tables and ${dicts} maps are built with no prototype, no empty object literal is ` +
     `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.assign({…}) that a ` +
-    `variable indexes — through a property path or not — is left with a prototype`
+    `variable indexes — under its own name, under a name it was assigned to, or through a property path — is left ` +
+    `with a prototype`
 );
