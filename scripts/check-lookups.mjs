@@ -83,8 +83,9 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in twenty different ways over sixteen
-// rounds of review. Sixteen were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in twenty-one different ways over
+// seventeen rounds of review. Seventeen were the same defect: the scan could not see a
+// shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -370,7 +371,11 @@ function survey(text) {
   // `Object.create(null)` is deliberately absent — that is the cure, not the hazard.
   const FACTORY = /Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{/;
   const bound = new Map();
-  const BINDING = /(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(table\(|dict\(\)|Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{|\{)/g;
+  // Grouping parentheses are allowed on this side too — `var x = ({ … })`. Only
+  // immediately after the `=`, which is what keeps `x = f({ … })` out: there the literal is
+  // an argument and what `x` holds is whatever `f` returned. Round 14 was the same fix on
+  // the reading side; this is the writing side, and I did not think to do both at once.
+  const BINDING = /(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:\(\s*)*(table\(|dict\(\)|Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{|\{)/g;
   for (const m of [...code.matchAll(BINDING)].filter(inCode)) {
     if (!bound.has(m[1])) bound.set(m[1], []);
     bound.get(m[1]).push({ opens: m[2], at: m.index + m[0].length - m[2].length });
@@ -542,7 +547,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Sixteen rounds of review found twenty
+// every other line is here because it must *not* be. Seventeen rounds of review found
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -576,6 +581,9 @@ const FIXTURE = [
   'var E2 = { s: { a: 1 } }; (E2).s[k];', //                             …and around a path's root
   'var H1 = { now: 1 }; H1?.[k];', //                                    an optional computed index
   'var H2 = { s: { a: 1 } }; H2?.s[k];', //                              …and an optional step in a path
+  'var K1 = ({ now: 1 }); K1[k];', //                                    parens around the initializer
+  'var K2 = ((table({ a: 1 }))); K2[k];', //                             safe — still wrapped through them
+  'var K3 = ident({ a: 1 }); K3[k];', //                                 safe — an argument, not a binding
   'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
   'var J1; var j1 = async function () {} / (J1 = { now: 1 }, J1[k]) / 2;', // async before the keyword
@@ -593,7 +601,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
