@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in fifteen different ways over twelve
-// rounds of review. Twelve were the same defect: the scan could not see a shape, and nothing
+// that is not a literal — and it has now been wrong in sixteen different ways over thirteen
+// rounds of review. Thirteen were the same defect: the scan could not see a shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
 // seeing is a failing gate now, not a success line that has quietly stopped meaning
@@ -127,7 +127,7 @@ const REGEX_WORDS = new Set(["return", "typeof", "instanceof", "in", "of", "new"
 // expression — so the `/` after it opens a regex. Everything else that ends in `)` is a
 // value, and the `/` after *that* is division.
 const CONTROL = new Set(["if", "while", "for", "with"]);
-// And `}` is two tokens for the same reason. A `{` in expression position opens an object
+// And `}` is three, for the same reason. A `{` in expression position opens an object
 // literal, which is a *value*, so the `/` after its `}` is division — `{ … } / x`. A `{`
 // anywhere else opens a block, and a statement follows its `}`, so a `/` there opens a
 // regex. Treating every `}` as a block made `var r = { valueOf: … } / (hidden = { now: 1 },
@@ -135,6 +135,12 @@ const CONTROL = new Set(["if", "while", "for", "with"]);
 // the comment beside it had just claimed could not happen. Codex found it (#9, round 10).
 const VALUE_AFTER = new Set("=(,:[?!&|+-*/%~^<>".split(""));
 const VALUE_WORDS = new Set(["return", "typeof", "case", "in", "of", "new", "delete", "void", "throw"]);
+// The third is a function or class *expression*'s body. It is not an object literal — an
+// empty one is an empty callback, not an empty map — but it is a value, so the `/` after
+// its `}` is division: `var r = function () {} / x` hid a lookup the same way a literal
+// did, one round later. Codex found it (#9, round 13). A *declaration*'s body is a block
+// in both senses, and which one a `function` is comes from what stands before the keyword.
+const MAKERS = new Set(["function", "class"]);
 
 function lex(text) {
   const out = text.split("");
@@ -153,6 +159,9 @@ function lex(text) {
   // blocks, and the list of exemptions that used to stand in for this could not say so.
   const braces = [];
   const kinds = new Map();
+  // Whether the next `{` is a function or class expression's body (true), a declaration's
+  // (false), or neither (null).
+  let maker = null;
   // A template is not one opaque run: `${…}` inside it is code, and masking through to the
   // closing backtick hid a lookup written there. Each frame is the template's text, or a
   // substitution and how deep its braces are.
@@ -225,9 +234,26 @@ function lex(text) {
         continue;
       }
     }
+    // An identifier is one token. Accumulating it character by character joined the two
+    // in `return function` into `returnfunction`, so the keyword that decides its own
+    // body's kind was never seen — the first attempt at the round-13 fix did nothing, and
+    // the rig said so. `last` becomes a placeholder rather than the final letter: a `/`
+    // after a name is division, which is what the letter meant anyway.
+    if (/[A-Za-z_$]/.test(c)) {
+      let j = i;
+      while (j < text.length && /[\w$]/.test(text[j])) j++;
+      const ident = text.slice(i, j);
+      if (MAKERS.has(ident)) maker = VALUE_AFTER.has(last) || VALUE_WORDS.has(word);
+      word = ident;
+      last = "w";
+      i = j;
+      continue;
+    }
     if (c === "(") heads.push(word);
     if (c === "{") {
-      const kind = last !== "=>" && (VALUE_AFTER.has(last) || VALUE_WORDS.has(word)) ? "value" : "block";
+      let kind;
+      if (maker !== null) { kind = maker ? "fnvalue" : "block"; maker = null; }
+      else kind = last !== "=>" && (VALUE_AFTER.has(last) || VALUE_WORDS.has(word)) ? "literal" : "block";
       braces.push(kind);
       kinds.set(i, kind);
       if (top() && top().kind === "sub") top().depth++;
@@ -238,7 +264,7 @@ function lex(text) {
     }
     if (/\S/.test(c)) {
       if (c === ")") last = CONTROL.has(heads.pop()) ? ")head" : ")";
-      else if (c === "}") last = braces.pop() === "value" ? "}expr" : "}";
+      else if (c === "}") last = braces.pop() !== "block" ? "}expr" : "}";
       // `counter++ / x` is division: a postfix update is a value, and its second `+`
       // is not the operator that `+` usually is. `a + +b` collapses to the same token
       // and is division at the same place, so the one rule covers both.
@@ -247,7 +273,8 @@ function lex(text) {
       // block, and `x => /re/.test(y)` opens a regex. One token says both.
       else if (c === ">" && last === "=") last = "=>";
       else last = c;
-      word = /[\w$]/.test(c) ? word + c : "";
+      // A name is a token of its own above; everything here ends one.
+      word = "";
     }
     i++;
   }
@@ -289,7 +316,7 @@ function survey(text) {
   // code, which Codex found (#9, round 12). The lexer already answers this question for
   // the `/` after a `}`, so it answers it here too, and the list is gone.
   for (const m of [...code.matchAll(/\{\s*\}/g)].filter(inCode)) {
-    if (kinds.get(m.index) !== "value") continue;
+    if (kinds.get(m.index) !== "literal") continue;
     note("bare", m.index, null, `an empty object literal: ${m[0].replace(/\s+/g, " ")}`);
   }
 
@@ -464,7 +491,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Twelve rounds of review found fifteen
+// every other line is here because it must *not* be. Thirteen rounds of review found sixteen
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -493,6 +520,8 @@ const FIXTURE = [
   'function f11(k) { var n = 1, P1; return n++ / (P1 = { now: 1 }, P1[k]) / 2; }', // after a postfix update
   'var C1 = table({ "a-b": { x: 1 } }); C1["a-b"][k];', //               a key no identifier could spell
   'var C3 = table({ "a\\"b": { x: 1 } }); C3["a\\"b"][k];', //             …and one with an escape in it
+  'var D1; var d1 = function () {} / (D1 = { now: 1 }, D1[k]) / 2;', //  after a function expression
+  'var D2 = { m: function () {} }; D2.m;', //                            safe — an empty body, not a map
   'function pA() { try { pA(); } catch {} }', //                         safe — an empty block, not a map
   'class Empty {}', //                                                   safe — so is a class body
   'var B4 = table({ s: { a: 1 } }); B4["s"]["a"];', //                   safe — every key is a literal
@@ -505,7 +534,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b'];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
