@@ -686,7 +686,9 @@ function survey(text) {
   // there the literal is an argument or an element, and what the name holds is the call's
   // answer or the array. The read stops at the `;` or `,` that ends the declarator, or at
   // the bracket that closes whatever the expression sits inside.
-  const OPENER = pattern(`table\\(|dict\\(\\)|${FACTORIES}|\\{`, "y");
+  // `[` is an opener too — not a hazard, since an array is not a lookup table here, but a
+  // container a path may go through: `var rows = [{ … }]; rows[0][k]` reaches the element.
+  const OPENER = pattern(`table\\(|dict\\(\\)|${FACTORIES}|\\{|\\[`, "y");
   const bound = new Map();
   // Words a value is never held under.
   const ALIAS_SKIP = new Set(["function", "new", "typeof", "return", "true", "false", "null", "undefined", "this", "void", "delete", "in", "of", "case"]);
@@ -882,6 +884,14 @@ function survey(text) {
       at = i;
       if (mask[i] || !/\S/.test(code[i])) continue;
       const c = code[i];
+      // Whether an array literal here is one that is *selected from*, which two readings
+      // below both need: the transparency that lets a selection hand back an element, and
+      // the opener that records an array nobody selects from as the array it is.
+      let selected = false;
+      if (c === "[" && depth === 0 && !mask[i]) {
+        const close = restOfCall(i + 1);
+        selected = close >= 0 && indexAt(close + 1) >= 0;
+      }
       if (depth === 0) {
         // A property path is a value like any other: `var lookup = source.inner` holds what
         // `source.inner` holds, where the reading stopped at the dot and called the operand
@@ -949,7 +959,11 @@ function survey(text) {
         // asks it rather than guessing from what precedes — measured: without it, `v` was
         // reported twice in app.js, from two different functions that both spell a
         // formatter that way.
-        if (m && (m[0] !== "{" || kinds.get(i) === "literal")) found.push({ opens: m[0], at: i });
+        // …and an array that *is* selected from is not recorded as an array: the transparency
+        // above has already read what it hands back, which is an element and not the array.
+        if (m && (m[0] !== "{" || kinds.get(i) === "literal") && !(m[0] === "[" && selected)) {
+          found.push({ opens: m[0], at: i });
+        }
       }
       if (c === "(" || c === "[" || c === "{") {
         // A grouping parenthesis is transparent — `x = ({ … })` binds the literal — while a
@@ -966,11 +980,6 @@ function survey(text) {
         // The same selection with no name to hold it, `[{ … }][0][k]`, was written here as a
         // gap and Codex took it within the hour (#9, round 42). It is a rule of its own below
         // now, and it asks this same walk rather than reading the shape a second time.
-        let selected = false;
-        if (c === "[" && depth === 0) {
-          const close = restOfCall(i + 1);
-          selected = close >= 0 && indexAt(close + 1) >= 0;
-        }
         const grouping = through || selected ||
           (c === "(" && before !== ")" && before !== "]" && !IDENT_PART.test(before));
         // A call or an index is not the name that precedes it — `f(source)` holds whatever
@@ -1428,7 +1437,11 @@ function survey(text) {
   // literal: the last shorthand in `{ inner }` has no comma and no brace after it, which is
   // how the first version of this matched nothing at all.
   // The wrapper is stepped over and not captured, so `opens` stays the opener itself.
-  const VALUE = `(?:${THROUGH}\\s*)?(table\\(|dict\\(\\)|\\{|${ID}|)`;
+  // …and `[`, which is not a lookup table — an array indexed by a variable is a hazard of
+  // its own kind and out of scope here, which the round-8 fixture line says — but a path may
+  // go *through* one: `table({ rows: [{ … }] })` read as `outer.rows[0]` lands on an element.
+  // Codex found it (#9, round 46).
+  const VALUE = `(?:${THROUGH}\\s*)?(table\\(|dict\\(\\)|\\{|\\[|${ID}|)`;
   const KEY = pattern(`(${ID})\\s*(?::\\s*${VALUE}|(?=[,}]|$))`, "y");
   // A constant key is the value it denotes: `"status-name"` is as much a key as `status` is,
   // and `0` is as much one as `"0"`. Restricting it to identifier shapes meant
@@ -1552,13 +1565,28 @@ function survey(text) {
     // itself and the walk has to end.
     const step = (bindings, at) => {
       for (const b of bindings) {
+        // A numeric step into an array literal lands on an element, and *any* element may be
+        // the one — the same answer the walk gives a selection, for the same reason: which
+        // one it is is a question about the key. Only a numeric step: an array's own keys are
+        // its indices, and `rows.length` is not an element of anything.
+        if (b.opens === "[") {
+          if (String(Number(path[at])) !== path[at]) continue;
+          const inside = readInitialiser(b.at + 1, true);
+          const items = inside.found.concat(inside.holds.flatMap((held) => bindingsOf(held)));
+          if (at === path.length - 1) hits.push(...items.filter((i) => hasPrototype(i.opens)));
+          else step(items, at + 1);
+          continue;
+        }
         if (!isLiteral(b.opens)) continue;
         const body = bodyOf(b.opens === "{" ? b.at : b.at + b.opens.length);
         if (!body) continue;
         const k = keysOf(body).get(path[at]);
         if (!k) continue;
         const last = at === path.length - 1;
-        if (isLiteral(k.opens)) {
+        // …and a key whose value is an array is descended into the same way a key whose value
+        // is a literal is — the branch at the top of this loop is what knows how. As the last
+        // step it is an array and nothing more, which `hasPrototype` says of `[`.
+        if (isLiteral(k.opens) || k.opens === "[") {
           if (last) hits.push(k);
           else step([k], at + 1);
           continue;
@@ -2002,12 +2030,21 @@ const FIXTURE = [
   'var FB = Object({ a: 1 }); FB[k];', //                                …which is a literal when the argument is one
   'var FC = { a: 1 }; var FD = Object(FC); FD[k];', //                   …and a name when it is a name
   'var FE = viewParamObject(); FE[k];', //                               safe — a name that merely ends in it is somebody else's
+  'var FF = table({ rows: [{ a: 1 }] }); FF.rows[0][k];', //             a path through an array-valued key
+  'var FG = table({ rows: [dict()] }); FG.rows[0][k];', //               safe — that element is a dict
+  'var FH = [{ a: 1 }]; FH[0][k];', //                                   …and through an array a name holds
+  'var FI = [dict()]; FI[0][k];', //                                     safe — …the same way
+  'var FJ = { a: 1 }; var FK = [FJ]; FK[0][k];', //                      …and to a name inside one
+  'var FL = table({ rows: [{ a: 1 }] }); var { rows: FM } = FL; FM[0][k];', // …and through a name a pattern bound
+  'var FN = table({ rows: [{ a: 1 }] }); FN.rows.length[k];', //         safe — a step that is not a number is no element
+  'var FO = table({ rows: [[{ a: 1 }]] }); FO.rows[0][0][k];', //        …and an array inside an array
+  'var FP = [{ a: 1 }][0]; FP[0][k];', //                                safe — a selection is the element, not the array
   'var BL = { a: 1 }; BL[.5];', //                                       safe — a number may begin with its point
   'var BM = { a: 1 }; BM[-.5];', //                                      safe — …and with a sign in front of that
   'var BN = { a: 1 }; BN[.5e3];', //                                     safe — …and carry on as any number does
   'var BO = { a: 1 }; BO[.5 + n];', //                                   a sum that starts with one is not a constant
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "EF.😀", "EG.😀", "EH.9007199254740993", "EI.9007199254740993", "EL", "EM.true", "EN.true", "EP", "EQ", "ER.10000000000", "ES.lookup", "escaped", "ET", "EU.lookp", "EW", "EX", "EY", "FB", "FC", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "EF.😀", "EG.😀", "EH.9007199254740993", "EI.9007199254740993", "EL", "EM.true", "EN.true", "EP", "EQ", "ER.10000000000", "ES.lookup", "escaped", "ET", "EU.lookp", "EW", "EX", "EY", "FB", "FC", "FF.rows.0", "FH.0", "FK.0", "FM.0", "FO.rows.0.0", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
