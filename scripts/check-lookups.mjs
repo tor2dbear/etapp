@@ -159,7 +159,10 @@ const VALUE_WORDS = new Set(["this", "super", "true", "false", "null"]);
 // the old list by accident, not by decision, which is the whole reason the fixture runs
 // first. `static` is here for a class's static block; `if`, `while`, `for`, `with` and
 // `switch` never reach this, since their `(…)` puts a `)` in front of the brace.
-const BLOCK_WORDS = new Set(["else", "do", "try", "finally", "catch"]);
+// `var` and `const` are here because the brace after a declaration keyword opens a binding
+// *pattern* — `var { a } = obj` — and a pattern is not a value. (`let` is contextual and
+// already arrives as a plain name, which reaches the same answer.)
+const BLOCK_WORDS = new Set(["else", "do", "try", "finally", "catch", "var", "const"]);
 // The four heads whose closing `)` is followed by a statement rather than by more of an
 // expression — so the `/` after it opens a regex. Everything else that ends in `)` is a
 // value, and the `/` after *that* is division.
@@ -203,6 +206,14 @@ function lex(text) {
   // The bracket depth the `function` or `class` keyword stood at; only a brace one deeper
   // than that is its body.
   let makerAt = -1;
+  // The depth of a parameter list, so a brace that opens a *parameter* can be told from one
+  // that opens a default value. `function f({})` and `catch ({})` are binding patterns, and
+  // calling them object literals failed the gate on valid code — the sixth time that has
+  // happened here. Codex found it (#9, round 23); the `catch` half it did not name, and was
+  // there too. An arrow's parameter list is *not* covered: `({}) => {}` and `({})[k]` differ
+  // only in what follows the `)`, and guessing would cost the round-22 rule that reads the
+  // second one. app.js is ES5 throughout and writes neither.
+  let paramsAt = -1;
   // A `:` is two things as well: the one in `{ a: 1 }` puts what follows in expression
   // position, and the one in `case 1:` or `outer:` does not — so `case 1: {}` was read as
   // an empty object literal and failed CI on a valid switch arm. Codex found it (#9, round
@@ -234,7 +245,18 @@ function lex(text) {
     if (top() && top().kind === "tpl") {
       if (c === "\\") { cover(i, i + 2); i += 2; continue; }
       if (c === "`") { cover(i, i + 1); i++; nest.pop(); last = "`"; word = ""; continue; }
-      if (c === "$" && text[i + 1] === "{") { cover(i, i + 2); i += 2; nest.push({ kind: "sub", depth: 0 }); last = "{"; word = ""; continue; }
+      // `nesting++` because the `}` that closes this substitution reaches the counter below,
+      // so without it every template leaves the count one lower than it was — measured at
+      // -3 across the fixture's three of them.
+      //
+      // **There is no claim for this line, and that is deliberate.** Every comparison the
+      // counter feeds is between two numbers that drift together, so the drift cancels, and
+      // I could not build a case where removing this changes an answer — including the one
+      // that should have worked, a substitution inside a parameter list, where the reset
+      // below lands on the same verdict by a different route. So it is a correctness fix
+      // with an unobservable effect, which is a thing worth writing down rather than
+      // covering with a mutation that would not bite.
+      if (c === "$" && text[i + 1] === "{") { cover(i, i + 2); i += 2; nesting++; nest.push({ kind: "sub", depth: 0 }); last = "{"; word = ""; continue; }
       cover(i, i + 1);
       i++;
       continue;
@@ -340,11 +362,15 @@ function lex(text) {
       continue;
     }
     if (c === "(" || c === "[" || c === "{") nesting++;
-    else if (c === ")" || c === "]" || c === "}") nesting--;
-    if (c === "(") heads.push(word);
+    else if (c === ")" || c === "]" || c === "}") { nesting--; if (nesting < paramsAt) paramsAt = -1; }
+    if (c === "(") {
+      if ((maker !== null && nesting === makerAt + 1) || word === "catch") paramsAt = nesting;
+      heads.push(word);
+    }
     if (c === "{") {
       let kind;
-      if (maker !== null && nesting === makerAt + 1) { kind = maker ? "fnvalue" : "block"; maker = null; }
+      if (paramsAt >= 0 && nesting === paramsAt + 1 && (last === "(" || last === ",")) kind = "block";
+      else if (maker !== null && nesting === makerAt + 1) { kind = maker ? "fnvalue" : "block"; maker = null; }
       else kind = last !== "=>" && opensValue(last, word) ? "literal" : "block";
       braces.push(kind);
       kinds.set(i, kind);
@@ -806,13 +832,18 @@ const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z",
 // is the shape that made a case label swallow a property colon — the nested literal was then
 // read as a block and the ban on empty object literals quietly did not apply inside it.
 const EMPTY_FIXTURE = [
-  'function ms(x) { switch (x) { case { a: {} }.a: break; } }', // one, inside a case expression
-  'function mt(x) { switch (x) { case 1: {} default: {} } }', //  none — case arms are blocks
+  'function ms(x) { switch (x) { case { a: {} }.a: break; } }', // 1 — inside a case expression
+  'function mt(x) { switch (x) { case 1: {} default: {} } }', //  ·   case arms are blocks
+  'function rd({}) {}', //                                        ·   an empty binding pattern
+  'function rc() { try { rd(); } catch ({}) {} }', //             ·   …and a catch's pattern
+  'var { t1 } = { t1: 1 };', //                                   ·   a declaration's pattern
+  'ident({});', //                                                6 — an argument really is a literal
+  'function rt2(a = {}) { return a; }', //                        7 — and so is a default value
 ].join("\n");
 const empties = survey(EMPTY_FIXTURE).notes;
 const bares = empties.filter((n) => n.check === "bare").map((n) => n.line);
-if (bares.join(",") !== "1") {
-  fail("fixture", `the empty-literal rule reports on line(s) ${bares.join(", ") || "none"} of its fixture, where it should report on line 1 alone`);
+if (bares.join(",") !== "1,6,7") {
+  fail("fixture", `the empty-literal rule reports on line(s) ${bares.join(", ") || "none"} of its fixture, where it should report on 1, 6 and 7`);
 }
 for (const n of empties.filter((n) => n.check !== "bare")) {
   fail("fixture", `the empty-literal fixture also produced ${n.check} on line ${n.line}: ${n.what}`);
