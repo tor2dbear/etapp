@@ -1224,7 +1224,7 @@
   // therefore what every later write looks like. A stored `done: "0"` would be a memory
   // of having changed nothing.
   function migrateDisplay() {
-    var old = {};
+    var old = dict();
     ["view", "sort", "group", "done", "empty", "props"].forEach(function (k) {
       try {
         var v = localStorage.getItem("roadmap-" + k);
@@ -1249,7 +1249,7 @@
   // and `effectiveParams` mutate the object they are given — which here would be the
   // store itself.
   function displayMemory(focus) {
-    var mem = displayStore()[focus], o = {};
+    var mem = displayStore()[focus], o = dict();
     if (mem) DISPLAY_KEYS.forEach(function (k) { if (mem[k] != null) o[k] = String(mem[k]); });
     return o;
   }
@@ -1277,7 +1277,7 @@
   // view whose scope is Ready is not a statement about Ready.
   function rememberDisplay() {
     if (state.fromView) return;
-    var o = viewParamObject(), mem = {};
+    var o = viewParamObject(), mem = dict();
     DISPLAY_KEYS.forEach(function (k) { if (o[k] != null) mem[k] = o[k]; });
     var store = displayStore();
     if (Object.keys(mem).length) store[state.focus] = mem;
@@ -2196,7 +2196,7 @@
     });
     board.appendChild(rack);
 
-    var moreW = {};
+    var moreW = dict();
     Array.prototype.forEach.call(rack.children, function (s) {
       moreW[s.getAttribute("data-probe")] = s.getBoundingClientRect().width;
     });
@@ -2329,7 +2329,7 @@
       var r = kids[i].getBoundingClientRect();
       if (y < r.top + r.height / 2) { idx = i; break; }
     }
-    var byId = {};
+    var byId = dict();
     items.forEach(function (it) { byId[it.id] = it; });
     var seq = kids.map(function (c) { return byId[c.getAttribute("data-id")]; }).filter(Boolean);
     return { before: kids[idx] || null, prev: seq[idx - 1] || null, next: seq[idx] || null };
@@ -4237,7 +4237,7 @@
           host.appendChild(list);
 
           function known() {
-            var n = {};
+            var n = dict();
             DATA.items.forEach(function (it) { (it.tags || []).forEach(function (t) { n[t] = (n[t] || 0) + 1; }); });
             return Object.keys(n).sort(function (a, b) { return n[b] - n[a] || a.localeCompare(b); });
           }
@@ -4434,8 +4434,8 @@
       var defs = [{ key: "overview", label: "Overview", panel: overview }].concat(
         extraTabs.map(function (t) { t.panel = el("div", "tab-panel"); t.panel.hidden = true; return t; }));
       tabList.setAttribute("role", "tablist");
-      var tabBtns = {};
-      var loadedSet = {};
+      var tabBtns = dict();
+      var loadedSet = dict();
       var pick = function (name) {
         defs.forEach(function (d) {
           d.panel.hidden = d.key !== name;
@@ -5206,7 +5206,7 @@
       field: "repo",
       keyOf: function (i) { return i.repo; },
       keys: function (items) {
-        var order = {};
+        var order = dict();
         DATA.sources.forEach(function (s, i) { order[s.repo] = i; });
         return presentKeys(items, this.keyOf, function (k) { return order[k] == null ? 999 : order[k]; });
       },
@@ -5236,7 +5236,7 @@
       field: "parent",
       keyOf: function (i) { return i.parentRef || NO_VALUE; },
       keys: function (items) {
-        var order = {};
+        var order = dict();
         DATA.items.forEach(function (it, i) { order[it.id] = i; }); // parents in board order
         return presentKeys(items, this.keyOf, function (k) { return order[k] == null ? 1e9 : order[k]; });
       },
@@ -5556,7 +5556,7 @@
         })
       );
       var would = DATA.items.filter(function (it) { return runQuery(it, free); });
-      var count = {};
+      var count = dict();
       would.forEach(function (it) { var k = g.keyOf(it); count[k] = (count[k] || 0) + 1; });
       return { keys: g.keys(would), count: count };
     });
@@ -5581,7 +5581,7 @@
     // one people actually press stays invisible.
     var archiveOff = !state.showDone && ARCHIVABLE[state.focus];
     if (!groupConstrained(g) && !archiveOff) return [];
-    var here = {};
+    var here = dict();
     shown.forEach(function (grp) { here[grp.key] = 1; });
     // Two passes, because the two causes need different answers. `byQuery` is the board
     // with the query's own terms lifted and the toggle left as it stands: a column
@@ -5591,7 +5591,7 @@
     // one repo while the archive is off would advertise its landed pucks as waiting.
     var byQuery = wouldShow(g, false);
     var full = archiveOff ? wouldShow(g, true) : byQuery;
-    var reachable = {};
+    var reachable = dict();
     byQuery.keys.forEach(function (k) { reachable[k] = 1; });
     // A column the *archive* hid needs no name to come back — its eye presses the
     // toggle, and a toggle takes no argument. Demanding a nameable term anyway lost
@@ -5830,7 +5830,7 @@
   // list has to slot a fully-archived group into its own place rather than at the end.
   function archivedPerColumn(shownRoots) {
     if (state.showDone || !ARCHIVABLE[state.focus]) return null;
-    var count = {}, order = [];
+    var count = dict(), order = [];
     withShowDone(true, function () {
       var q = activeTerms();
       var all = DATA.items.filter(function (it) { return runQuery(it, q); });
@@ -5874,7 +5874,7 @@
   // appended — two functions and one fact, which is a shape this file otherwise avoids.
   // It earns the exception by being write-once-read-once within a single render: anything
   // longer-lived would be a second source of truth for where the reader is.
-  var colPlaces = {};
+  var colPlaces = dict();
   // The column the keyboard was in when the board was replaced, by the same key as the
   // places above. Null unless focus was actually inside the board — a redraw while the
   // reader is in a sheet, the sidebar or a field must not pull focus onto a column.
@@ -6148,7 +6148,7 @@
     var none = null;
     groups.forEach(function (grp) { if (grp.key === NO_VALUE) none = grp; });
     if (!none) return {};
-    var roots = {};
+    var roots = dict();
     none.items.forEach(function (it) {
       if ((it.children || []).length && (!only || only[it.id])) roots[it.id] = it;
     });
@@ -6156,7 +6156,7 @@
     return roots;
   }
   function listTree(groups, roots) {
-    var byKey = {}, visible = {};
+    var byKey = dict(), visible = dict();
     groups.forEach(function (grp) {
       byKey[grp.key] = grp;
       grp.items.forEach(function (it) { visible[it.id] = it; });
@@ -6173,7 +6173,7 @@
     });
     // Board order, `No parent` last — the order `presentKeys` would have given. The
     // synthesised headings have to land *in* it, not after everything that was found.
-    var rank = {};
+    var rank = dict();
     DATA.items.forEach(function (it, i) { rank[it.id] = i; });
     var at = function (k) { return k === NO_VALUE ? 2e9 : rank[k] == null ? 1e9 : rank[k]; };
     sections.sort(function (a, b) { return at(a.key) - at(b.key); });
@@ -6201,19 +6201,19 @@
     // heading it already had.
     var headed = null;
     if (roots) {
-      headed = {};
+      headed = dict();
       Object.keys(roots).forEach(function (id) { headed[id] = 1; });
       groups.forEach(function (grp) { if (grp.key !== NO_VALUE && grp.items.length) headed[grp.key] = 1; });
     }
     var archived = archivedPerColumn(headed);
-    var shownKeys = {};
+    var shownKeys = dict();
     groups.forEach(function (grp) { if (grp.items.length) shownKeys[grp.key] = 1; });
     // A group the archive emptied *entirely* never reaches `groups`, so it has to be put
     // back as a heading with nothing under it — the list's answer to what the tray does
     // on the board. Walked in the archive's own order so it lands in its own place
     // rather than after everything else.
     if (archived) {
-      var stubs = {};
+      var stubs = dict();
       archived.order.forEach(function (k) { if (!shownKeys[k] && archived.count[k]) stubs[k] = 1; });
       // Except where the group's own puck is archived, which under the parent grouping is
       // a thing a group can be: the heading *is* a puck there, not a label. "Archived" is
@@ -6240,7 +6240,7 @@
         if (puck && TERMINAL[puck.status]) delete stubs[k];
       });
       if (Object.keys(stubs).length) {
-        var byKey = {};
+        var byKey = dict();
         groups.forEach(function (grp) { byKey[grp.key] = grp; });
         // Walked in the archive's order so a stub lands in its own place — but only the
         // keys `stubs` named. Mapping the whole order synthesised a group for every key
@@ -6749,7 +6749,7 @@
     // grouping change "simply matches nothing", and that was true of every key except the
     // one they share.
     colPlacesGroup = board.dataset.group || null;
-    colPlaces = {};
+    colPlaces = dict();
     Array.prototype.forEach.call(board.querySelectorAll(".cards[data-col]"), function (k) {
       if (k.scrollTop) colPlaces[k.dataset.col] = k.scrollTop;
     });
@@ -7114,7 +7114,7 @@
   // actionable queue) · Inbox (triage of raw ideas, its own space) · ⚠ Needs
   // attention (drift). Each is a nav row with a live count and a clear active state.
   function viewCounts() {
-    var c = {}, qs = {};
+    var c = dict(), qs = dict();
     // Counted with the views' own queries, so a row's number can never drift from
     // what clicking it shows — the archive toggle included.
     //
@@ -8310,7 +8310,7 @@
       var jumped = true;
       // Samma tillgänglighetsvillkor som sidomenyn, titelväxlaren och paletten:
       // en vy som inte finns i någon av dem ska inte nås av en genväg heller.
-      var open = {};
+      var open = dict();
       viewsShown(viewCounts()).forEach(function (g) { g.keys.forEach(function (x) { open[x] = 1; }); });
       // `e` is kept beside `p`: it is what the row was called, and muscle memory is not
     // worth breaking to save a letter nobody else uses.
@@ -8516,7 +8516,7 @@
     {
       key: "tag", label: "Labels", search: "Filter labels…",
       values: function () {
-        var n = {};
+        var n = dict();
         DATA.items.forEach(function (it) { (it.tags || []).forEach(function (t) { n[t] = (n[t] || 0) + 1; }); });
         return Object.keys(n)
           .sort(function (a, b) { return n[b] - n[a] || a.localeCompare(b); })
@@ -8797,7 +8797,7 @@
     return vs.filter(function (v) { return v && v.name; });
   }
   function paramsOf(v) {
-    var o = {};
+    var o = dict();
     VIEW_KEYS.forEach(function (k) {
       if (v[k] != null && v[k] !== "") o[k] = String(v[k]);
     });
@@ -9239,7 +9239,7 @@
         var views = savedViews().filter(function (x) { return x === v || x.name !== name; });
         var at = views.indexOf(v);
         if (at < 0) return;
-        var entry = {};
+        var entry = dict();
         for (var k in v) entry[k] = v[k];
         entry.name = name;
         views[at] = entry;
@@ -9261,11 +9261,11 @@
   // the end, because a copy belongs next to what it came from; Rename is one row away
   // in the same menu.
   function duplicateSavedView(v) {
-    var taken = {};
+    var taken = dict();
     savedViews().forEach(function (x) { taken[x.name] = 1; });
     var base = v.name + " copy", name = base, n = 2;
     while (taken[name]) name = base + " " + n++;
-    var views = savedViews().slice(), entry = {};
+    var views = savedViews().slice(), entry = dict();
     for (var k in v) entry[k] = v[k];
     entry.name = name;
     views.splice(views.indexOf(v) + 1, 0, entry);
@@ -9596,7 +9596,7 @@
   // the second change on the original text and the demo would quietly lie about what
   // the product does.
   function installDemoGitHub() {
-    var files = {}; // "owner/repo:path" → text
+    var files = dict(); // "owner/repo:path" → text
     var sha = 0;
     // Sync's run counter. It starts at 1 so the first read (the one `runSync` takes
     // *before* dispatching) has a run to answer with, and the dispatch bumps it — which
@@ -9660,7 +9660,7 @@
       var repo = m && m[1];
       var rest = (m && m[2]) || "";
       if (!repo) return json({ message: "Not Found" }, 404);
-      var query = {};
+      var query = dict();
       (u.split("?")[1] || "").split("&").forEach(function (kv) {
         var i = kv.indexOf("=");
         if (i > 0) query[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1));
@@ -10469,7 +10469,7 @@
   // puck itself means the parent would contain its own ancestor. The harvester cuts
   // such a link anyway — refusing here keeps a nonsense line out of git.
   function wouldLoop(item, parentId) {
-    var seen = {}, cur = parentId;
+    var seen = dict(), cur = parentId;
     while (cur) {
       if (cur === item.id || seen[cur]) return true;
       seen[cur] = 1;
@@ -10587,7 +10587,7 @@
   // Would depending on `target` close a loop? Walk the *authored* graph, since a
   // landed blocker still counts as an edge.
   function wouldDependLoop(item, target) {
-    var seen = {}, stack = [target];
+    var seen = dict(), stack = [target];
     while (stack.length) {
       var cur = stack.pop();
       if (cur === item) return true;
@@ -10630,7 +10630,7 @@
   // Which pucks could block this one: anything but itself, what it already lists,
   // and anything that already waits on it (a loop).
   function blockerCandidates(item) {
-    var listed = {};
+    var listed = dict();
     dependsItems(item).forEach(function (d) { listed[d.id] = 1; });
     return function (other) {
       return other === item || listed[other.id] || wouldDependLoop(item, other);

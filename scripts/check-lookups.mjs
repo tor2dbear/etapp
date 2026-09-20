@@ -99,12 +99,47 @@ if (wrapped < 15) {
   fail("coverage", `only ${wrapped} tables go through table() — the pattern this checks for has moved`);
 }
 
+// ── 3. and no map built from data left bare either ──────────────────────────────
+// The same question asked of the other half. Three maps were missed when this was
+// written — `renderList`'s buckets, the hidden tray's two sets, the Labels facet's
+// counts — and they were missed because nothing asked; the list of places to convert
+// was in my head, which is the hand-maintained list this repository keeps paying for.
+//
+// A local `{}` is a map when something indexes it with a key that is not a literal, and
+// the search is scoped to the block the declaration lives in, so two functions may both
+// have a `seen` without one answering for the other.
+const lines = src.split("\n");
+const blockOf = (start) => {
+  // From the declaration to the end of its enclosing block, by brace depth.
+  let depth = 0;
+  for (let i = start; i < lines.length; i++) {
+    for (const ch of lines[i]) {
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+    }
+    if (depth < 0) return lines.slice(start, i + 1).join("\n");
+  }
+  return lines.slice(start).join("\n");
+};
+for (let i = 0; i < lines.length; i++) {
+  // `var x = {}` / `var a = {}, b = {}`, excluding the capitalised tables above, which
+  // section 2 owns, and excluding a literal used as a value rather than a map.
+  const names = [...lines[i].matchAll(/\b([a-z][A-Za-z0-9_]*) = \{\}[,;]/g)].map((m) => m[1]);
+  if (!names.length) continue;
+  const block = blockOf(i);
+  for (const name of names) {
+    if (new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`).test(block)) {
+      fail("bare-map", `app.js:${i + 1} — ${name} is indexed by a variable in its own block but is not dict()`);
+    }
+  }
+}
+
 if (failures.length) {
   console.error(`✗ lookups: ${failures.length} failure(s)\n`);
   for (const [check, detail] of failures) console.error(`  [${check}] ${detail}`);
   process.exit(1);
 }
 console.log(
-  `✓ lookups: ${wrapped} tables and every map built from data start with no prototype, ` +
-    `so ${INHERITED.length} inherited names answer for no key that was not put there`
+  `✓ lookups: ${wrapped} tables and every map indexed by a variable start with no ` +
+    `prototype, so ${INHERITED.length} inherited names answer for no key that was not put there`
 );
