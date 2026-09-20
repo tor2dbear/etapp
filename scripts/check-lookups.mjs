@@ -83,8 +83,8 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
 // The rest is the *other* half of the rule — an object that something indexes with a key
-// that is not a literal — and it has now been wrong in twenty-one different ways over
-// seventeen rounds of review. Seventeen were the same defect: the scan could not see a
+// that is not a literal — and it has now been wrong in twenty-three different ways over
+// eighteen rounds of review. Eighteen were the same defect: the scan could not see a
 // shape, and nothing
 // here said which shapes it could see. So the scan is a function of text, and the fixture
 // below is the list, with the answer written next to each line. A shape the matcher stops
@@ -123,7 +123,30 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // what they close now. What is deliberately *not* claimed is that no third shape exists.
 // The fixture is where the next one gets written down.
 const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split("").concat(["=>"]));
-const REGEX_WORDS = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else"]);
+// The keyword side of the same question, and it is written as an inversion because the
+// list I had was a guess: "the keywords a regex may follow" was missing `await`, which made
+// `await /{}/.test("")` — valid async code — report an empty object literal. Codex found it
+// (#9, round 18), the fourth red gate this file has produced on code that is fine.
+//
+// A `/` is division after a *value* and a regex after everything else, so what has to be
+// listed is what a name can be: the reserved words are a closed set the language defines,
+// five of them stand for values, and an identifier that is not reserved is a value by
+// definition. That cannot be short by one the way the other list was.
+const RESERVED = new Set([
+  "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
+  "do", "else", "enum", "export", "extends", "false", "finally", "for", "function", "if", "import",
+  "in", "instanceof", "new", "null", "return", "super", "switch", "this", "throw", "true", "try",
+  "typeof", "var", "void", "while", "with", "yield", "let", "static", "get", "set", "of", "as", "from",
+]);
+const VALUE_WORDS = new Set(["this", "super", "true", "false", "null"]);
+// …and the keywords whose `{` opens a statement rather than a value. Everything else that
+// can stand in front of a `{` at all — `return`, `case`, `typeof`, `throw`, `await` — takes
+// an expression, so the brace is a literal.
+// `catch` came back red the moment the inversion landed — it had been on the safe side of
+// the old list by accident, not by decision, which is the whole reason the fixture runs
+// first. `static` is here for a class's static block; `if`, `while`, `for`, `with` and
+// `switch` never reach this, since their `(…)` puts a `)` in front of the brace.
+const BLOCK_WORDS = new Set(["else", "do", "try", "finally", "catch", "static"]);
 // The four heads whose closing `)` is followed by a statement rather than by more of an
 // expression — so the `/` after it opens a regex. Everything else that ends in `)` is a
 // value, and the `/` after *that* is division.
@@ -135,7 +158,8 @@ const CONTROL = new Set(["if", "while", "for", "with"]);
 // hidden[k]) / 2` mask the lookup in the middle of it: the dangerous direction, and the one
 // the comment beside it had just claimed could not happen. Codex found it (#9, round 10).
 const VALUE_AFTER = new Set("=(,:[?!&|+-*/%~^<>".split(""));
-const VALUE_WORDS = new Set(["return", "typeof", "case", "in", "of", "new", "delete", "void", "throw"]);
+// A `{` opens a value after an operator, or after a keyword that takes one.
+const opensValue = (last, word) => VALUE_AFTER.has(last) || (last === "kw" && !BLOCK_WORDS.has(word));
 // The third is a function or class *expression*'s body. It is not an object literal — an
 // empty one is an empty callback, not an empty map — but it is a value, so the `/` after
 // its `}` is division: `var r = function () {} / x` hid a lookup the same way a literal
@@ -226,7 +250,7 @@ function lex(text) {
       word = "";
       continue;
     }
-    if (c === "/" && (last === "" || last === ")head" || REGEX_AFTER.has(last) || REGEX_WORDS.has(word))) {
+    if (c === "/" && (last === "" || last === "kw" || last === ")head" || REGEX_AFTER.has(last))) {
       // A character class can hold an unescaped `/`, so the closing one is only the one
       // outside `[…]`. An opener with no closer on its line was not a regex after all.
       let j = i + 1;
@@ -265,13 +289,13 @@ function lex(text) {
       if (ident === "async") { carried = { last, word }; }
       else if (MAKERS.has(ident)) {
         const from = carried || { last, word };
-        maker = VALUE_AFTER.has(from.last) || VALUE_WORDS.has(from.word);
+        maker = opensValue(from.last, from.word);
         carried = null;
       } else carried = null;
       if ((ident === "case" || ident === "default") && statementPlace(last)) pendingLabel = true;
       identStart = last;
       word = ident;
-      last = "w";
+      last = RESERVED.has(ident) && !VALUE_WORDS.has(ident) ? "kw" : "w";
       i = j;
       continue;
     }
@@ -286,7 +310,7 @@ function lex(text) {
     if (c === "{") {
       let kind;
       if (maker !== null) { kind = maker ? "fnvalue" : "block"; maker = null; }
-      else kind = last !== "=>" && (VALUE_AFTER.has(last) || VALUE_WORDS.has(word)) ? "literal" : "block";
+      else kind = last !== "=>" && opensValue(last, word) ? "literal" : "block";
       braces.push(kind);
       kinds.set(i, kind);
       if (top() && top().kind === "sub") top().depth++;
@@ -370,15 +394,63 @@ function survey(text) {
   // success line says so rather than claiming the file is clean of a thing it cannot see.
   // `Object.create(null)` is deliberately absent — that is the cure, not the hazard.
   const FACTORY = /Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{/;
+  // What a name is bound to is an *expression*, not a token. `var x = flag ? { … } : { … }`
+  // holds one of two literals and `var x = y || { … }` may hold one, and matching the opener
+  // immediately after the `=` saw neither — Codex found the conditional (#9, round 18).
+  // Widening that regex one shape at a time is what rounds 14 and 17 already were, so the
+  // initialiser is read to the end of its declarator instead, and every opener at its *top*
+  // level is a binding of the name. The grouping parentheses of round 17 fall out of that
+  // rather than being a case in a pattern.
+  //
+  // Depth counts brackets and parentheses, so `f({ … })` and `[{ … }]` are not bindings:
+  // there the literal is an argument or an element, and what the name holds is the call's
+  // answer or the array. The read stops at the `;` or `,` that ends the declarator, or at
+  // the bracket that closes whatever the expression sits inside.
+  const OPENER = /table\(|dict\(\)|Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{|\{/y;
   const bound = new Map();
-  // Grouping parentheses are allowed on this side too — `var x = ({ … })`. Only
-  // immediately after the `=`, which is what keeps `x = f({ … })` out: there the literal is
-  // an argument and what `x` holds is whatever `f` returned. Round 14 was the same fix on
-  // the reading side; this is the writing side, and I did not think to do both at once.
-  const BINDING = /(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:\(\s*)*(table\(|dict\(\)|Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{|\{)/g;
-  for (const m of [...code.matchAll(BINDING)].filter(inCode)) {
-    if (!bound.has(m[1])) bound.set(m[1], []);
-    bound.get(m[1]).push({ opens: m[2], at: m.index + m[0].length - m[2].length });
+  const openersIn = (from) => {
+    const found = [];
+    const open = [];
+    let depth = 0;
+    let before = "=";
+    for (let i = from; i < code.length; i++) {
+      if (mask[i] || !/\S/.test(code[i])) continue;
+      const c = code[i];
+      if (depth === 0) {
+        OPENER.lastIndex = i;
+        const m = OPENER.exec(code);
+        // `var v = function (k, x) { … }` has a `{` at the top level of its initialiser and
+        // it is a body, not a map. The lexer has classified every brace already, so this
+        // asks it rather than guessing from what precedes — measured: without it, `v` was
+        // reported twice in app.js, from two different functions that both spell a
+        // formatter that way.
+        if (m && (m[0] !== "{" || kinds.get(i) === "literal")) found.push({ opens: m[0], at: i });
+      }
+      if (c === "(" || c === "[" || c === "{") {
+        // A grouping parenthesis is transparent — `x = ({ … })` binds the literal — while a
+        // call's is not, because `x = f({ … })` binds whatever `f` answered.
+        const grouping = c === "(" && !/[\w$)\]]/.test(before);
+        open.push(grouping);
+        if (!grouping) depth++;
+        before = c;
+        continue;
+      }
+      if (c === ")" || c === "]" || c === "}") {
+        if (!open.length) break;
+        if (!open.pop()) depth--;
+        before = c;
+        continue;
+      }
+      if (depth === 0 && (c === ";" || c === ",")) break;
+      before = c;
+    }
+    return found;
+  };
+  for (const m of [...code.matchAll(/(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=(?![=>])/g)].filter(inCode)) {
+    for (const opener of openersIn(m.index + m[0].length)) {
+      if (!bound.has(m[1])) bound.set(m[1], []);
+      bound.get(m[1]).push(opener);
+    }
   }
   // A literal is the only opener this can read *into*; a factory call is opaque, and
   // `bodyOf` would happily run past it to the next unrelated `{`.
@@ -547,7 +619,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Seventeen rounds of review found
+// every other line is here because it must *not* be. Eighteen rounds of review found
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -584,6 +656,11 @@ const FIXTURE = [
   'var K1 = ({ now: 1 }); K1[k];', //                                    parens around the initializer
   'var K2 = ((table({ a: 1 }))); K2[k];', //                             safe — still wrapped through them
   'var K3 = ident({ a: 1 }); K3[k];', //                                 safe — an argument, not a binding
+  'var L1 = flag ? { now: 1 } : { next: 2 }; L1[k];', //                 either branch of a conditional
+  'var L2 = other || { a: 1 }; L2[k];', //                               …or the right of a fallback
+  'var L3 = [{ a: 1 }]; L3[k];', //                                      safe — an element, not the binding
+  'var L4 = function (a) { return a; }; L4[k];', //                      safe — a body, not a map
+  'async function rw() { await /{}/.test(""); }', //                     safe — a regex after a keyword
   'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
   'var J1; var j1 = async function () {} / (J1 = { now: 1 }, J1[k]) / 2;', // async before the keyword
@@ -601,9 +678,12 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2"];
 const fixture = survey(FIXTURE);
-const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
+// Distinct subjects, not distinct sites: a conditional binds the same name twice and both
+// branches are reported, each at its own line, which is right and is not two findings for
+// this list to care about.
+const got = [...new Set(fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject))].sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
   fail("fixture", `the matcher reports ${got.join(", ") || "nothing"} where it should report ${REPORTED.join(", ")}`);
 }
