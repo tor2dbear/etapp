@@ -554,8 +554,15 @@ function lex(text) {
 // quotes: `"a\\-b"` and `"a-b"` are one key. Only the escapes JavaScript gives a different
 // character to — everything else stands for itself, which is what the last branch says.
 const ESCAPES = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", 0: "\0" };
-const unescape = (raw) => raw.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (all, what) => {
-  if (what[0] === "u" || what[0] === "x") return String.fromCharCode(parseInt(what.slice(1), 16));
+// `\u{1F600}` is the same character as the one typed, and the reader knew only the
+// four-digit form — so `{ "😀": … }` and `t["\u{1F600}"]` were two keys where the language has
+// one. Codex found it (#9, round 43). A code point outside the range stands for itself, the
+// way every other unreadable escape here does; in real source it is a syntax error.
+const unescape = (raw) => raw.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (all, what) => {
+  if (what[0] === "u" || what[0] === "x") {
+    const point = parseInt(what.replace(/[u{}x]/g, ""), 16);
+    return point <= 0x10ffff ? String.fromCodePoint(point) : all;
+  }
   return what in ESCAPES ? ESCAPES[what] : what;
 });
 
@@ -671,10 +678,21 @@ function survey(text) {
   // language does, so `{ 16: … }`, `t[0x10]` and `t["16"]` are one key by construction rather
   // than by a table of spellings. A number this cannot read is no key at all.
   const numberKey = (raw) => {
-    const n = Number(raw.replace(/_/g, "").replace(/n$/, ""));
+    const text = raw.replace(/_/g, "");
+    // …and a BigInt is its own conversion, not a number's: `9007199254740993n` stringifies
+    // exactly, where a double rounds it to `…992` and the key stops matching the one the
+    // literal wrote. Codex found it (#9, round 43).
+    if (text.endsWith("n")) {
+      try {
+        return String(BigInt(text.slice(0, -1)));
+      } catch {
+        return null;
+      }
+    }
     // Infinity is a key like any other — `{ 1e999: … }` is the key `Infinity`, which is what
     // the conversion says and what a fixture line holds. Only a number this cannot read at
     // all is no key.
+    const n = Number(text);
     return Number.isNaN(n) ? null : String(n);
   };
   // …and a template with nothing substituted into it, which is a string written a third way:
@@ -683,10 +701,22 @@ function survey(text) {
   // absence of `${`, and that is what the pattern says: a `$` that does not open one.
   const TEMPLATE = "`(?:[^`\\\\$]|\\\\.|\\$(?!\\{))*`";
   const asKey = (raw) => (/^["'${`}]/.test(raw) ? unescape(raw.slice(1, -1)) : /^[-+.\d]/.test(raw) ? numberKey(raw) : raw);
+  // …and the three literal keywords, which are constants and cannot be anything else:
+  // `lookup[true]` is the key `true` and was read as a variable one — a red gate on valid
+  // code, the twenty-first, which Codex found (#9, round 43). `undefined`, `NaN` and
+  // `Infinity` are *not* here and must not be: they are ordinary global names, and a sloppy
+  // script like this one may bind them, so `lookup[undefined]` is a key this cannot know.
+  // That is a fixture line rather than a remark.
+  // No lookahead after it: every place a constant is read bounds it with the `]` or the `:`
+  // that has to follow, so `lookup[truthy]` fails on the bracket rather than on the word. I
+  // wrote one, and took it out when its claim would not bite — which is the only way to tell
+  // a fence from a second fence.
+  const WORD = "(?:true|false|null)";
   // What may be written as a key *directly* — `"a": 1`, `0: 1` — and what may be written
-  // inside brackets, where a template is legal and a bare one is not.
+  // inside brackets, where a template and a keyword are legal and a bare one of either is
+  // not.
   const CONSTANT = `${STRING}|${NUMBER}`;
-  const BRACKETED = `${CONSTANT}|${TEMPLATE}`;
+  const BRACKETED = `${CONSTANT}|${WORD}|${TEMPLATE}`;
   const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${BRACKETED})\\s*\\]`, "gu");
   const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${BRACKETED})\\s*\\])`;
   // A path is all of its steps or none of them: one segment this cannot read leaves a path
@@ -703,6 +733,7 @@ function survey(text) {
   const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
   const INDEX_AT = new RegExp(INDEX, "y");
   const TEMPLATE_AT = new RegExp(TEMPLATE, "y");
+  const WORD_AT = new RegExp(WORD, "yu");
   // …and one for a run of steps, for the walk: `STEPS` itself, so the value side and the
   // index side cannot come to read a path differently.
   const STEP_TAIL = new RegExp(`(?:${STEPS})+`, "yu");
@@ -1246,6 +1277,12 @@ function survey(text) {
       TEMPLATE_AT.lastIndex = i;
       if (!TEMPLATE_AT.test(code)) return false;
       i = TEMPLATE_AT.lastIndex;
+      while (i < code.length && /\s/.test(code[i])) i++;
+      return code[i] === "]";
+    }
+    WORD_AT.lastIndex = i;
+    if (WORD_AT.test(code)) {
+      i = WORD_AT.lastIndex;
       while (i < code.length && /\s/.test(code[i])) i++;
       return code[i] === "]";
     }
@@ -1886,12 +1923,23 @@ const FIXTURE = [
   'var EA = { inner: { now: 1 } }; var { [`inner`]: EB } = EA; EB[k];', // …and as one in a pattern
   'var EC = { now: 1 }; var ED = ((EC)); ED[k];', //                     a name inside two parentheses is still the name
   'var EE = { a: 1 }; EE[{ b: 2 }][0][k];', //                           a literal in an index is a key, not an element
+  'var EF = table({ "😀": { now: 1 } }); EF["\\u{1F600}"][k];', //        a code point escape is the character
+  'var EG = table({ "\\u{1F600}": { now: 1 } }); EG["😀"][k];', //        …and the character is the escape
+  'var EH = table({ "9007199254740993": { now: 1 } }); EH[9007199254740993n][k];', // a BigInt keeps every digit it was written with
+  'var EI = table({ 9007199254740993n: { now: 1 } }); EI["9007199254740993"][k];', // …on the writing side too
+  'var EJ = { now: 1 }; EJ[true];', //                                   safe — a literal keyword is a constant key
+  'var EK = { now: 1 }; EK[null];', //                                   safe — …all three of them
+  'var EL = { now: 1 }; EL[undefined];', //                              …but a name a script may bind is not one
+  'var EM = table({ true: { now: 1 } }); EM[true][k];', //               a keyword as a key, reached as a step
+  'var EN = table({ [true]: { now: 1 } }); EN[true][k];', //             …and as a computed one
+  'var EO = { true: { now: 1 } }; var { [true]: EP } = EO; EP[k];', //   …and as one in a pattern
+  'var EQ = { now: 1 }; EQ[truthy];', //                                 a name that merely starts like one is not one
   'var BL = { a: 1 }; BL[.5];', //                                       safe — a number may begin with its point
   'var BM = { a: 1 }; BM[-.5];', //                                      safe — …and with a sign in front of that
   'var BN = { a: 1 }; BN[.5e3];', //                                     safe — …and carry on as any number does
   'var BO = { a: 1 }; BO[.5 + n];', //                                   a sum that starts with one is not a constant
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "DX", "DY.inner", "DZ.inner", "EB", "EC", "EE", "EF.😀", "EG.😀", "EH.9007199254740993", "EI.9007199254740993", "EL", "EM.true", "EN.true", "EP", "EQ", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
