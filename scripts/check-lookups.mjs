@@ -82,13 +82,13 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // not the shape that means "something will fill this". Nothing needs to decide whether a
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
-// The rest is the *other* half of the rule — a non-empty literal that something does
-// index with a key that is not a literal — and it has now been wrong in six different
-// ways, once per round of review. Five were the same defect: the scan could not see a
-// shape, and nothing here said which shapes it could see. So the scan is a function of
-// text, and the fixture below is the list, with the answer written next to each line. A
-// shape the matcher stops seeing is a failing gate now, not a success line that has
-// quietly stopped meaning anything.
+// The rest is the *other* half of the rule — an object that something indexes with a key
+// that is not a literal — and it has now been wrong in seven different ways, once per
+// round of review. Six were the same defect: the scan could not see a shape, and nothing
+// here said which shapes it could see. So the scan is a function of text, and the fixture
+// below is the list, with the answer written next to each line. A shape the matcher stops
+// seeing is a failing gate now, not a success line that has quietly stopped meaning
+// anything — and what the success line is allowed to say is bounded by that list.
 //
 // The sixth was the text itself. Blanking a comment by cutting each line at its first
 // `//` cuts `"https://api.github.com/repos/"` in half — 34 lines of app.js, and every
@@ -208,11 +208,27 @@ function survey(text) {
   // declarator of a list — is a third. Two rounds of review were spent on matchers that
   // read only the first. The optional group is greedy, so `var X = {` still matches once,
   // at the keyword, rather than twice.
+  //
+  // A literal is not the only thing that makes an object with a prototype, and this is
+  // where the reading stops being a construction and becomes a list. `Object.fromEntries`
+  // is the one that matters — this very pull request took it out of `roadmap.mjs`, where
+  // `order[a.status]` found the Object constructor and the comparator returned NaN — and
+  // `JSON.parse` is next to it because the board parses other people's `board.config.json`.
+  // The list is short because these are the platform's, not the repo's, but a list is
+  // what it is: nothing here can see through `makeThing()` into a `return { … }`, and the
+  // success line says so rather than claiming the file is clean of a thing it cannot see.
+  // `Object.create(null)` is deliberately absent — that is the cure, not the hazard.
+  const FACTORY = /Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{/;
   const bound = new Map();
-  for (const m of [...code.matchAll(/(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(table\(|dict\(\)|\{)/g)].filter(inCode)) {
+  const BINDING = /(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(table\(|dict\(\)|Object\.fromEntries\(|JSON\.parse\(|new Object\(|Object\.(?:assign|create)\(\s*\{|\{)/g;
+  for (const m of [...code.matchAll(BINDING)].filter(inCode)) {
     if (!bound.has(m[1])) bound.set(m[1], []);
     bound.get(m[1]).push({ opens: m[2], at: m.index + m[0].length - m[2].length });
   }
+  // A literal is the only opener this can read *into*; a factory call is opaque, and
+  // `bodyOf` would happily run past it to the next unrelated `{`.
+  const isLiteral = (opens) => opens === "{" || opens === "table(";
+  const hasPrototype = (opens) => opens === "{" || FACTORY.test(opens);
 
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
   // argument, so both openers are "the next `{` that is code".
@@ -269,7 +285,7 @@ function survey(text) {
   const reached = (root, path) => {
     const hits = [];
     for (const b of bound.get(root) || []) {
-      let body = b.opens === "dict()" ? null : bodyOf(b.at);
+      let body = isLiteral(b.opens) ? bodyOf(b.at) : null;
       for (let s = 0; body && s < path.length; s++) {
         const k = keysOf(body).get(path[s]);
         if (!k) break;
@@ -282,10 +298,12 @@ function survey(text) {
 
   // `name[k]` — the binding itself, read with a key that is not a literal.
   for (const [name, bindings] of bound) {
-    if (!bindings.some((b) => b.opens === "{")) continue;
+    if (!bindings.some((b) => hasPrototype(b.opens))) continue;
     if (![...code.matchAll(new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`, "g"))].some(inCode)) continue;
     for (const b of bindings) {
-      if (b.opens === "{") note("bare-table", b.at, name, `${name} is indexed by a variable somewhere but built without table()`);
+      if (!hasPrototype(b.opens)) continue;
+      const built = b.opens === "{" ? "without table()" : `with ${b.opens.replace(/\s+/g, "")}…) and not passed through table()`;
+      note("bare-table", b.at, name, `${name} is indexed by a variable somewhere but built ${built}`);
     }
   }
   // `root.a.b[k]` — the value at the end of the path, not the root at the start of it.
@@ -308,7 +326,7 @@ function survey(text) {
 
 // The matcher against text written for it, before it is turned on the file. Each line is
 // a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
-// every other line is here because it must *not* be. Six rounds of review found six
+// every other line is here because it must *not* be. Seven rounds of review found seven
 // shapes this scan could not see, and not one of them was visible from the success line —
 // which said "every table is covered" throughout. This is the assertion that was missing.
 const FIXTURE = [
@@ -321,6 +339,11 @@ const FIXTURE = [
   'var u = table({ url: "https://e.invalid", bad: { a: 1 } }); u.bad[k];', // a URL before the table
   'var v = { "w": { a: 1 } }; v.w[k];', //                               a quoted key
   'var y = { z: { a: 1 } }; y.z[k]; String(x).replace(/"/g, "&q;");', // a regex holding a quote
+  'var F1 = Object.fromEntries([["a", 1]]); F1[k];', //                  a factory, not a literal
+  'var F2 = JSON.parse("{}"); F2[k];', //                                …and the one the board uses
+  'var F3 = Object.assign({ a: 1 }, x); F3[k];', //                      …and one that starts as a literal
+  'var F4 = Object.create(null); F4[k];', //                             safe — that is the cure
+  'var F5 = table(JSON.parse("{}")); F5[k];', //                         safe — the factory is wrapped
   'var m = table({ n: dict() }); m.n[k];', //                            safe — the value is a dict
   'var o = table({ p: 1 }); o[k];', //                                   safe — the table is wrapped
   'var q = { r: 1 }; q["r"];', //                                        safe — a literal key
@@ -328,7 +351,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3"];
 const fixture = survey(FIXTURE);
 const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
 if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
@@ -366,9 +389,15 @@ if (failures.length) {
   for (const [check, detail] of failures) console.error(`  [${check}] ${detail}`);
   process.exit(1);
 }
+// What the success line may say is the whole subject of this file's review history: six
+// of the seven findings were a check claiming more than it held. So it names what was
+// read — a literal, and the handful of platform factories above — rather than the file
+// being clean of a thing no scan of text can see. A repo-local `makeThing()` with a
+// `return { … }` in it is outside this, and saying so is the difference between a boundary
+// and a blind spot.
 console.log(
-  `✓ lookups: the matcher sees all ${REPORTED.length} spellings of a bare table in its fixture, app.js still parses ` +
-    `with its comments blanked, and in it ${wrapped} tables and ${dicts} maps are built with no prototype, no empty ` +
-    `object literal is written at all, and nothing a variable indexes — through a property path or not — reaches one ` +
-    `that has a prototype`
+  `✓ lookups: the matcher sees all ${REPORTED.length} spellings in its fixture, app.js still parses with its comments ` +
+    `blanked, and in it ${wrapped} tables and ${dicts} maps are built with no prototype, no empty object literal is ` +
+    `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.assign({…}) that a ` +
+    `variable indexes — through a property path or not — is left with a prototype`
 );

@@ -231,6 +231,9 @@ const CASES = [
   { gate: "lookups", claim: "…and so is the second declarator of a list, which has no keyword in front of it",
     edit: ["app.js", "entry = table({ name: name })", "entry = { name: name }"],
     expect: "[bare-table]" },
+  { gate: "lookups", claim: "…and the one object on the board that arrives parsed from outside it",
+    edit: ["app.js", "        var o = table(JSON.parse(raw));", "        var o = JSON.parse(raw);"],
+    expect: "[bare-table]" },
   // Five of the six findings this gate collected in review were one defect — the scan
   // could not see a shape — so the scan runs against a fixture that names every shape, and
   // these break the scan rather than the file. Without them the fixture is prose: it would
@@ -248,6 +251,10 @@ const CASES = [
   { gate: "lookups", claim: "…and a nested literal it stops calling bare",
     edit: ["scripts/check-lookups.mjs", "const KEY = /([A-Za-z_$][\\w$]*)\\s*:\\s*(table\\(|dict\\(\\)|\\{|)/y;",
       "const KEY = /([A-Za-z_$][\\w$]*)\\s*:\\s*(table\\(|dict\\(\\)|zzzz|)/y;"],
+    expect: "[fixture]" },
+  { gate: "lookups", claim: "…and an object factory it stops counting as one",
+    edit: ["scripts/check-lookups.mjs", "const hasPrototype = (opens) => opens === \"{\" || FACTORY.test(opens);",
+      "const hasPrototype = (opens) => opens === \"{\";"],
     expect: "[fixture]" },
   { gate: "lookups", claim: "…and a string whose contents it stops holding apart from code",
     edit: ["scripts/check-lookups.mjs", "      cover(i, j);\n      i = j;\n      last = c;",

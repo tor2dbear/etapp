@@ -1205,7 +1205,18 @@
     try { raw = localStorage.getItem(DISPLAY_STORE); } catch (e) {}
     if (raw) {
       try {
-        var o = JSON.parse(raw);
+        // `table()`, because this is the one object the board *parses* rather than writes,
+        // and it is read with a name: `displayMemory` asks `displayStore()[focus]`, and
+        // `rememberDisplay` writes and deletes `store[state.focus]`.
+        //
+        // Not reachable today, and measured rather than assumed: `?view=constructor` was
+        // driven against both versions of this file in headless Chromium and neither
+        // reaches here, because `focus` has already been through `VIEWS[…]` — a `table()`
+        // since earlier in this change — and an unknown name falls back to `all`. So this
+        // is the rule holding rather than a bug closing: the object is indexed by a name,
+        // so it has no prototype, and the next reader of `focus` does not have to know
+        // that a lookup three functions away is what makes their line safe.
+        var o = table(JSON.parse(raw));
         if (o && typeof o === "object") {
           displayMem = o;
           // Written back, or the stamp never lands and the upgrade runs again next load.
@@ -1249,7 +1260,10 @@
     if (old.done === "1") mem.done = "1";
     if (old.empty === "0") mem.empty = "0";
     if (old.props) mem.props = old.props;
-    var store = Object.keys(mem).length ? { all: mem } : dict();
+    // Built rather than spelled: the store is read with a view name, so it is the same
+    // object as the one `displayStore` parses and it may not carry a prototype either.
+    var store = dict();
+    if (Object.keys(mem).length) store.all = mem;
     store.__v = STORED_SORT_V; // already in the new spelling, so it must not be upgraded again
     writeDisplayStore(store);
     return store;
