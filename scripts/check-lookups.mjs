@@ -171,7 +171,6 @@ const THROUGH = `(?<![\\p{ID_Continue}$.])Object\\s*\\.\\s*(?:${THROUGH_CALLS.jo
 // `u`, or the alphabet in the lookbehind is six literal characters and the test is silently
 // something else — the same flag the patterns that embed this one already carry.
 const THROUGH_END = new RegExp(`${THROUGH}$`, "u");
-const THROUGH_STICKY = new RegExp(THROUGH, "yu");
 
 const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split("").concat(["=>"]));
 // The keyword side of the same question, and it is written as an inversion because the
@@ -655,17 +654,43 @@ function survey(text) {
   // Words a value is never held under.
   const ALIAS_SKIP = new Set(["function", "new", "typeof", "return", "true", "false", "null", "undefined", "this", "void", "delete", "in", "of", "case"]);
 
+  // One spelling of "a quoted body, escapes and all", used by both the fragment that finds
+  // a constant path segment and the one that reads a quoted key.
+  const DQ = `(?:[^"\\\\]|\\\\.)*`;
+  const SQ = `(?:[^'\\\\]|\\\\.)*`;
+  const STRING = `"${DQ}"|'${SQ}'`;
+  const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${STRING})\\s*\\]`, "gu");
+  const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${STRING})\\s*\\])`;
+  const segmentsOf = (text) =>
+    [...text.matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
   // A match that ends at its `[`, so the bracket can be read — and one sticky reader of it,
   // because three places ask "does an index start here" and a hand-spelling in any of them
   // would not learn the next shape this grows. It grew `?.` once already.
   const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
   const INDEX_AT = new RegExp(INDEX, "y");
+  // …and one for a run of steps, for the walk: `STEPS` itself, so the value side and the
+  // index side cannot come to read a path differently.
+  const STEP_TAIL = new RegExp(`(?:${STEPS})+`, "yu");
   // The position just past the `[` of an index that starts here, or -1.
   const indexAt = (at) => {
     INDEX_AT.lastIndex = at;
     return INDEX_AT.test(code) ? INDEX_AT.lastIndex : -1;
   };
 
+  // Forward to the next character that is code. Six places stepped over whitespace by hand,
+  // two of them consulting `mask` and four not, with nothing saying why.
+  const skip = (i) => {
+    while (i < code.length && (mask[i] || /\s/.test(code[i]))) i++;
+    return i;
+  };
+  // …and forward over whitespace *only*, which is a different question: a string is not
+  // whitespace, and the pattern reader below has keys that are written as one — `skip` steps
+  // over `{ "inner": x }`'s key as though it were not there. Comments are blanked to spaces
+  // by the lexer, so both of these step over those.
+  const spaced = (i) => {
+    while (i < code.length && /\s/.test(code[i])) i++;
+    return i;
+  };
   // Whether a parenthesis is a transparent call's, asked of the text that runs up to and
   // including it — a position in some places and a match in others, one reading in all of
   // them. Round 36 wrote the test twice and round 37 needed it in two more places, which is
@@ -722,11 +747,16 @@ function survey(text) {
     // `||` could not be taken back. app.js has two of those. So `current` is what this
     // operand could be, `list` is what the expression could be, and only an operand that
     // ends unpoisoned joins the list.
+    // An operand is a *root and a path* — `source` is that root with no path, `source.inner`
+    // is the same root with one step. They were names alone until round 40, where a name
+    // bound by destructuring turned out to be a path read of the value beside it and the
+    // machinery to say so did not exist. One shape for both, because `{ inner } = source` and
+    // `= source.inner` are the same sentence and had better not be two readings of it.
     let current = [];
     let list = [];
     let poisoned = false;
     const commit = () => {
-      if (!poisoned) for (const name of current) if (!ALIAS_SKIP.has(name)) list.push(name);
+      if (!poisoned) for (const cand of current) if (cand.path.length || !ALIAS_SKIP.has(cand.root)) list.push(cand);
       current = [];
     };
     const branch = (keep) => {
@@ -752,27 +782,31 @@ function survey(text) {
       if (mask[i] || !/\S/.test(code[i])) continue;
       const c = code[i];
       if (depth === 0) {
-        // The wrapper is not *read* at all — it is the thing the reading sees through. Read
-        // as what it is spelled with, a name and a property access and a call, it poisoned
-        // the operand: `var t = Object.freeze(source)` held nothing where `var t = (source)`
-        // held `source`, because the transparency had been put in the parenthesis and not in
-        // the six characters of prefix that made it one. A wrapper inside a poisoned operand
-        // — `var t = n + Object.freeze(source)` — stays poisoned, which is the point of
-        // stepping over it rather than clearing anything.
-        //
-        // The letter is a guard, not a second reading: every spelling of the pattern starts
-        // with `Object`, and trying the regex at each of app.js's characters instead cost 7%
-        // of the gate for an answer that is no every time but six.
-        if (c === "O") {
-          THROUGH_STICKY.lastIndex = i;
-          if (THROUGH_STICKY.exec(code)) { i = THROUGH_STICKY.lastIndex - 2; continue; }
+        // A property path is a value like any other: `var lookup = source.inner` holds what
+        // `source.inner` holds, where the reading stopped at the dot and called the operand
+        // poisoned — the boundary the success line has named since round 8 and the one a
+        // destructuring turns out to be written in. The steps come off `STEPS`, the fragment
+        // the index side reads a path with, and they are appended to whatever candidates the
+        // operand has: `(a.b || c).d` is `a.b.d` or `c.d`, which falls out rather than being
+        // a case. A step that is not constant — `source[k]` — matches nothing here and
+        // poisons the operand below, as it did before.
+        if (current.length && !poisoned && (c === "." || c === "[" || (c === "?" && code[i + 1] === "."))) {
+          STEP_TAIL.lastIndex = i;
+          const tail = STEP_TAIL.exec(code);
+          if (tail) {
+            const steps = segmentsOf(tail[0]);
+            for (const cand of current) cand.path = cand.path.concat(steps);
+            before = code[STEP_TAIL.lastIndex - 1];
+            i = STEP_TAIL.lastIndex - 1;
+            continue;
+          }
         }
         if (IDENT_PART.test(c)) {
           if (before !== "." && !IDENT_PART.test(before)) {
             IDENT.lastIndex = i;
             const word = IDENT.exec(code);
             if (!word) poisoned = true;
-            else if (!poisoned) current = [word[0]];
+            else if (!poisoned) current = [{ root: word[0], path: [] }];
           }
         } else if (c === "?") branch(code[i + 1] === "?");
         else if (c === ":") branch(true);
@@ -878,7 +912,14 @@ function survey(text) {
       before = c;
     }
     commit();
-    return { found, holds: list, at };
+    // The two kinds of candidate the walk can end with, told apart by whether anything was
+    // read off them.
+    return {
+      found,
+      holds: list.filter((cand) => !cand.path.length).map((cand) => cand.root),
+      paths: list.filter((cand) => cand.path.length),
+      at,
+    };
   };
   // A member assignment binds a *path*, not a name. `left.lookup = { … }` recorded `lookup`
   // and the name-keyed rule then read an unrelated `right.lookup[k]` as the same thing —
@@ -891,15 +932,6 @@ function survey(text) {
   // that `t["status"]` and `t.status` are one path; round 24 then built a *writer* that knew
   // only dots, so `o["lookup"] = { … }` was recorded under nothing. Codex found it (#9,
   // round 25) — the same failure to look for the mirror that round 17 was.
-  // One spelling of "a quoted body, escapes and all", used by both the fragment that finds
-  // a constant path segment and the one that reads a quoted key.
-  const DQ = `(?:[^"\\\\]|\\\\.)*`;
-  const SQ = `(?:[^'\\\\]|\\\\.)*`;
-  const STRING = `"${DQ}"|'${SQ}'`;
-  const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${STRING})\\s*\\]`, "gu");
-  const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${STRING})\\s*\\])`;
-  const segmentsOf = (text) =>
-    [...text.matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
   // `var source = { now: 1 }; var lookup = source; lookup[k]` — the object is one name and
   // the index is another, and asking only about the name that was bound certified it. So
   // the plain `a = b` assignments are edges, walked in both directions: from a binding
@@ -925,9 +957,18 @@ function survey(text) {
   const memberHolds = new Map();
   const holders = new Map();
   const heldFrom = new Map();
+  // …and what holds a *path* rather than a name: `var lookup = source.inner` and
+  // `left.lookup = source.inner`, which are the two targets every other map here comes in a
+  // pair for. Keyed by the path's spelling so the same one twice is once.
+  const heldPaths = new Map();
+  const memberPaths = new Map();
   const link = (map, key, value) => {
     if (!map.has(key)) map.set(key, new Set());
     map.get(key).add(value);
+  };
+  const linkPath = (map, key, p) => {
+    if (!map.has(key)) map.set(key, new Map());
+    map.get(key).set(`${p.root === null ? p.from.map((b) => b.at).join("+") : p.root}.${p.path.join(".")}`, p);
   };
   // `x ||= { … }`, `x &&= v` and `x ??= v` all put the right side into `x` — in two of the
   // three only sometimes, which is the same “may hold” every alias here already means. They
@@ -967,7 +1008,7 @@ function survey(text) {
     const root = g.pg !== undefined ? g.pg : g.ng !== undefined ? g.ng : g.pb !== undefined ? g.pb : g.nb;
     const steps = segmentsOf(g.steps);
     const path = steps.length ? `${root}.${steps.join(".")}` : null;
-    const { found, holds } = readInitialiser(m.index + m[0].length);
+    const { found, holds, paths } = readInitialiser(m.index + m[0].length);
     const into = path ? members : bound;
     const key = path || root;
     for (const opener of found) {
@@ -983,6 +1024,129 @@ function survey(text) {
         link(holders, held, root);
         link(heldFrom, root, held);
       }
+    }
+    // A path on the right is not an alias — `lookup` does not become another name for
+    // `source`, it becomes another name for one thing *inside* it — so it is written down as
+    // what it is and read back through `reached`, the same walk the index side does.
+    for (const p of paths) if (p.root !== key) linkPath(path ? memberPaths : heldPaths, key, p);
+  }
+
+  // A destructuring binds each of its names to a *path* of the value beside it:
+  // `var { lookup } = source` is `var lookup = source.lookup` spelled the other way round,
+  // and `TARGET` above reads a name or a member path on the left of an `=`, so a pattern was
+  // neither — every name one binds was invisible, not bound and not an alias and not
+  // anything. Codex found it (#9, round 40). What it binds goes through the same `heldPaths`
+  // a member expression on the right goes through, because they are the same sentence.
+  //
+  // Only an `=`. A pattern in a `for … of` head or a parameter list binds an element or an
+  // argument, which is not a path of anything this can read, and those are the unresolvable
+  // roots the success line has always named.
+  const PATTERN_AT = new RegExp(`(?:\\b(?:var|let|const)\\s+|(?<![\\p{ID_Continue}$.)\\]])\\(\\s*)(?=[{[])`, "gu");
+  // A pattern's parts are separated by commas at its own level; this is where the next one
+  // starts, whatever was in between.
+  const afterEntry = (from, close) => {
+    let depth = 0;
+    for (let i = from; i < close; i++) {
+      if (mask[i]) continue;
+      const c = code[i];
+      if ("([{".includes(c)) depth++;
+      else if (")]}".includes(c)) depth--;
+      else if (c === "," && depth === 0) return i + 1;
+    }
+    return close;
+  };
+  // A property of a pattern: a name, a quoted key or a computed constant one — the same three
+  // spellings a literal's keys have — and whether a colon follows, which is what tells
+  // `{ lookup }` from `{ lookup: alias }`.
+  const PROP = new RegExp(`(?:(${ID})|(${STRING})|\\[\\s*(${STRING})\\s*\\])\\s*(:)?`, "yu");
+  // What a pattern binds, and under which path of the value. Written here rather than read
+  // with `keysOf`, which reads a *literal*: a pattern's grammar is not a literal's — it has
+  // defaults and a rest element and no values at all — and one reader taught both grammars is
+  // how this file has repeatedly ended up right about the cases it was shown.
+  const patternBinds = (open, path, out) => {
+    const close = restOfCall(open + 1);
+    if (close < 0) return;
+    const array = code[open] === "[";
+    let i = open + 1;
+    while (i < close) {
+      i = spaced(i);
+      if (i >= close) break;
+      if (code[i] === ",") { i++; continue; }
+      // A rest element is a *new* ordinary object, whatever it was taken from.
+      if (code.startsWith("...", i)) {
+        IDENT.lastIndex = spaced(i + 3);
+        const rest = IDENT.exec(code);
+        if (rest && !array) out.push({ name: rest[0], rest: true, at: i });
+        i = afterEntry(rest ? IDENT.lastIndex : i + 3, close);
+        continue;
+      }
+      let key = null;
+      let target = i;
+      if (!array) {
+        PROP.lastIndex = i;
+        const m = PROP.exec(code);
+        if (!m) { i = afterEntry(i, close); continue; }
+        const quoted = m[2] !== undefined ? m[2] : m[3];
+        key = m[1] !== undefined ? m[1] : unescape(quoted.slice(1, -1));
+        if (m[4] === ":") target = spaced(PROP.lastIndex);
+        else {
+          // A shorthand is the key and the name at once, the way it is in a literal.
+          out.push({ name: key, path: path && path.concat(key), at: i });
+          i = afterEntry(PROP.lastIndex, close);
+          continue;
+        }
+      }
+      const inner = path && !array && key !== null ? path.concat(key) : null;
+      if (code[target] === "{" || code[target] === "[") {
+        patternBinds(target, inner, out);
+        i = afterEntry(target, close);
+        continue;
+      }
+      IDENT.lastIndex = target;
+      const one = IDENT.exec(code);
+      if (one) out.push({ name: one[0], path: inner, at: target, element: array });
+      i = afterEntry(one ? IDENT.lastIndex : target, close);
+    }
+  };
+  // A *default* in a pattern needs nothing here: `{ lookup = { … } }` is the assignment
+  // `lookup = { … }` as far as text goes, and the loop above has bound it already. The
+  // fixture says so in two lines rather than leaving it to be rediscovered.
+  const restBinds = [];
+  for (const m of [...code.matchAll(PATTERN_AT)].filter(inCode)) {
+    const open = spaced(m.index + m[0].length);
+    const close = restOfCall(open + 1);
+    if (close < 0) continue;
+    const eq = spaced(close + 1);
+    if (code[eq] !== "=" || code[eq + 1] === "=" || code[eq + 1] === ">") continue;
+    const binds = [];
+    patternBinds(open, [], binds);
+    if (!binds.length) continue;
+    const read = readInitialiser(eq + 1);
+    // What the value is, as roots a path can be asked of: the names it may hold, the paths it
+    // may hold — and, when it is no name at all, `= table({ lookup: source })`, the openers
+    // the walk found, bound under a name nothing in the file can spell so that the same
+    // reading answers for them.
+    const roots = [...read.holds.map((held) => ({ root: held, path: [] })), ...read.paths];
+    if (read.found.length) roots.push({ root: null, from: read.found, path: [] });
+    // An array pattern binds by *position*, and a position is not a key this can look up. The
+    // one value it can answer for is an array literal written beside it, whose elements are
+    // read the way a selection's are: any of them may be the one.
+    const elements = binds.some((b) => b.element) && code[spaced(eq + 1)] === "["
+      ? readInitialiser(spaced(eq + 1) + 1, true)
+      : null;
+    for (const b of binds) {
+      if (b.rest) { restBinds.push(b); continue; }
+      if (b.element) {
+        if (!elements) continue;
+        if (elements.found.length) {
+          if (!bound.has(b.name)) bound.set(b.name, []);
+          bound.get(b.name).push(...elements.found);
+        }
+        for (const held of elements.holds) if (held !== b.name) { link(holders, held, b.name); link(heldFrom, b.name, held); }
+        continue;
+      }
+      if (!b.path) continue;
+      for (const r of roots) linkPath(heldPaths, b.name, { root: r.root, from: r.from, path: r.path.concat(b.path) });
     }
   }
   // A literal is the only opener this can read *into*; a factory call is opaque, and
@@ -1055,12 +1219,6 @@ function survey(text) {
     while (i < code.length && /\s/.test(code[i])) i++;
     return code[i] === "]";
   };
-  // Forward to the next character that is code. Six places stepped over whitespace by hand,
-  // two of them consulting `mask` and four not, with nothing saying why.
-  const skip = (i) => {
-    while (i < code.length && (mask[i] || /\s/.test(code[i]))) i++;
-    return i;
-  };
   const computed = (m) => inCode(m) && !constantKey(m.index + m[0].length - 1);
   // A name spliced into a pattern is not a name any more: `$` is an identifier character
   // and a regex anchor, so `$LOOK[k]` and `LOOK$[k]` matched nothing while `plain[k]` was
@@ -1075,9 +1233,20 @@ function survey(text) {
   // rounds went into, and a fix to one spelling would have missed the other, which is the
   // missing mirror of rounds 17, 25 and 26.
   const rooted = (name) => `(?:${EDGE}${name}|${GROUPED}${name}\\s*\\))`;
-  const indexedByAVariable = (name) =>
-    indexedGroup.has(name) ||
-    [...code.matchAll(new RegExp(`${rooted(escapeRe(name))}${INDEX}`, "gu"))].some(computed);
+  // Whether a name is indexed by a variable anywhere, which is a scan of the whole file per
+  // name — so it is asked once per name and remembered. Round 40 gave the rules a great many
+  // more names to ask about, and the answer for a name cannot change while the file does not.
+  const indexedNames = new Map();
+  const indexedByAVariable = (name) => {
+    if (!indexedNames.has(name)) {
+      indexedNames.set(
+        name,
+        indexedGroup.has(name) ||
+          [...code.matchAll(new RegExp(`${rooted(escapeRe(name))}${INDEX}`, "gu"))].some(computed)
+      );
+    }
+    return indexedNames.get(name);
+  };
 
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
   // argument, so both openers are "the next `{` that is code".
@@ -1194,8 +1363,39 @@ function survey(text) {
   // nothing. A root this cannot resolve — a parameter, a function result — yields
   // nothing, which is the boundary: it is the same boundary a name bound to a call has
   // always had, and it is here rather than in a claim.
-  const bindingsOf = (name) => [...spread(name, heldFrom)].flatMap((held) => bound.get(held) || []);
-  const reached = (root, path) => {
+  // A name holds what it was bound to, what it was aliased from — and what the path it was
+  // read out of reaches, which is the same question `reached` answers for an index site,
+  // asked one step earlier. The guard is because the two call each other and a path can lead
+  // back to where it started: `var a = b.x; var b = { x: a };` is a circle, and something has
+  // to refuse to go round it twice.
+  const resolving = new Set();
+  // What a held path reaches, whether it starts at a name or at the openers of the value a
+  // pattern was written beside.
+  const spelled = (p) => (p.root === null ? `the value beside the pattern` : p.root);
+  const throughPath = (p) => {
+    const tag = `${p.root === null ? p.from.map((b) => b.at).join("+") : p.root}.${p.path.join(".")}`;
+    if (resolving.has(tag)) return [];
+    resolving.add(tag);
+    try {
+      return p.root === null ? reachedFrom(p.from, p.path) : reached(p.root, p.path);
+    } finally {
+      resolving.delete(tag);
+    }
+  };
+  const bindingsOf = (name) => {
+    const out = [];
+    for (const held of spread(name, heldFrom)) {
+      out.push(...(bound.get(held) || []));
+      for (const p of (heldPaths.get(held) || new Map()).values()) out.push(...throughPath(p));
+    }
+    return out;
+  };
+  // …and the same reading started from openers rather than from a name, for the value a
+  // pattern is written beside: `var { lookup } = table({ lookup: source })` has no name to
+  // ask about, and binding its openers under one nothing could spell would have put an
+  // invented name into the counts and into every rule that walks `bound`.
+  const reachedFrom = (from, path) => reached(null, path, from);
+  const reached = (root, path, from) => {
     const hits = [];
     const seen = new Set();
     // A step lands on a literal, on a `dict()`, or on a *name* — and the name is the one
@@ -1224,7 +1424,10 @@ function survey(text) {
         else step(next, at + 1);
       }
     };
-    step(bindingsOf(root), 0);
+    step(from || bindingsOf(root), 0);
+    // A reading that started from openers has no name, so there is no path anything could
+    // have been assigned onto.
+    if (root === null) return hits;
     // …and what a member assignment put there, which is keyed by the whole path so that two
     // properties spelled alike stay apart.
     const full = `${root}.${path.join(".")}`;
@@ -1234,6 +1437,11 @@ function survey(text) {
     // `outer["lookup"] = inner` reached nothing. Codex found it (#9, round 26).
     for (const held of memberHolds.get(full) || []) {
       for (const b of bindingsOf(held)) if (hasPrototype(b.opens)) hits.push(b);
+    }
+    // …and a *path* assigned onto it, `outer.lookup = source.inner`, which is the mirror of
+    // the line above and of the whole `heldPaths` half.
+    for (const p of (memberPaths.get(full) || new Map()).values()) {
+      for (const b of throughPath(p)) if (hasPrototype(b.opens)) hits.push(b);
     }
     return hits;
   };
@@ -1290,6 +1498,38 @@ function survey(text) {
       const shared = bindings.length > 1 ? `, one of ${bindings.length} bindings of that name, which this cannot tell apart` : "";
       note("bare-table", b.at, name, `${name} ${how} but built ${built}${shared}`);
     }
+  }
+  // `name[k]` where the name holds a *path* — `var lookup = source.inner; lookup[k]`. The
+  // rule above walks out from a binding to the names holding it, and a path is not one of
+  // those edges: it is a reading of something inside a binding, not another name for it. So
+  // this asks the other way round, from the name that was written down to what its path
+  // reaches. `source.inner[k]` written in one go is the rule below; this is the same read
+  // with a name in the middle of it.
+  // What the path reaches is asked before who indexes the name, because the second question
+  // is a scan of the file and the first is a walk of a literal: most paths reach nothing, and
+  // the rule above has read them in that order since it was written.
+  for (const [name, paths] of heldPaths) {
+    const hits = [];
+    for (const p of paths.values()) {
+      for (const k of throughPath(p)) if (hasPrototype(k.opens)) hits.push({ k, held: `${spelled(p)}.${p.path.join(".")}` });
+    }
+    if (!hits.length) continue;
+    const by = [...spread(name, holders)].find(indexedByAVariable);
+    if (!by) continue;
+    const how = by === name ? "is indexed by a variable somewhere" : `is indexed by a variable somewhere as \`${by}\``;
+    for (const { k, held } of hits) {
+      note("bare-table", k.at, name, `${name} ${how} and holds ${held}, which is an object with a prototype`);
+    }
+  }
+  // …and a rest element, which is the one part of a pattern that needs no path at all:
+  // `var { ...rest } = source` builds a *new* object with `Object.prototype`, whatever
+  // `source` was, so it is a hazard by construction. Spreading a `dict()` makes an ordinary
+  // object too, which is why this asks nothing about what it came from.
+  for (const r of restBinds) {
+    const by = [...spread(r.name, holders)].find(indexedByAVariable);
+    if (!by) continue;
+    const how = by === r.name ? "is indexed by a variable somewhere" : `is indexed by a variable somewhere as \`${by}\``;
+    note("bare-table", r.at, r.name, `${r.name} ${how} but is a rest element, which is a new object with a prototype`);
   }
   // `root.a.b[k]` — the value at the end of the path, not the root at the start of it.
   // `t.status[k]` and `t["status"][k]` are the same read, so a constant bracket segment is
@@ -1416,7 +1656,7 @@ const FIXTURE = [
   'var W4 = { now: 1 }; var W5 = other || W4; W5[k];', //                …and the right of a fallback
   'var W6 = { now: 1 }; var W7 = (sideEffect(), W6); W7[k];', //         …and the last of a sequence
   'var W8 = { now: 1 }; var W9 = ident(W8); W9[k];', //                  safe — a call’s answer, not the name
-  'var WA = { now: 1 }; var WB = WA.inner; WB[k];', //                   safe — a property of it, not it
+  'var WA = { now: 1 }; var WB = WA.inner; WB[k];', //                   safe — that property is not in it
   'var WC = { now: 1 }; var WD = n + WC; WD[k];', //                     safe — an operand, not the value
   'var WE = { now: 1 }; var WF = WE[0]; WF[k];', //                     safe — an element of it, not it
   'var WG = { now: 1 }; var WH = n + (m || WG); WH[k];', //             safe — an operand still, inside parentheses
@@ -1518,12 +1758,37 @@ const FIXTURE = [
   'var BH = [{ a: 1 }].slice(); BH[k];', //                              safe — a call's answer, not an element
   'var BI = [dict(), { a: 1 }][0]; BI[k];', //                           one element of two, either of which it may be
   'var BP = { a: 1 }; var BQ = [BP, dict()][0]; BQ[k];', //              …and the element before a comma is one too
+  'var BR = { inner: { now: 1 } }; var BS = BR.inner; BS[k];', //        a property path on the right
+  'var BT = { inner: dict() }; var BU = BT.inner; BU[k];', //            safe — that property is a dict
+  'var BV = table({ inner: { now: 1 } }); var BW = BV["inner"]; BW[k];', // …however the path is spelled
+  'var BX = { inner: { now: 1 } }; var BY = BX.inner(); BY[k];', //      safe — a call's answer, not the property
+  'var BZ = { inner: { now: 1 } }; var CA = n + BZ.inner; CA[k];', //    safe — an operand, not the property
+  'var CB = { inner: { now: 1 } }; var CC = (flag ? CB.inner : dict()); CC[k];', // …and a path in a branch is a branch
+  'var CD = { now: 1 }; var { lookup: CE } = table({ lookup: CD }); CE[k];', // a name a pattern binds
+  'var CF = { inner: { now: 1 } }; var { inner: CG } = CF; CG[k];', //   …out of a name
+  'var CH = { inner: { now: 1 } }; var { inner } = CH; inner[k];', //    …written as a shorthand
+  'var CI = { a: { b: { now: 1 } } }; var { a: { b: CJ } } = CI; CJ[k];', // …and a pattern inside a pattern
+  'var CK = { inner: dict() }; var { inner: CL } = CK; CL[k];', //       safe — that name holds a dict
+  'var CM = { inner: { now: 1 } }; var { ["inner"]: CN } = CM; CN[k];', // a computed key binds too
+  'var CO = { inner: { now: 1 } }; var { "inner": CP } = CO; CP[k];', // …and a quoted one
+  'var { CQ = { now: 1 } } = src; CQ[k];', //                            a default value is a value
+  'var { CR = dict() } = src; CR[k];', //                                safe — …and a dict default is a dict
+  'var CS = dict(); var { ...CT } = CS; CT[k];', //                      a rest element is a new ordinary object
+  'var CU = { inner: { now: 1 } }; ({ inner: CV } = CU); CV[k];', //     a pattern without a keyword binds
+  'var [CW] = [{ now: 1 }]; CW[k];', //                                  an array pattern takes an element
+  'var [CX] = [dict()]; CX[k];', //                                      safe — …and that element is a dict
+  'var CY = { inner: { now: 1 } }; var { missing: CZ } = CY; CZ[k];', // safe — a key that is not there reaches nothing
+  'function fd({ DA }) { return DA[k]; }', //                            safe — a parameter is nobody's path
+  'var DB = { inner: { now: 1 } }; var { inner: DC } = DB; var DD = DC; DD[k];', // …and the alias of a bound name
+  'var DE = { a: { inner: { now: 1 } } }; var { inner: DF } = DE.a; DF[k];', // …out of a path
+  'var DG = { inner: { now: 1 } }; var DH = dict(); DH.lookup = DG.inner; DH.lookup[k];', // a path assigned onto a path
+  'var DI = { x: DJ }; var DJ = DI.x; DJ[k];', //                        safe — a circle, which must end rather than answer
   'var BL = { a: 1 }; BL[.5];', //                                       safe — a number may begin with its point
   'var BM = { a: 1 }; BM[-.5];', //                                      safe — …and with a sign in front of that
   'var BN = { a: 1 }; BN[.5e3];', //                                     safe — …and carry on as any number does
   'var BO = { a: 1 }; BO[.5 + n];', //                                   a sum that starts with one is not a constant
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -1677,7 +1942,8 @@ console.log(
     `on its own or handed back by Object.${THROUGH_CALLS.join("/")}, whose first argument is what they answer — ` +
     `that a variable indexes — under its own name, under a name it was assigned to — in parentheses, as a branch ` +
     `of a conditional, as the last of a sequence, as either side of a fallback or as an element selected out ` +
-    `of an array literal — or through a property path, ` +
+    `of an array literal — under a name read out of one by a property path or by a destructuring — or ` +
+    `through a property path, ` +
     `which a name may have been assigned onto — is left ` +
     `with a prototype`
 );
