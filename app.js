@@ -4881,7 +4881,10 @@
       // **178** — its whole horizontal range, a list opened fully shifted sideways. Codex
       // found it (#54). Same shape and same cure as `lockedEl` in `lockScroll`, which this
       // file already chose for the identical problem: remember the box, not the question.
-      boardAt = { el: from, x: from.scrollLeft, y: from.scrollTop, group: boardEl && boardEl.dataset.group, cols: dict() };
+      // `table()` and not a plain literal: this record is read with a column key —
+      // `boardAt.cols[…]` below — and the rule scripts/check-lookups.mjs enforces is that
+      // anything data indexes, through a property or not, has no prototype to answer from.
+      boardAt = table({ el: from, x: from.scrollLeft, y: from.scrollTop, group: boardEl && boardEl.dataset.group, cols: dict() });
       // The columns' places too, and *here* rather than at the next render: a hidden
       // scroller reports `scrollTop` as 0 (Chromium remembers it and gives it back when the
       // box is shown, but only for a box that survives). A redraw behind an open puck —
@@ -5501,7 +5504,8 @@
   function renderHiddenTray(g, groups) {
     var hidden = hiddenColumns(g, groups);
     if (!hidden.length) return;
-    trayColumns = { g: g, keys: dict() };
+    // `table()` for the same reason as `boardAt`: read with a column key, so no prototype.
+    trayColumns = table({ g: g, keys: dict() });
     hidden.forEach(function (h) { trayColumns.keys[h.key] = 1; });
     var tray = el("div", "column hidden-cols");
     var head = el("div", "col-head");
@@ -9211,7 +9215,9 @@
   // that name where it stands, or append when the name is new. Save and update both go
   // through it, so neither can invent its own ordering rule.
   function withView(views, name, params) {
-    var out = views.slice(), entry = { name: name }, at = -1;
+    // `table()`, like the `dict()` `duplicateSavedView` builds its copy with: an entry is
+    // a record that then takes its keys from data, and the two are the same record.
+    var out = views.slice(), entry = table({ name: name }), at = -1;
     for (var k in params) entry[k] = params[k];
     for (var i = 0; i < out.length; i++) if (out[i].name === name) { at = i; break; }
     if (at < 0) out.push(entry); else out[at] = entry;

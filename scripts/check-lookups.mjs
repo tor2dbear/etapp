@@ -109,20 +109,30 @@ for (const m of CODE.matchAll(/\{\s*\}/g)) {
 // literal, and then it is a lookup table and needs `table()`. Two shapes, because there
 // are two ways to write one:
 //
-//   a declaration, of any case and any keyword — the first version of this read only
-//   `var ALL_CAPS`, so a lowercase or `const` table was invisible while the success line
-//   claimed every table was covered;
+//   a name bound to it, and the keyword is *optional* — the first version of this read
+//   only `var ALL_CAPS`, so a lowercase or `const` table was invisible; the second read
+//   `(var|let|const) NAME`, which still missed both of the ordinary ways a binding is
+//   written without a keyword in front of the name. `var lookup; lookup = { … }` is one,
+//   and the second declarator of a list, `var out = views.slice(), entry = { … }`, is
+//   the other — app.js had exactly that, in `withView`, a record filled with keys copied
+//   from a saved view. The gate reported every table covered while it could see neither.
+//   The optional group is greedy, so `var X = {` still matches once, at the keyword;
 //
 //   and a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all.
 //   app.js has one, in the keyboard handler.
-const declared = [...CODE.matchAll(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(table\(\{|\{)/g)]
+const declared = [...CODE.matchAll(/(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(table\(\{|\{)/g)]
   .map((m) => ({ name: m[1], wrapped: m[2] !== "{", at: m.index }));
 // Through a property path too, not just `name[k]`: a table can be held in one —
 // `var t = { status: { now: "Now" } }` read as `t.status[k]` — and looking only for
-// `t[` meant the declaration was recorded and then never tested. No instance of that
-// shape is in app.js today (the empty-literal rule above already covers the property
-// maps that are, `cols:` and `keys:`), so this closes the claim rather than a hole:
-// the sentence this section prints has to be true of the next table as well.
+// `t[` meant the declaration was recorded and then never tested.
+//
+// This asks about the record, not about the property, and that is deliberately
+// over-strict: `boardAt.cols[k]` is already safe, because `cols` is a `dict()`. Deciding
+// otherwise would mean knowing which value sits at `cols` inside the literal, which is a
+// brace-matcher and a judgement — and judgement is what this section replaced. So the
+// rule stays a construction, "if data indexes it, through a property or not, it goes
+// through `table()`", the remedy is one word at the three sites in app.js that read a
+// record through a property, and the cost of being wrong is a copy of five keys.
 const indexedByAVariable = (name) =>
   new RegExp(`\\b${name}\\s*(?:\\.[A-Za-z_$][\\w$]*)*\\s*\\[\\s*[^"'\\]]`).test(CODE);
 for (const { name, wrapped, at } of declared) {
