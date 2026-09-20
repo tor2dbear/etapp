@@ -664,14 +664,29 @@ function survey(text) {
   // are the siblings of round 29's finding, and the reading was blind to all three: the
   // character before the `=` was not one it allowed. `+=` still is not, because a sum is not
   // the thing that was added to it.
-  const TARGET = new RegExp(`(?<![\\w$.)\\]])(?:\\b(?:var|let|const)\\s+)?([A-Za-z_$][\\w$]*)((?:${STEPS})*)\\s*(?:\\|\\||&&|\\?\\?)?=(?![=>])`, "g");
+  // Grouping parentheses are allowed around the target too — around the whole of it,
+  // `(holder.lk) = { … }`, or around its root, `(holder).lk = { … }`, or both. The reading
+  // has been transparent to them on the *value* side since round 19 and on the *index* side
+  // since round 22, and stopped at the `)` on this one. Codex found it (#9, round 31), which
+  // is the third place the same parenthesis had to be taught separately.
+  //
+  // The outer pair is optional on each side rather than required in pairs, and that is not
+  // laziness: `(B3 = { … }, B3[k])` puts an opening parenthesis in front of an assignment it
+  // does not belong to, and a match that insisted on the closing one threw the whole
+  // assignment away. Six fixture lines went dark the moment I tried it — which is what the
+  // fixture is for, since the rule I would have written from reading the code was wrong.
+  // Nothing is lost by ignoring an unpaired one: `x) = 1` is not a thing JavaScript parses,
+  // and what makes this a target is the name and the `=`, not the parentheses.
+  const ROOT = `(?:\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\)|([A-Za-z_$][\\w$]*))`;
+  const TARGET = new RegExp(`(?<![\\w$.)\\]])(?:\\b(?:var|let|const)\\s+)?(\\(?)\\s*${ROOT}((?:${STEPS})*)\\s*(\\)?)\\s*(?:\\|\\||&&|\\?\\?)?=(?![=>])`, "g");
   for (const m of [...code.matchAll(TARGET)].filter(inCode)) {
-    const steps = segmentsOf(m[2]);
-    const path = steps.length ? `${m[1]}.${steps.join(".")}` : null;
+    const root = m[2] !== undefined ? m[2] : m[3];
+    const steps = segmentsOf(m[4]);
+    const path = steps.length ? `${root}.${steps.join(".")}` : null;
     const { found, holds } = readInitialiser(m.index + m[0].length);
     for (const opener of found) {
       const into = path ? members : bound;
-      const key = path || m[1];
+      const key = path || root;
       if (!into.has(key)) into.set(key, []);
       into.get(key).push(opener);
     }
@@ -680,9 +695,9 @@ function survey(text) {
     // because only a literal or a factory on the right was ever written down.
     for (const held of holds) {
       if (path) link(memberHolds, path, held);
-      else if (held !== m[1]) {
-        link(holders, held, m[1]);
-        link(heldFrom, m[1], held);
+      else if (held !== root) {
+        link(holders, held, root);
+        link(heldFrom, root, held);
       }
     }
   }
@@ -988,6 +1003,10 @@ const FIXTURE = [
   'var XA = { now: 1 }; var XB, XC; XC = XB = XA; XC[k];', //           a chain of assignments, worth its right-hand side
   'var XD = { now: 1 }; var XE = (n != XD); XE[k];', //                 safe — the `=` of a comparison is not one
   'var XF = { now: 1 }; var XG = function () { return XF; }; XG[k];', // safe — a function, not what it returns
+  'var XH; (XH) = { now: 1 }; XH[k];', //                               a target inside grouping parentheses
+  'var XI = dict(); (XI).tbl = { now: 1 }; XI.tbl[k];', //              …around the root of a path
+  'var XJ = dict(); (XJ.tbl) = { now: 1 }; XJ.tbl[k];', //              …and around the whole of one
+  'var XN = dict(); XN[i].tbl = { now: 1 }; var XO = table({ tbl: dict() }); XO.tbl[k];', // safe — a computed receiver resolves to nothing
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -1011,7 +1030,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
