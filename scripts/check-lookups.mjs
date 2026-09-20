@@ -200,6 +200,9 @@ function lex(text) {
   // Whether the next `{` is a function or class expression's body (true), a declaration's
   // (false), or neither (null).
   let maker = null;
+  // The bracket depth the `function` or `class` keyword stood at; only a brace one deeper
+  // than that is its body.
+  let makerAt = -1;
   // A `:` is two things as well: the one in `{ a: 1 }` puts what follows in expression
   // position, and the one in `case 1:` or `outer:` does not — so `case 1: {}` was read as
   // an empty object literal and failed CI on a valid switch arm. Codex found it (#9, round
@@ -309,12 +312,22 @@ function lex(text) {
       else if (MAKERS.has(ident)) {
         const from = carried || { last, word };
         maker = opensValue(from.last, from.word);
+        // …and the brace that is its body is the one *after* the parameter list.
+        // `function f(k, lookup = { now: [] }) { … }` has a literal in the parameters, and
+        // letting the first brace consume `maker` classified that literal as the body and
+        // left the real body to the ordinary rule. Codex found it (#9, round 21).
+        makerAt = nesting;
         carried = null;
       } else carried = null;
       if ((ident === "case" || ident === "default") && statementPlace(last)) { pendingLabel = true; labelDepth = nesting; }
       identStart = last;
       word = ident;
-      last = RESERVED.has(ident) && !VALUE_WORDS.has(ident) ? "kw" : "w";
+      // A reserved word after a `.` is a property name — `holder.yield` is a value, and
+      // reading it as a keyword made the `/` after it a regex and masked what followed.
+      // Codex found it (#9, round 21). Round 19 was the same sentence about contextual
+      // words; this is the other half, where the *position* rather than the word decides.
+      // `?.yield` arrives here with a `.` in front of it too.
+      last = identStart !== "." && RESERVED.has(ident) && !VALUE_WORDS.has(ident) ? "kw" : "w";
       i = j;
       continue;
     }
@@ -331,7 +344,7 @@ function lex(text) {
     if (c === "(") heads.push(word);
     if (c === "{") {
       let kind;
-      if (maker !== null) { kind = maker ? "fnvalue" : "block"; maker = null; }
+      if (maker !== null && nesting === makerAt + 1) { kind = maker ? "fnvalue" : "block"; maker = null; }
       else kind = last !== "=>" && opensValue(last, word) ? "literal" : "block";
       braces.push(kind);
       kinds.set(i, kind);
@@ -719,6 +732,9 @@ const FIXTURE = [
   'var Q0 = { now: 1 }; var Q1 = table({ s: Q0 }); Q1.s[k];', //         a property whose value is a name
   'var Q2 = dict(); var Q3 = table({ s: Q2 }); Q3.s[k];', //             safe — that name holds a dict
   'function rl(x) { switch (x) { case 1: /{}/.test(""); } }', //         safe — a regex after a label
+  'var R0 = { yield: 1 }, R1; var r0 = R0.yield / (R1 = { now: 1 }, R1[k]) / 2;', // a keyword as a property
+  'function rp(k, R2 = { now: 1 }) { return R2[k]; }', //                a literal in a default parameter
+  'function rq(a) { return a; } var R3 = { x: 1 }; R3.x;', //            safe — an ordinary body still is one
   'async function rw() { await /{}/.test(""); }', //                     safe — a regex after a keyword
   'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
@@ -737,7 +753,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
