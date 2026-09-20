@@ -538,9 +538,33 @@ function survey(text) {
   // `x[k]` and `x?.[k]` are one read, and a `.` may be optional wherever it appears in a
   // path. app.js writes neither spelling — it is ES5 throughout — but a gate that goes
   // blind on an ordinary refactor is the thing this file keeps being reviewed for.
-  const INDEX = `\\s*(?:\\?\\.)?\\s*\\[\\s*[^"'\\]]`;
+  // What makes a bracket a *lookup* is that its key is not a constant, and "the character
+  // after the `[` is not a quote" is not that question: `lookup["" + externalKey]` starts
+  // with one and is computed all the same. Codex found it (#9, round 22). So the bracket is
+  // read: a sole string or number is a constant key, and anything else — a name, a
+  // concatenation, a call — is data.
+  const constantKey = (at) => {
+    let i = at + 1;
+    while (i < code.length && /\s/.test(code[i])) i++;
+    const quote = code[i];
+    if (quote === '"' || quote === "'") {
+      i++;
+      while (i < code.length) {
+        if (code[i] === "\\") { i += 2; continue; }
+        if (code[i] === quote) { i++; break; }
+        i++;
+      }
+    } else if (/\d/.test(quote)) {
+      while (i < code.length && /[\d.]/.test(code[i])) i++;
+    } else return false;
+    while (i < code.length && /\s/.test(code[i])) i++;
+    return code[i] === "]";
+  };
+  // A match that ends at its `[`, so the bracket can be read.
+  const computed = (m) => inCode(m) && !constantKey(m.index + m[0].length - 1);
+  const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
   const indexedByAVariable = (name) =>
-    [...code.matchAll(new RegExp(`(?:\\b${name}|${GROUPED}${name}\\s*\\))${INDEX}`, "g"))].some(inCode);
+    [...code.matchAll(new RegExp(`(?:\\b${name}|${GROUPED}${name}\\s*\\))${INDEX}`, "g"))].some(computed);
 
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
   // argument, so both openers are "the next `{` that is code".
@@ -665,7 +689,7 @@ function survey(text) {
     `(?:${GROUPED}([A-Za-z_$][\\w$]*)\\s*\\)|\\b([A-Za-z_$][\\w$]*))((?:${STEP})+)${INDEX}`,
     "g"
   );
-  for (const m of [...code.matchAll(PATH)].filter(inCode)) {
+  for (const m of [...code.matchAll(PATH)].filter(computed)) {
     const root = m[1] !== undefined ? m[1] : m[2];
     const path = [...m[3].matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
     const subject = `${root}.${path.join(".")}`;
@@ -674,7 +698,25 @@ function survey(text) {
     }
   }
   // And a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all.
-  for (const m of [...code.matchAll(/\}\s*\[\s*[^"'\]]/g)].filter(inCode)) {
+  for (const m of [...code.matchAll(/\}\s*\[/g)].filter(computed)) {
+    note("bare-table", m.index, "(anonymous)", "an object literal indexed on the spot, without table()");
+  }
+  // …and the same literal with grouping parentheses around it, `({ … })[k]`, which the
+  // adjacency above cannot see. Codex found it (#9, round 22). Walked forward from a
+  // grouping `(` that opens a literal rather than matched, because the literal in between
+  // is whatever it is: `f({ … })[k]` is excluded by the lookbehind, since there the
+  // parenthesis belongs to the call and what is indexed is the call's answer.
+  for (const m of [...code.matchAll(new RegExp(`${GROUPED}(?=\\{)`, "g"))].filter(inCode)) {
+    const body = bodyOf(m.index);
+    if (!body) continue;
+    let i = body.at + body.text.length + 1;
+    while (i < code.length && /\s/.test(code[i])) i++;
+    if (code[i] !== ")") continue;
+    i++;
+    while (i < code.length && /\s/.test(code[i])) i++;
+    if (code[i] === "?" && code[i + 1] === ".") i += 2;
+    while (i < code.length && /\s/.test(code[i])) i++;
+    if (code[i] !== "[" || constantKey(i)) continue;
     note("bare-table", m.index, "(anonymous)", "an object literal indexed on the spot, without table()");
   }
 
@@ -735,6 +777,11 @@ const FIXTURE = [
   'var R0 = { yield: 1 }, R1; var r0 = R0.yield / (R1 = { now: 1 }, R1[k]) / 2;', // a keyword as a property
   'function rp(k, R2 = { now: 1 }) { return R2[k]; }', //                a literal in a default parameter
   'function rq(a) { return a; } var R3 = { x: 1 }; R3.x;', //            safe — an ordinary body still is one
+  'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
+  'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
+  'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
+  '({ now: 1 })[k];', //                                                 an inline literal inside parens
+  'ident({ now: 1 })[k];', //                                            safe — the call's answer, not the literal
   'async function rw() { await /{}/.test(""); }', //                     safe — a regex after a keyword
   'function rE(x) { switch (x) { case 1: {} default: {} } }', //         safe — case arms are blocks
   'var E3 = { a: 1 }; outer: {} E3.a;', //                               safe — so is a labelled block
@@ -753,7 +800,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
