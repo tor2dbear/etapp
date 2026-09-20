@@ -135,13 +135,43 @@ const ID = "[\\p{ID_Start}$_][\\p{ID_Continue}$\\u200C\\u200D]*";
 const IDENT = new RegExp(ID, "yu");
 const IDENT_PART = /[\p{ID_Continue}$\u200C\u200D]/u;
 
-// The calls that hand back the very object they were given. `Object.freeze({ … })` is that
-// literal, prototype and all, so the reading looks *through* them rather than treating them
-// as factories — a factory entry would have called `Object.freeze(dict())` a hazard, which
-// it is not. Codex found the first of the three (#9, round 36); the other two are the rest
-// of the family, and an immutable-table refactor is how any of them would arrive.
-const THROUGH = `Object\\s*\\.\\s*(?:freeze|seal|preventExtensions)\\s*\\(`;
-const THROUGH_END = new RegExp(`${THROUGH}$`);
+// The calls that hand back the very object they were given — what each one answers is its
+// *first argument*. `Object.freeze({ … })` is that literal, prototype and all, so the
+// reading looks *through* them rather than treating them as factories: a factory entry
+// would have called `Object.freeze(dict())` a hazard, which it is not.
+//
+// Codex found `freeze` (#9, round 36) and then, on the evidence of that fix,
+// `defineProperty` (#9, round 37). The list is the family rather than the calls it named,
+// because what makes one transparent is a fact about what it returns, not about how it is
+// spelled — and the round-36 list was the three whose argument is also their *only*
+// argument, which is how the first-argument half of the rule went missing.
+//
+// `Object.assign` moves here out of the factory list, where it had been the one entry that
+// was not a factory. `Object.assign({ … }, src)` is its first argument, and calling it "a
+// call that makes an object" was right about that spelling alone: `Object.assign(dict(),
+// src)` was invisible and `Object.assign(source, src)` was not an alias of `source`.
+//
+// `Object.setPrototypeOf` is the one identity-returning call deliberately left out, and it
+// is left out because transparency would be wrong in *both* directions: it hands back its
+// argument with a different prototype, so `Object.setPrototypeOf(dict(), Object.prototype)`
+// is a hazard with the cure taken off it and `Object.setPrototypeOf({ … }, null)` is a cure.
+// Neither is something this file can see; app.js writes none of the seven, so all of this is
+// reach for the immutable-table refactor that would bring them.
+//
+// One list, because the success line has to name these too, and a second hand-spelling of
+// them is a line of prose that drifts from the code under it — which this file has paid for
+// once already, in round 30.
+const THROUGH_CALLS = ["freeze", "seal", "preventExtensions", "defineProperty", "defineProperties", "assign"];
+// The lookbehind is the one `GROUPED` carries, for the same reason: without it a match
+// starts in the middle of a name, so `myObject.freeze({ … })[k]` was read as the platform's
+// call and its argument reported — the sixteenth red gate on valid code, since a method
+// called `freeze` on somebody else's object answers whatever it likes. `a.Object.freeze(`
+// is out with it. Found looking for the rest of round 37's family, not named by it.
+const THROUGH = `(?<![\\p{ID_Continue}$.])Object\\s*\\.\\s*(?:${THROUGH_CALLS.join("|")})\\s*\\(`;
+// `u`, or the alphabet in the lookbehind is six literal characters and the test is silently
+// something else — the same flag the patterns that embed this one already carry.
+const THROUGH_END = new RegExp(`${THROUGH}$`, "u");
+const THROUGH_STICKY = new RegExp(THROUGH, "yu");
 
 const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%~^<>".split("").concat(["=>"]));
 // The keyword side of the same question, and it is written as an inversion because the
@@ -212,6 +242,13 @@ function lex(text) {
   let i = 0;
   let last = "";
   let word = "";
+  // The word before that one, which exists for a single construct: `for await (` puts a
+  // second word between the head and its parenthesis, and reading the nearest one called
+  // that parenthesis `await`'s. Then `for await (const x of y) /{}/.test(x)` took the `/`
+  // for division — valid code reported as an empty object literal, the seventeenth red
+  // gate, and the same sentence as round 18 one word further left. Found looking for the
+  // family of Codex's round-37 finding rather than named by it.
+  let prev = "";
   // What preceded each open paren, so a `)` can say which kind it is. `if (x) /re/` and
   // `(a + b) / 2` are the same character after the same bracket, and the only difference
   // is four characters further back.
@@ -387,6 +424,7 @@ function lex(text) {
       } else carried = null;
       if ((ident === "case" || ident === "default") && statementPlace(last)) { pendingLabel = true; labelDepth = nesting; ternaries = 0; }
       identStart = last;
+      prev = word;
       word = ident;
       // A reserved word after a `.` is a property name — `holder.yield` is a value, and
       // reading it as a keyword made the `/` after it a regex and masked what followed.
@@ -414,7 +452,7 @@ function lex(text) {
     else if (c === ")" || c === "]" || c === "}") nesting--;
     if (c === "(") {
       parens.push({ depth: nesting, braces: [] });
-      heads.push(word);
+      heads.push(word === "await" && prev === "for" ? "for" : word);
     }
     if (c === "{") {
       let kind;
@@ -516,11 +554,20 @@ function survey(text) {
   // reported: a red gate on valid code, the tenth, which Codex found (#9, round 32). What
   // makes it a pattern is the `=` it is the target of, reached out through the patterns and
   // parentheses it sits inside.
+  // …and `=` is one of three spellings of "is the target of". `for ({} of rows)` and
+  // `for ({} in src)` put the pattern in front of a word instead, and both were reported —
+  // a red gate on valid code, the fifteenth, which Codex found (#9, round 37). The array
+  // form `for ([{}] of rows)` came with them, since reaching out through the closers is
+  // what all three have in common and it was already written. What this gives up is `({} in
+  // src)` as an expression, where an empty literal is a key: not a lookup table by any
+  // reading, and the direction to err in.
+  const TARGET_WORD = /^(?:of|in)(?![\p{ID_Continue}$])/u;
   const patternTarget = (from) => {
     for (let i = from; i < code.length; i++) {
       const c = code[i];
       if (mask[i] || /\s/.test(c)) continue;
       if (c === "}" || c === "]" || c === ")") continue;
+      if (TARGET_WORD.test(code.slice(i, i + 3))) return true;
       return c === "=" && code[i + 1] !== "=" && code[i + 1] !== ">";
     }
     return false;
@@ -546,11 +593,13 @@ function survey(text) {
   // The list is short because these are the platform's, not the repo's, but a list is
   // what it is: nothing here can see through `makeThing()` into a `return { … }`, and the
   // success line says so rather than claiming the file is clean of a thing it cannot see.
-  // `Object.create(null)` is deliberately absent — that is the cure, not the hazard.
+  // `Object.create(null)` is deliberately absent — that is the cure, not the hazard — and
+  // `Object.assign` left with round 37: it hands back its first argument rather than making
+  // anything, which is a different question answered in a different place.
   // One list. Written twice, a factory added to only one of them made the gate go *quiet*
   // rather than red — recorded as an opener that `hasPrototype` then denies, or found by
   // neither — which is the failure this file exists to catch, in the file itself.
-  const FACTORIES = `Object\\.fromEntries\\(|JSON\\.parse\\(|new Object\\(|Object\\.(?:assign|create)\\(\\s*\\{`;
+  const FACTORIES = `Object\\.fromEntries\\(|JSON\\.parse\\(|new Object\\(|Object\\.create\\(\\s*\\{`;
   const FACTORY = new RegExp(FACTORIES);
   // What a name is bound to is an *expression*, not a token. `var x = flag ? { … } : { … }`
   // holds one of two literals and `var x = y || { … }` may hold one, and matching the opener
@@ -569,6 +618,30 @@ function survey(text) {
   // Words a value is never held under.
   const ALIAS_SKIP = new Set(["function", "new", "typeof", "return", "true", "false", "null", "undefined", "this", "void", "delete", "in", "of", "case"]);
 
+  // Whether a parenthesis is a transparent call's, asked of the text that runs up to and
+  // including it — a position in some places and a match in others, one reading in all of
+  // them. Round 36 wrote the test twice and round 37 needed it in two more places, which is
+  // where the second copy would have started drifting from the first.
+  const throughAt = (upTo) => THROUGH_END.exec(upTo.trimEnd());
+  // Only the *first* argument of such a call is what it hands back, so the rest of the list
+  // is stepped over rather than read: `Object.defineProperty(dict(), "x", { value: 1 })` is
+  // a dict, and reading the descriptor as part of the value would report it: the red gate
+  // this round's own fix would have shipped, had the rule stopped at the name. From a
+  // position inside an argument list to the `)` that closes it, or -1 if the text runs out.
+  const restOfCall = (from) => {
+    let depth = 0;
+    for (let i = from; i < code.length; i++) {
+      if (mask[i]) continue;
+      const c = code[i];
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") {
+        if (depth === 0) return i;
+        depth--;
+      }
+    }
+    return -1;
+  };
+
   // The walk answers two questions about an initialiser: which openers it contains, and
   // whether it *is* a bare name. `var lookup = (source)` was invisible while
   // `var lookup = ({ … })` was not, because the openers were read by this walk — which is
@@ -579,7 +652,7 @@ function survey(text) {
   // `inGroup` when the caller has already stepped over the opening parenthesis: then a comma
   // is the sequence operator rather than the end of a declarator, which is the difference
   // between reading `(sideEffect(), N)` as `N` and not reading it at all.
-  const readInitialiser = (from, inGroup) => {
+  const readInitialiser = (from, inGroup, inThrough) => {
     const found = [];
     const open = [];
     let depth = 0;
@@ -617,7 +690,7 @@ function survey(text) {
     // it hands back is one operand of the expression it sits in — which may poison it
     // afterwards. `b.title = level ? "P: " + (LABEL[level] || level) : "none"` hands `title`
     // a concatenation, not `level`. Measured against app.js, which is where it appeared.
-    const outer = inGroup ? [{ list: [], poisoned: false }] : [];
+    const outer = inGroup ? [{ list: [], poisoned: false, through: !!inThrough }] : [];
     // Grouping parentheses are transparent to `depth` so that `x = ({ … })` binds the
     // literal — but they still enclose, and a comma inside one is a sequence operator rather
     // than the end of the declarator: `var x = (sideEffect(), { … })` stopped the read before
@@ -631,6 +704,21 @@ function survey(text) {
       if (mask[i] || !/\S/.test(code[i])) continue;
       const c = code[i];
       if (depth === 0) {
+        // The wrapper is not *read* at all — it is the thing the reading sees through. Read
+        // as what it is spelled with, a name and a property access and a call, it poisoned
+        // the operand: `var t = Object.freeze(source)` held nothing where `var t = (source)`
+        // held `source`, because the transparency had been put in the parenthesis and not in
+        // the six characters of prefix that made it one. A wrapper inside a poisoned operand
+        // — `var t = n + Object.freeze(source)` — stays poisoned, which is the point of
+        // stepping over it rather than clearing anything.
+        //
+        // The letter is a guard, not a second reading: every spelling of the pattern starts
+        // with `Object`, and trying the regex at each of app.js's characters instead cost 7%
+        // of the gate for an answer that is no every time but six.
+        if (c === "O") {
+          THROUGH_STICKY.lastIndex = i;
+          if (THROUGH_STICKY.exec(code)) { i = THROUGH_STICKY.lastIndex - 2; continue; }
+        }
         if (IDENT_PART.test(c)) {
           if (before !== "." && !IDENT_PART.test(before)) {
             IDENT.lastIndex = i;
@@ -642,7 +730,18 @@ function survey(text) {
         else if (c === ":") branch(true);
         else if (c === "|") branch(true);
         else if (c === "&") branch(false);
-        else if (c === "," && outer.length) branch(false);
+        else if (c === "," && outer.length) {
+          // …except in a transparent call, where the first argument is the whole value and
+          // the rest of the list is not read at all. In grouping parentheses the same comma
+          // is the sequence operator, which starts the question again instead.
+          if (outer[outer.length - 1].through) {
+            const end = restOfCall(i);
+            if (end < 0) break;
+            i = end - 1;
+            continue;
+          }
+          branch(false);
+        }
         // `lookup = alias = unsafe` hands `lookup` what the inner assignment is worth, which
         // is `unsafe` and not `alias` — so the target is discarded and the reading carries on
         // to the right of it. The character before is what tells this `=` from the one in
@@ -664,9 +763,9 @@ function survey(text) {
       if (c === "(" || c === "[" || c === "{") {
         // A grouping parenthesis is transparent — `x = ({ … })` binds the literal — while a
         // call's is not, because `x = f({ … })` binds whatever `f` answered.
-        const grouping = c === "(" &&
-          (THROUGH_END.test(code.slice(Math.max(0, i - 40), i + 1)) ||
-            (before !== ")" && before !== "]" && !IDENT_PART.test(before)));
+        const through = c === "(" && !!throughAt(code.slice(Math.max(0, i - 40), i + 1));
+        const grouping = through ||
+          (c === "(" && before !== ")" && before !== "]" && !IDENT_PART.test(before));
         // A call or an index is not the name that precedes it — `f(source)` holds whatever
         // `f` answered, not `source`.
         if (!grouping && depth === 0) {
@@ -674,7 +773,7 @@ function survey(text) {
           current = [];
         }
         if (grouping) {
-          outer.push({ list, poisoned });
+          outer.push({ list, poisoned, through });
           list = [];
           current = [];
           poisoned = false;
@@ -975,7 +1074,13 @@ function survey(text) {
       // did. Depth went to -1 at the end of the first nested literal, and from there every
       // later key of the parent was skipped and the nested one's keys were read as the
       // parent's: a miss and a false positive from the same line. `/code-review` found it.
-      for (const ch of opens) depth += delta(ch);
+      // …and the wrapper it stepped over on the way there, whose `(` is a bracket like any
+      // other. Counting only `opens` left the depth one short after every transparent value,
+      // so `table({ s: Object.freeze({ … }), t: { … } })` lost every key after the first and
+      // the round-36 fix quietly cost reach it was written to add. Nothing reported it;
+      // found looking for the rest of round 37's family.
+      const wrap = throughAt(m[0].slice(0, m[0].length - opens.length));
+      for (const ch of (wrap ? wrap[0] : "") + opens) depth += delta(ch);
       i = re.lastIndex - 1;
     }
     return keys;
@@ -1041,9 +1146,13 @@ function survey(text) {
   // than an answer. It asks the walk now, which is the mechanism that already exists rather
   // than a fourth place to teach the same parenthesis — and the gap the comment above
   // `GROUPED` admitted, nested parentheses, closes with it.
+  // A transparent call's parenthesis is one of these too: `Object.freeze(unsafe)[k]` holds
+  // what `unsafe` holds, and the walk answers that the moment it is let in. The fourth place
+  // the transparency is needed, and the one round 36 left — it taught the *literal* form,
+  // `Object.freeze({ … })[k]`, in the rule below.
   const grouped = [];
-  for (const m of [...code.matchAll(new RegExp(GROUPED, "gu"))].filter(inCode)) {
-    const { holds, at } = readInitialiser(m.index + m[0].length, true);
+  for (const m of [...code.matchAll(new RegExp(`(?:${GROUPED}|${THROUGH}\\s*)`, "gu"))].filter(inCode)) {
+    const { holds, at } = readInitialiser(m.index + m[0].length, true, !!throughAt(m[0]));
     if (!holds.length || code[at] !== ")") continue;
     const tail = new RegExp(`((?:${STEPS})*)${INDEX}`, "yu");
     tail.lastIndex = at + 1;
@@ -1123,6 +1232,11 @@ function survey(text) {
     const body = bodyOf(m.index + m[0].length);
     if (!body) continue;
     let i = skip(body.at + body.text.length + 1);
+    // The literal may be the first of several arguments — `Object.defineProperty({ … }, "x",
+    // d)[k]` — and what follows it is not what is indexed. Only for a transparent call: in
+    // grouping parentheses that comma is the sequence operator, and `({ … }, x)[k]` indexes
+    // `x`.
+    if (code[i] === "," && throughAt(m[0])) i = restOfCall(i);
     if (code[i] !== ")") continue;
     i++;
     // `INDEX` itself, rather than a hand-spelling of it that would not learn the next shape
@@ -1278,8 +1392,22 @@ const FIXTURE = [
   'var s2 = { t: 1 }; s2.t;', //                                         safe — not indexed at all
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
+  'var AF = Object.defineProperty({ a: 1 }, "x", { value: 1 }); AF[k];', // a call that hands back its first argument
+  'var AG = Object.defineProperties({ a: 1 }, { x: { value: 1 } }); AG[k];', // …and its plural
+  'var AH = Object.defineProperty(dict(), "x", { value: 1 }); AH[k];', // safe — the descriptor is not the value
+  'var AI = Object.assign(dict(), src); AI[k];', //                      safe — assign hands back its target, a dict
+  'var AJ = { a: 1 }; var AK = Object.assign(AJ, src); AK[k];', //       …and when the target is a name, the name
+  'var AL = { a: 1 }; var AM = Object.freeze(AL); AM[k];', //            an alias through a wrapper is an alias
+  'var AN = { a: 1 }; var AO = n + Object.freeze(AN); AO[k];', //        safe — an operand, wrapper and all
+  'Object.defineProperty({ a: 1 }, "x", { value: 1 })[k];', //           indexed on the spot, arguments after it
+  'var AP = { a: 1 }; Object.freeze(AP)[k];', //                         …and a name indexed on the spot through one
+  'var AQ = dict(); Object.freeze(AQ)[k];', //                           safe — that name holds a dict
+  'var AR = table({ s: Object.freeze({ a: 1 }), t: { b: 2 } }); AR.t[k];', // a key after a wrapped one is still a key
+  'var AS = table({ s: Object.defineProperty({ a: 1 }, "x", { value: 1 }) }); AS.s[k];', // …and a value read through one
+  'var AT = table({ s: Object.defineProperty(dict(), "value", { value: { a: 1 } }) }); AT.s[k]; AT.value[k];', // safe — a descriptor's keys are not the literal's
+  'var AU = myObject.freeze({ a: 1 }); AU[k];', //                       safe — somebody else's freeze answers what it likes
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -1300,6 +1428,12 @@ const EMPTY_FIXTURE = [
   'class Me { m({}) {} }', //                                     ·   a method's parameter
   'var sh = { m({}) {} };', //                                    ·   …and a shorthand method's
   'if ({}) { ar(); }', //                                        15 — a condition is not a parameter list
+  'for ({} of rows) { ident(); }', //                             ·   a for-of target
+  'for ({} in src) { ident(); }', //                              ·   …and a for-in one
+  'for ([{}] of rows) { ident(); }', //                           ·   …and one inside an array pattern
+  'for (var {} of rows) { ident(); }', //                         ·   …and one the keyword already answered
+  'async function fa() { for await ({} of rows) { ident(); } }', // ·  …and one in an await head
+  'async function fw() { for await (const x of y) /{}/.test(x); }', // · a regex in that head's body
 ].join("\n");
 const empties = survey(EMPTY_FIXTURE).notes;
 const bares = empties.filter((n) => n.check === "bare").map((n) => n.line);
@@ -1330,8 +1464,8 @@ if (!twice || !/bindings of that name/.test(twice.what)) {
   fail("fixture", "the matcher does not say that ZI is one of several bindings of its name");
 }
 const anonymous = fixture.notes.filter((n) => n.subject === "(anonymous)").length;
-if (anonymous !== 3) {
-  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 3`);
+if (anonymous !== 4) {
+  fail("fixture", `the matcher reports ${anonymous} literal(s) indexed on the spot in its fixture, where it should report 4`);
 }
 for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
   fail("fixture", `the matcher reports ${n.check} on line ${n.line} of a fixture that has none: ${n.what}`);
@@ -1412,9 +1546,10 @@ console.log(
     `${safeLines} it says not to, ${resolved} of ${reads} variable-keyed reads in app.js have a root it resolves, ` +
     `app.js still parses with its comments ` +
     `blanked, and in it ${wrapped} tables and ${dicts} maps are built with no prototype, no empty object literal is ` +
-    `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.assign({…}) that a ` +
-    `variable indexes — under its own name, under a name it was assigned to — in parentheses, as a branch of a ` +
-    `conditional, as the last of a sequence or as either side of a fallback — or through a property path, ` +
+    `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.create({…}) — ` +
+    `on its own or handed back by Object.${THROUGH_CALLS.join("/")}, whose first argument is what they answer — ` +
+    `that a variable indexes — under its own name, under a name it was assigned to — in parentheses, as a branch ` +
+    `of a conditional, as the last of a sequence or as either side of a fallback — or through a property path, ` +
     `which a name may have been assigned onto — is left ` +
     `with a prototype`
 );
