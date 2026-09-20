@@ -532,23 +532,6 @@ function survey(text) {
   const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*[A-Za-z_$][\\w$]*|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${STRING})\\s*\\])`;
   const segmentsOf = (text) =>
     [...text.matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
-  const members = new Map();
-  const TARGET = new RegExp(`(?:\\b(?:var|let|const)\\s+)?([A-Za-z_$][\\w$]*)((?:${STEPS})*)\\s*=(?![=>])`, "g");
-  for (const m of [...code.matchAll(TARGET)].filter(inCode)) {
-    const steps = segmentsOf(m[2]);
-    const path = steps.length ? `${m[1]}.${steps.join(".")}` : null;
-    for (const opener of openersIn(m.index + m[0].length)) {
-      const into = path ? members : bound;
-      const key = path || m[1];
-      if (!into.has(key)) into.set(key, []);
-      into.get(key).push(opener);
-    }
-  }
-  // A literal is the only opener this can read *into*; a factory call is opaque, and
-  // `bodyOf` would happily run past it to the next unrelated `{`.
-  const isLiteral = (opens) => opens === "{" || opens === "table(";
-  const hasPrototype = (opens) => opens === "{" || FACTORY.test(opens);
-
   // `var source = { now: 1 }; var lookup = source; lookup[k]` — the object is one name and
   // the index is another, and asking only about the name that was bound certified it. So
   // the plain `a = b` assignments are edges, walked in both directions: from a binding
@@ -556,18 +539,58 @@ function survey(text) {
   // *back* to the binding whose literal it reaches. Only a bare identifier on the right —
   // `a = b.c`, `a = b(…)` and `a = b[…]` are all something this cannot follow, and they
   // are the boundary the success line names.
+  //
+  // An assignment is read *once*, and what it binds and what it aliases both come out of
+  // that one reading. They were two passes over the same text — this one path-aware since
+  // round 24, the alias one still name-only — so `left.lookup = source` kept its receiver
+  // as a binding and dropped it as an alias, and an unrelated `right.lookup[k]` was then
+  // read as an index of `source`: valid code, failing the gate, the eighth time. Codex
+  // found it (#9, round 26). It is the missing mirror of rounds 17 and 25 once more, and
+  // the answer is again to delete the second implementation rather than teach it what the
+  // first one already knows — there is no longer a place where the two can disagree.
+  // The lookbehind is the rest of keeping the receiver. Without it a match could *start*
+  // in the middle of a path whose root is not a name, so `f().lookup = { … }` bound a bare
+  // `lookup` — the same collision from the same dropped receiver, in a shape Codex did not
+  // name and this found by looking for its siblings. A receiver that cannot be resolved
+  // yields nothing now, which is the boundary every unresolvable root here has.
   const ALIAS_SKIP = new Set(["function", "new", "typeof", "return", "true", "false", "null", "undefined", "this", "void", "delete", "in", "of", "case"]);
+  const ALIAS = /\s*([A-Za-z_$][\w$]*)\s*[;,)\n]/y;
+  const members = new Map();
+  const memberHolds = new Map();
   const holders = new Map();
   const heldFrom = new Map();
   const link = (map, key, value) => {
     if (!map.has(key)) map.set(key, new Set());
     map.get(key).add(value);
   };
-  for (const m of [...code.matchAll(/(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*[;,)\n]/g)].filter(inCode)) {
-    if (ALIAS_SKIP.has(m[2]) || m[1] === m[2]) continue;
-    link(holders, m[2], m[1]);
-    link(heldFrom, m[1], m[2]);
+  const TARGET = new RegExp(`(?<![\\w$.)\\]])(?:\\b(?:var|let|const)\\s+)?([A-Za-z_$][\\w$]*)((?:${STEPS})*)\\s*=(?![=>])`, "g");
+  for (const m of [...code.matchAll(TARGET)].filter(inCode)) {
+    const steps = segmentsOf(m[2]);
+    const path = steps.length ? `${m[1]}.${steps.join(".")}` : null;
+    const after = m.index + m[0].length;
+    for (const opener of openersIn(after)) {
+      const into = path ? members : bound;
+      const key = path || m[1];
+      if (!into.has(key)) into.set(key, []);
+      into.get(key).push(opener);
+    }
+    ALIAS.lastIndex = after;
+    const held = ALIAS.exec(code);
+    if (!held || ALIAS_SKIP.has(held[1])) continue;
+    // A path holds the name the same way a name does, and keyed the same way — which is
+    // the second half of the same round: `outer["lookup"] = inner` recorded nothing at all,
+    // because only a literal or a factory on the right was ever written down.
+    if (path) link(memberHolds, path, held[1]);
+    else if (held[1] !== m[1]) {
+      link(holders, held[1], m[1]);
+      link(heldFrom, m[1], held[1]);
+    }
   }
+  // A literal is the only opener this can read *into*; a factory call is opaque, and
+  // `bodyOf` would happily run past it to the next unrelated `{`.
+  const isLiteral = (opens) => opens === "{" || opens === "table(";
+  const hasPrototype = (opens) => opens === "{" || FACTORY.test(opens);
+
   const spread = (start, edges) => {
     const out = new Set([start]);
     const queue = [start];
@@ -709,7 +732,14 @@ function survey(text) {
     step(bindingsOf(root), 0);
     // …and what a member assignment put there, which is keyed by the whole path so that two
     // properties spelled alike stay apart.
-    for (const b of members.get(`${root}.${path.join(".")}`) || []) if (hasPrototype(b.opens)) hits.push(b);
+    const full = `${root}.${path.join(".")}`;
+    for (const b of members.get(full) || []) if (hasPrototype(b.opens)) hits.push(b);
+    // …and a *name* assigned onto the path is followed into its binding, exactly as a name
+    // written as a property value is. Reading only the literals meant
+    // `outer["lookup"] = inner` reached nothing. Codex found it (#9, round 26).
+    for (const held of memberHolds.get(full) || []) {
+      for (const b of bindingsOf(held)) if (hasPrototype(b.opens)) hits.push(b);
+    }
     return hits;
   };
 
@@ -829,6 +859,10 @@ const FIXTURE = [
   'var U0 = dict(); U0.tbl = { now: 1 }; U0.tbl[k];', //                 a table assigned onto a property
   'var U1 = dict(); U1.tbl = { now: 1 }; var U2 = table({ tbl: dict() }); U2.tbl[k];', // safe — a namesake, indexed elsewhere
   'var U3 = dict(); U3["tbl"] = { now: 1 }; U3["tbl"][k];', //            …and the same path spelled with brackets
+  'var V0 = { now: 1 }; var V1 = dict(); V1.tbl = V0; V1.tbl[k];', //     a *name* assigned onto a property
+  'var V2 = { now: 1 }; var V3 = dict(); V3.tbl = V2; var V4 = table({ tbl: dict() }); V4.tbl[k];', // safe — a namesake again, this time an alias
+  'var V5 = { now: 1 }; var V6 = dict(); V6["tbl"] = V5; V6["tbl"][k];', // …and a name onto a bracket-spelled path
+  'var V7 = dict(); ident(V7).tbl = { now: 1 }; var V8 = table({ tbl: dict() }); V8.tbl[k];', // safe — a receiver no name can resolve
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -852,7 +886,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -937,6 +971,7 @@ console.log(
   `✓ lookups: the matcher sees all ${REPORTED.length} spellings in its fixture, app.js still parses with its comments ` +
     `blanked, and in it ${wrapped} tables and ${dicts} maps are built with no prototype, no empty object literal is ` +
     `written at all, and no object literal or Object.fromEntries/JSON.parse/new Object/Object.assign({…}) that a ` +
-    `variable indexes — under its own name, under a name it was assigned to, or through a property path — is left ` +
+    `variable indexes — under its own name, under a name it was assigned to, or through a property path, ` +
+    `which a name may have been assigned onto — is left ` +
     `with a prototype`
 );
