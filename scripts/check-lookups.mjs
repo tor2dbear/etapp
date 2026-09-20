@@ -659,10 +659,36 @@ function survey(text) {
   const DQ = `(?:[^"\\\\]|\\\\.)*`;
   const SQ = `(?:[^'\\\\]|\\\\.)*`;
   const STRING = `"${DQ}"|'${SQ}'`;
-  const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${STRING})\\s*\\]`, "gu");
-  const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${STRING})\\s*\\])`;
-  const segmentsOf = (text) =>
-    [...text.matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : unescape(piece[2].slice(1, -1))));
+  // …and one spelling of a number, because a key may be written as one: `table({ 0: { … } })`
+  // is indexed `outer[0][k]`, and `STEPS` read a dot name or a quoted bracket and nothing
+  // else, so the path reached nothing. Codex found it (#9, round 41). The mirror was missing
+  // on the *writing* side at the same time — a literal's `0:` was no key either, since a key
+  // had to start like a name — which is the fourth round in a row whose finding was one half
+  // of a pair.
+  const NUMBER = `[-+]?(?:0[xXoObB][0-9a-fA-F_]+|(?:\\d[\\d_]*(?:\\.[\\d_]*)?|\\.[\\d_]+)(?:[eE][-+]?\\d+)?)n?`;
+  // A key is the string it denotes. For a quoted one that is what is between the quotes; for
+  // a number it is `String(Number(…))`, which is not a guess — it is the conversion the
+  // language does, so `{ 16: … }`, `t[0x10]` and `t["16"]` are one key by construction rather
+  // than by a table of spellings. A number this cannot read is no key at all.
+  const numberKey = (raw) => {
+    const n = Number(raw.replace(/_/g, "").replace(/n$/, ""));
+    // Infinity is a key like any other — `{ 1e999: … }` is the key `Infinity`, which is what
+    // the conversion says and what a fixture line holds. Only a number this cannot read at
+    // all is no key.
+    return Number.isNaN(n) ? null : String(n);
+  };
+  const asKey = (raw) => (/^["']/.test(raw) ? unescape(raw.slice(1, -1)) : /^[-+.\d]/.test(raw) ? numberKey(raw) : raw);
+  const CONSTANT = `${STRING}|${NUMBER}`;
+  const SEGMENT = new RegExp(`\\.\\s*(${ID})|\\[\\s*(${CONSTANT})\\s*\\]`, "gu");
+  const STEPS = `(?:\\s*(?:\\?\\.|\\.)\\s*${ID}|\\s*(?:\\?\\.)?\\s*\\[\\s*(?:${CONSTANT})\\s*\\])`;
+  // A path is all of its steps or none of them: one segment this cannot read leaves a path
+  // that means something else, and a *shorter* path is not a safer answer — it is a different
+  // question. So an unreadable one empties the whole reading, which every caller already
+  // treats as "no path here".
+  const segmentsOf = (text) => {
+    const steps = [...text.matchAll(SEGMENT)].map((piece) => (piece[1] !== undefined ? piece[1] : asKey(piece[2])));
+    return steps.includes(null) ? [] : steps;
+  };
   // A match that ends at its `[`, so the bracket can be read — and one sticky reader of it,
   // because three places ask "does an index start here" and a hand-spelling in any of them
   // would not learn the next shape this grows. It grew `?.` once already.
@@ -795,7 +821,12 @@ function survey(text) {
           const tail = STEP_TAIL.exec(code);
           if (tail) {
             const steps = segmentsOf(tail[0]);
-            for (const cand of current) cand.path = cand.path.concat(steps);
+            // A step that was matched and could not be read is not *no* step: without this
+            // the operand quietly becomes an alias of its own root, and `var x = source[0]`
+            // would answer for `source` itself. Measured — it is what the mutation for the
+            // segment reader produces.
+            if (!steps.length) { poisoned = true; current = []; }
+            else for (const cand of current) cand.path = cand.path.concat(steps);
             before = code[STEP_TAIL.lastIndex - 1];
             i = STEP_TAIL.lastIndex - 1;
             continue;
@@ -1055,10 +1086,10 @@ function survey(text) {
     }
     return close;
   };
-  // A property of a pattern: a name, a quoted key or a computed constant one — the same three
+  // A property of a pattern: a name, a constant key or a computed constant one — the same
   // spellings a literal's keys have — and whether a colon follows, which is what tells
   // `{ lookup }` from `{ lookup: alias }`.
-  const PROP = new RegExp(`(?:(${ID})|(${STRING})|\\[\\s*(${STRING})\\s*\\])\\s*(:)?`, "yu");
+  const PROP = new RegExp(`(?:(${ID})|(${CONSTANT})|\\[\\s*(${CONSTANT})\\s*\\])\\s*(:)?`, "yu");
   // What a pattern binds, and under which path of the value. Written here rather than read
   // with `keysOf`, which reads a *literal*: a pattern's grammar is not a literal's — it has
   // defaults and a rest element and no values at all — and one reader taught both grammars is
@@ -1086,8 +1117,8 @@ function survey(text) {
         PROP.lastIndex = i;
         const m = PROP.exec(code);
         if (!m) { i = afterEntry(i, close); continue; }
-        const quoted = m[2] !== undefined ? m[2] : m[3];
-        key = m[1] !== undefined ? m[1] : unescape(quoted.slice(1, -1));
+        key = m[1] !== undefined ? m[1] : asKey(m[2] !== undefined ? m[2] : m[3]);
+        if (key === null) { i = afterEntry(i, close); continue; }
         if (m[4] === ":") target = spaced(PROP.lastIndex);
         else {
           // A shorthand is the key and the name at once, the way it is in a literal.
@@ -1288,19 +1319,20 @@ function survey(text) {
   // The wrapper is stepped over and not captured, so `opens` stays the opener itself.
   const VALUE = `(?:${THROUGH}\\s*)?(table\\(|dict\\(\\)|\\{|${ID}|)`;
   const KEY = new RegExp(`(${ID})\\s*(?::\\s*${VALUE}|(?=[,}]|$))`, "yu");
-  // A quoted key is a *string*, and `"status-name"` is as much a key as `status` is —
-  // restricting it to identifier shapes meant `t["status-name"][k]` reached nothing.
-  // Codex found it (#9, round 12). One capture for the whole quoted key rather than one per
+  // A constant key is the value it denotes: `"status-name"` is as much a key as `status` is,
+  // and `0` is as much one as `"0"`. Restricting it to identifier shapes meant
+  // `t["status-name"][k]` reached nothing — Codex found that (#9, round 12), and the numeric
+  // half of the same sentence in round 41. One capture for the whole key rather than one per
   // quote: the two alternatives each carried their own copy of `VALUE`, which is two places
   // for the next round to teach and the shape every duplicated fragment here has had.
-  const QUOTED = new RegExp(`(${STRING})\\s*:\\s*${VALUE}`, "yu");
+  const CONSTANT_KEY = new RegExp(`(${CONSTANT})\\s*:\\s*${VALUE}`, "yu");
   // …and a *computed* constant key is that same string one bracket further out:
   // `{ ["lookup"]: … }` is the key `lookup`, which the reading side has taken since round 10
   // — `t["lookup"]` and `t.lookup` are one path — while the writing side took neither
   // spelling of it. Codex found it (#9, round 38). A computed key that is not constant,
   // `{ [name]: … }` or a template, is a key this cannot know, and it is the same boundary a
   // root bound to a call has: it reaches nothing rather than reaching wrong.
-  const COMPUTED = new RegExp(`\\[\\s*(${STRING})\\s*\\]\\s*:\\s*${VALUE}`, "yu");
+  const COMPUTED = new RegExp(`\\[\\s*(${CONSTANT})\\s*\\]\\s*:\\s*${VALUE}`, "yu");
   // What a bracket does to a depth count. Written twice twenty lines apart, and the second
   // copy exists because the first one was missing a case — which is the argument for there
   // being one.
@@ -1312,7 +1344,7 @@ function survey(text) {
       const c = body.text[i];
       const quoted = body.mask[i] === 1;
       if (quoted && !(c === '"' || c === "'")) continue;
-      // Three spellings, one position: a name, a quoted string, or a computed constant. The
+      // Four spellings, one position: a name, a string, a number, or a computed constant. The
       // bracket a computed key opens with is the bracket the depth counter is watching for,
       // so the match is tried *before* the counter takes it — `["lookup"]:` is a key and
       // `[0]` is an index — and the counter takes it when there is no key here after all.
@@ -1321,7 +1353,7 @@ function survey(text) {
         !(!quoted && i > 0 && IDENT_PART.test(body.text[i - 1])) &&
         // Only the quote that *opens* a string — an escaped one inside it is masked too.
         !(quoted && i > 0 && body.mask[i - 1] === 1);
-      const re = quoted ? QUOTED : c === "[" ? COMPUTED : KEY;
+      const re = quoted ? CONSTANT_KEY : c === "[" ? COMPUTED : /[-+.\d]/.test(c) ? CONSTANT_KEY : KEY;
       let m = null;
       if (here) {
         re.lastIndex = i;
@@ -1331,10 +1363,11 @@ function survey(text) {
         if (!quoted) depth += delta(c);
         continue;
       }
-      // A quoted key, however it is spelled, is the string it denotes; a bare one is itself,
-      // and a shorthand is its own value and stands where it is written.
+      // A key, however it is spelled, is the string it denotes — and a shorthand is its own
+      // value and stands where it is written.
       const bare = re === KEY;
-      const name = bare ? m[1] : unescape(m[1].slice(1, -1));
+      const name = bare ? m[1] : asKey(m[1]);
+      if (name === null) { depth += delta(c); continue; }
       const short = bare && m[2] === undefined;
       const opens = short ? name : m[2];
       const at = short ? body.at + i : body.at + i + m[0].length - opens.length;
@@ -1658,7 +1691,7 @@ const FIXTURE = [
   'var W8 = { now: 1 }; var W9 = ident(W8); W9[k];', //                  safe — a call’s answer, not the name
   'var WA = { now: 1 }; var WB = WA.inner; WB[k];', //                   safe — that property is not in it
   'var WC = { now: 1 }; var WD = n + WC; WD[k];', //                     safe — an operand, not the value
-  'var WE = { now: 1 }; var WF = WE[0]; WF[k];', //                     safe — an element of it, not it
+  'var WE = { now: 1 }; var WF = WE[0]; WF[k];', //                     safe — that element is not in it
   'var WG = { now: 1 }; var WH = n + (m || WG); WH[k];', //             safe — an operand still, inside parentheses
   'var WI = { now: 1 }; var WJ = (WI.inner); WJ[k];', //                safe — and a property still, inside them
   'var WK = { now: 1 }; var WL = WK || dict(); WL[k];', //              the left of a fallback, which an object wins
@@ -1783,12 +1816,22 @@ const FIXTURE = [
   'var DE = { a: { inner: { now: 1 } } }; var { inner: DF } = DE.a; DF[k];', // …out of a path
   'var DG = { inner: { now: 1 } }; var DH = dict(); DH.lookup = DG.inner; DH.lookup[k];', // a path assigned onto a path
   'var DI = { x: DJ }; var DJ = DI.x; DJ[k];', //                        safe — a circle, which must end rather than answer
+  'var DK = table({ 0: { now: 1 } }); DK[0][k];', //                     a numeric key, reached by a numeric step
+  'var DL = table({ 0: dict() }); DL[0][k];', //                         safe — that element is a dict
+  'var DM = table({ 16: { now: 1 } }); DM[0x10][k];', //                 …and the key a number denotes, not its spelling
+  'var DN = table({ "0": { now: 1 } }); DN[0][k];', //                   …which a quoted one denotes too
+  'var DO = table({ [0]: { now: 1 } }); DO[0][k];', //                   …and a computed one
+  'var DP = table({ Infinity: { now: 1 } }); DP[1e999][k];', //          …as far as the conversion goes
+  'var DQ = { a: { 0: { now: 1 } } }; var DR = DQ.a[0]; DR[k];', //      a numeric step on the value side
+  'var DS = { 0: { now: 1 } }; var { 0: DT } = DS; DT[k];', //           …and a numeric key in a pattern
+  'var DU = table({ 0: { now: 1 } }); DU[n][k];', //                     safe — a step that is not constant reaches nothing
+  'var DV = table({ 0.5: { now: 1 } }); DV[.5][k];', //                  …and a fraction is a key as much as an integer
   'var BL = { a: 1 }; BL[.5];', //                                       safe — a number may begin with its point
   'var BM = { a: 1 }; BM[-.5];', //                                      safe — …and with a sign in front of that
   'var BN = { a: 1 }; BN[.5e3];', //                                     safe — …and carry on as any number does
   'var BO = { a: 1 }; BO[.5 + n];', //                                   a sum that starts with one is not a constant
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "ZI", "ZJ", "ZK", "ZL", "ZM", "ZN.s", "ZR.ZQ", "ZT.ZS", "AA", "AB", "AC", "AE.s", "AF", "AG", "AJ", "AL", "AP", "AR.t", "AS.s", "AW.lookup", "AY.lookup", "AZ.a-b", "BC", "BD", "BF", "BI", "BP", "BO", "BS", "BW", "CC", "CE", "CG", "inner", "CJ", "CN", "CP", "CQ", "CT", "CV", "CW", "DC", "DF", "DH.lookup", "DK.0", "DM.16", "DN.0", "DO.0", "DP.Infinity", "DR", "DT", "DV.0.5", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
