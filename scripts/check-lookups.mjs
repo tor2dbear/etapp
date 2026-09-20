@@ -81,73 +81,189 @@ if (Object.keys(d).length !== 2) fail("dict", `dict() kept ${Object.keys(d).leng
 // not the shape that means "something will fill this". Nothing needs to decide whether a
 // given map is "indexed by data", which is the judgement that kept being wrong.
 //
+// The rest of this section is the *other* half of the rule — a non-empty literal that
+// something does index with a key that is not a literal — and it has now been wrong in
+// five different ways, once per round of review. Every one of them was the same defect:
+// the scan could not see a shape, and nothing here said which shapes it could see. So
+// the scan is a function of text, and the fixture below is the list, with the answer
+// written next to each line. A shape the matcher stops seeing is a failing gate now,
+// not a success line that has quietly stopped meaning anything.
+//
 // Comments are blanked rather than skipped, so the offsets — and the line numbers
 // reported from them — still point at the real file. This file's own prose says `{}` a
 // dozen times, and the first version of this section flagged two of its own sentences.
-const CODE = lines
-  .map((line) => {
-    const at = line.indexOf("//");
-    return at === -1 ? line : line.slice(0, at) + " ".repeat(line.length - at);
-  })
-  .join("\n");
-const lineAt = (index) => CODE.slice(0, index).split("\n").length;
+const blanked = (text) =>
+  text
+    .split("\n")
+    .map((line) => {
+      const at = line.indexOf("//");
+      return at === -1 ? line : line.slice(0, at) + " ".repeat(line.length - at);
+    })
+    .join("\n");
 
-// Whitespace included, and over the whole source rather than line by line: `{ }` and a
-// literal broken across two lines are the same empty object, and both sailed past a
-// `/\{\}/` that matched only the bare token — measured, with the gate still reporting
-// that the file writes none. Three spellings are not a map and are left alone: an empty
-// catch, an empty function body, and the two-character string.
-const EXEMPT = [/catch\s*\([^)]*\)\s*$/, /function[^)]*\)\s*$/, /=>\s*$/];
-for (const m of CODE.matchAll(/\{\s*\}/g)) {
-  const before = CODE.slice(0, m.index).trimEnd();
-  if (CODE[m.index - 1] === '"' || CODE[m.index + m[0].length] === '"') continue;
-  if (EXEMPT.some((re) => re.test(before))) continue;
-  fail("bare", `app.js:${lineAt(m.index)} — an empty object literal: ${m[0].replace(/\s+/g, " ")}`);
-}
+function survey(code) {
+  const notes = [];
+  const lineOf = (index) => code.slice(0, index).split("\n").length;
+  const seen = new Set();
+  const note = (check, at, subject, what) => {
+    if (seen.has(check + at)) return;
+    seen.add(check + at);
+    notes.push({ check, line: lineOf(at), subject, what });
+  };
 
-// A *non-empty* literal is a record until something indexes it with a key that is not a
-// literal, and then it is a lookup table and needs `table()`. Two shapes, because there
-// are two ways to write one:
-//
-//   a name bound to it, and the keyword is *optional* — the first version of this read
-//   only `var ALL_CAPS`, so a lowercase or `const` table was invisible; the second read
-//   `(var|let|const) NAME`, which still missed both of the ordinary ways a binding is
-//   written without a keyword in front of the name. `var lookup; lookup = { … }` is one,
-//   and the second declarator of a list, `var out = views.slice(), entry = { … }`, is
-//   the other — app.js had exactly that, in `withView`, a record filled with keys copied
-//   from a saved view. The gate reported every table covered while it could see neither.
-//   The optional group is greedy, so `var X = {` still matches once, at the keyword;
-//
-//   and a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all.
-//   app.js has one, in the keyboard handler.
-const declared = [...CODE.matchAll(/(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(table\(\{|\{)/g)]
-  .map((m) => ({ name: m[1], wrapped: m[2] !== "{", at: m.index }));
-// Through a property path too, not just `name[k]`: a table can be held in one —
-// `var t = { status: { now: "Now" } }` read as `t.status[k]` — and looking only for
-// `t[` meant the declaration was recorded and then never tested.
-//
-// This asks about the record, not about the property, and that is deliberately
-// over-strict: `boardAt.cols[k]` is already safe, because `cols` is a `dict()`. Deciding
-// otherwise would mean knowing which value sits at `cols` inside the literal, which is a
-// brace-matcher and a judgement — and judgement is what this section replaced. So the
-// rule stays a construction, "if data indexes it, through a property or not, it goes
-// through `table()`", the remedy is one word at the three sites in app.js that read a
-// record through a property, and the cost of being wrong is a copy of five keys.
-const indexedByAVariable = (name) =>
-  new RegExp(`\\b${name}\\s*(?:\\.[A-Za-z_$][\\w$]*)*\\s*\\[\\s*[^"'\\]]`).test(CODE);
-for (const { name, wrapped, at } of declared) {
-  if (!wrapped && indexedByAVariable(name)) {
-    fail("bare-table", `app.js:${lineAt(at)} — ${name} is indexed by a variable somewhere but built without table()`);
+  // Whitespace included, and over the whole source rather than line by line: `{ }` and a
+  // literal broken across two lines are the same empty object, and both sailed past a
+  // `/\{\}/` that matched only the bare token — measured, with the gate still reporting
+  // that the file writes none. Three spellings are not a map and are left alone: an empty
+  // catch, an empty function body, and the two-character string.
+  const EXEMPT = [/catch\s*\([^)]*\)\s*$/, /function[^)]*\)\s*$/, /=>\s*$/];
+  for (const m of code.matchAll(/\{\s*\}/g)) {
+    if (code[m.index - 1] === '"' || code[m.index + m[0].length] === '"') continue;
+    if (EXEMPT.some((re) => re.test(code.slice(0, m.index).trimEnd()))) continue;
+    note("bare", m.index, null, `an empty object literal: ${m[0].replace(/\s+/g, " ")}`);
   }
+
+  // Every name bound to an object, however the binding is spelled. The keyword is
+  // optional, and that is the whole point: `var X = {` is one way, `x = {` after the
+  // declaration is another, and `var out = views.slice(), entry = {` — the second
+  // declarator of a list — is a third. Two rounds of review were spent on matchers that
+  // read only the first. The optional group is greedy, so `var X = {` still matches once,
+  // at the keyword, rather than twice.
+  const bound = new Map();
+  for (const m of code.matchAll(/(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(table\(|dict\(\)|\{)/g)) {
+    if (!bound.has(m[1])) bound.set(m[1], []);
+    bound.get(m[1]).push({ opens: m[2], at: m.index + m[0].length - m[2].length });
+  }
+
+  // The balanced inside of the literal an opener starts, with quoted text skipped. For
+  // `table(` the literal is its argument, so both openers are "the next `{`".
+  const bodyOf = (from) => {
+    const open = code.indexOf("{", from);
+    if (open === -1) return null;
+    let depth = 0;
+    let quote = null;
+    for (let i = open; i < code.length; i++) {
+      const c = code[i];
+      if (quote) {
+        if (c === "\\") i++;
+        else if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") quote = c;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) return { at: open + 1, text: code.slice(open + 1, i) };
+    }
+    return null;
+  };
+
+  // The keys written at the *top* level of a body, and what each one's value opens with.
+  // Depth counts brackets and parentheses as well as braces, so a key inside a nested
+  // literal, an array of them, or a function body is not mistaken for one of these.
+  const KEY = /([A-Za-z_$][\w$]*)\s*:\s*(table\(|dict\(\)|\{|)/y;
+  const keysOf = (body) => {
+    const keys = new Map();
+    let depth = 0;
+    let quote = null;
+    for (let i = 0; i < body.text.length; i++) {
+      const c = body.text[i];
+      if (quote) {
+        if (c === "\\") i++;
+        else if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+      if (c === "{" || c === "[" || c === "(") { depth++; continue; }
+      if (c === "}" || c === "]" || c === ")") { depth--; continue; }
+      if (depth !== 0 || (i > 0 && /[\w$]/.test(body.text[i - 1]))) continue;
+      KEY.lastIndex = i;
+      const m = KEY.exec(body.text);
+      if (!m) continue;
+      if (!keys.has(m[1])) keys.set(m[1], { opens: m[2], at: body.at + i + m[0].length - m[2].length });
+      i = KEY.lastIndex - 1;
+    }
+    return keys;
+  };
+
+  // Where `root.a.b` actually lands. Asking about the *root* instead was the fourth and
+  // fifth findings, one in each direction: `boardAt.cols[k]` was reported although `cols`
+  // is a `dict()`, and `table({ status: { now: "Now" } })` was certified although
+  // `.status` is a bare literal — `table()` is shallow, and wrapping the root protected
+  // nothing. A root this cannot resolve — a parameter, a function result — yields
+  // nothing, which is the boundary: it is the same boundary a name bound to a call has
+  // always had, and it is here rather than in a claim.
+  const reached = (root, path) => {
+    const hits = [];
+    for (const b of bound.get(root) || []) {
+      let body = b.opens === "dict()" ? null : bodyOf(b.at);
+      for (let s = 0; body && s < path.length; s++) {
+        const k = keysOf(body).get(path[s]);
+        if (!k) break;
+        if (s === path.length - 1) { hits.push(k); break; }
+        body = k.opens === "{" || k.opens === "table(" ? bodyOf(k.at) : null;
+      }
+    }
+    return hits;
+  };
+
+  // `name[k]` — the binding itself, read with a key that is not a literal.
+  for (const [name, bindings] of bound) {
+    if (!bindings.some((b) => b.opens === "{")) continue;
+    if (!new RegExp(`\\b${name}\\s*\\[\\s*[^"'\\]]`).test(code)) continue;
+    for (const b of bindings) {
+      if (b.opens === "{") note("bare-table", b.at, name, `${name} is indexed by a variable somewhere but built without table()`);
+    }
+  }
+  // `root.a.b[k]` — the value at the end of the path, not the root at the start of it.
+  for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)((?:\s*\.\s*[A-Za-z_$][\w$]*)+)\s*\[\s*[^"'\]]/g)) {
+    const path = m[2].split(".").map((s) => s.trim()).filter(Boolean);
+    const subject = `${m[1]}.${path.join(".")}`;
+    for (const k of reached(m[1], path)) {
+      if (k.opens === "{") note("bare-table", k.at, subject, `${subject} reaches an object literal built without table()`);
+    }
+  }
+  // And a literal indexed on the spot, `{ a: "all", … }[k]`, which has no name at all.
+  for (const m of code.matchAll(/\}\s*\[\s*[^"'\]]/g)) {
+    note("bare-table", m.index, "(anonymous)", "an object literal indexed on the spot, without table()");
+  }
+
+  const wrapped = [...bound.values()].flat().filter((b) => b.opens === "table(").length;
+  return { notes, wrapped };
 }
-for (const m of CODE.matchAll(/\}\s*\[\s*[^"'\]]/g)) {
-  fail("bare-table", `app.js:${lineAt(m.index)} — an object literal indexed on the spot, without table()`);
+
+// The matcher against text written for it, before it is turned on the file. Each line is
+// a spelling and its answer; the ones that must be reported are named in `REPORTED`, and
+// every other line is here because it must *not* be. Five rounds of review found five
+// shapes this scan could not see, and not one of them was visible from the success line —
+// which said "every table is covered" throughout. This is the assertion that was missing.
+const FIXTURE = [
+  'var A = { a: 1 }; A[k];', //                     a keyword declaration
+  'let bee = { a: 1 }; bee[k];', //                 any keyword, any case
+  'var cee; cee = { a: 1 }; cee[k];', //            bound after its declaration
+  'var d = 1, e = { a: 1 }; e[k];', //              the second declarator of a list
+  'var f = table({ g: { a: 1 } }); f.g[k];', //     a bare table inside a wrapped one
+  'var h = { i: { j: { a: 1 } } }; h.i.j[k];', //   two segments deep
+  'var m = table({ n: dict() }); m.n[k];', //       safe — the value is a dict
+  'var o = table({ p: 1 }); o[k];', //              safe — the table is wrapped
+  'var q = { r: 1 }; q["r"];', //                   safe — a literal key
+  'var s = { t: 1 }; s.t;', //                      safe — not indexed at all
+].join("\n");
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j"];
+const fixture = survey(blanked(FIXTURE));
+const got = fixture.notes.filter((n) => n.check === "bare-table").map((n) => n.subject).sort();
+if (got.join(" ") !== REPORTED.slice().sort().join(" ")) {
+  fail("fixture", `the matcher reports ${got.join(", ") || "nothing"} where it should report ${REPORTED.join(", ")}`);
 }
+for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
+  fail("fixture", `the matcher reports ${n.check} on line ${n.line} of a fixture that has none: ${n.what}`);
+}
+
+const CODE = blanked(src);
+const { notes, wrapped } = survey(CODE);
+for (const n of notes) fail(n.check, `app.js:${n.line} — ${n.what}`);
 
 // Anti-vacuity, over both halves. If the shapes stopped matching — a reformat, a rename,
 // a regex tightened by one character — this section would pass by checking nothing, and
 // the half that covers data was written without a floor and was blind three times.
-const wrapped = declared.filter((d) => d.wrapped).length;
 const dicts = (CODE.match(/\bdict\(\)/g) || []).length;
 if (wrapped < 15) fail("coverage", `only ${wrapped} tables go through table() — the pattern this checks has moved`);
 if (dicts < 40) fail("coverage", `only ${dicts} maps go through dict() — the pattern this checks has moved`);
@@ -158,6 +274,7 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(
-  `✓ lookups: ${wrapped} tables and ${dicts} maps are built with no prototype, and app.js ` +
-    `writes no empty object literal at all — so no key that was not put there has an answer`
+  `✓ lookups: the matcher sees all ${REPORTED.length} spellings of a bare table in its fixture, and in app.js ` +
+    `${wrapped} tables and ${dicts} maps are built with no prototype, no empty object literal is written at all, ` +
+    `and nothing a variable indexes — through a property path or not — reaches one that has a prototype`
 );
