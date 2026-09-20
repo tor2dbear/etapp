@@ -766,7 +766,12 @@ function survey(text) {
   // nothing at all, because neither the space in front of it nor the Ö itself is a `\w`. The
   // fixture line for a name *starting* with such a letter is what found that; the one that
   // merely contains one, `café`, passed either way.
-  const EDGE = `(?<![\\p{ID_Continue}$])`;
+  // …and a `.` in front of it means the name belongs to something else: `other.qq[k]` is an
+  // index of *that* property and not of a variable spelled `qq`, which was reported all the
+  // same. Round 24 taught the writing side that a property is not a name; this is the same
+  // sentence on the reading side, and it turned up while writing a fixture line for one of
+  // `/code-review`'s findings rather than from the finding itself.
+  const EDGE = `(?<![.\\p{ID_Continue}$])`;
   // `x[k]` and `x?.[k]` are one read, and a `.` may be optional wherever it appears in a
   // path. app.js writes neither spelling — it is ES5 throughout — but a gate that goes
   // blind on an ordinary refactor is the thing this file keeps being reviewed for.
@@ -806,15 +811,27 @@ function survey(text) {
   // A match that ends at its `[`, so the bracket can be read.
   const computed = (m) => inCode(m) && !constantKey(m.index + m[0].length - 1);
   const INDEX = `\\s*(?:\\?\\.)?\\s*\\[`;
+  // A name spliced into a pattern is not a name any more: `$` is an identifier character
+  // and a regex anchor, so `$LOOK[k]` and `LOOK$[k]` matched nothing while `plain[k]` was
+  // reported. `/code-review` found it, one round after the alphabet widened to admit far
+  // more characters than `$`.
+  const quote = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const indexedByAVariable = (name) =>
-    [...code.matchAll(new RegExp(`(?:${EDGE}${name}|${GROUPED}${name}\\s*\\))${INDEX}`, "gu"))].some(computed);
+    [...code.matchAll(new RegExp(`(?:${EDGE}${quote(name)}|${GROUPED}${quote(name)}\\s*\\))${INDEX}`, "gu"))].some(computed);
 
   // The balanced inside of the literal an opener starts. For `table(` the literal is its
   // argument, so both openers are "the next `{` that is code".
+  // The literal an opener opens is the one *at* it — not the next one anywhere in the file.
+  // `table(` was read as though its argument were always a literal, so `var o = table(parsed)`
+  // sent this hunting forward to an unrelated `{` and read its keys as `o`'s. app.js writes
+  // exactly that at 1229, and `o` is an ordinary local name there, so the next `o.x[k]`
+  // anybody wrote would have failed CI against someone else's object. `/code-review` found
+  // it: the twelfth red gate on valid code, and the first that was not a reviewer's
+  // construction but a shape already in the file.
   const bodyOf = (from) => {
-    let open = code.indexOf("{", from);
-    while (open !== -1 && mask[open]) open = code.indexOf("{", open + 1);
-    if (open === -1) return null;
+    let open = from;
+    while (open < code.length && (mask[open] || /\s/.test(code[open]))) open++;
+    if (code[open] !== "{") return null;
     let depth = 0;
     for (let i = open; i < code.length; i++) {
       if (mask[i]) continue;
@@ -860,6 +877,15 @@ function survey(text) {
       const name = m[1] !== undefined ? m[1] : m[3];
       const opens = m[1] !== undefined ? m[2] : m[4];
       if (!keys.has(unescape(name))) keys.set(unescape(name), { opens, at: body.at + i + m[0].length - opens.length });
+      // The match consumed the token the value *opens* with, and the scan then jumps past
+      // it — so the brackets inside it never reached the depth counter while their closers
+      // did. Depth went to -1 at the end of the first nested literal, and from there every
+      // later key of the parent was skipped and the nested one's keys were read as the
+      // parent's: a miss and a false positive from the same line. `/code-review` found it.
+      for (const ch of opens) {
+        if (ch === "{" || ch === "[" || ch === "(") depth++;
+        else if (ch === "}" || ch === "]" || ch === ")") depth--;
+      }
       i = re.lastIndex - 1;
     }
     return keys;
@@ -884,7 +910,7 @@ function survey(text) {
     const step = (bindings, at) => {
       for (const b of bindings) {
         if (!isLiteral(b.opens)) continue;
-        const body = bodyOf(b.at);
+        const body = bodyOf(b.opens === "{" ? b.at : b.at + b.opens.length);
         if (!body) continue;
         const k = keysOf(body).get(path[at]);
         if (!k) continue;
@@ -963,7 +989,7 @@ function survey(text) {
   // is whatever it is: `f({ … })[k]` is excluded by the lookbehind, since there the
   // parenthesis belongs to the call and what is indexed is the call's answer.
   for (const m of [...code.matchAll(new RegExp(`${GROUPED}(?=\\{)`, "g"))].filter(inCode)) {
-    const body = bodyOf(m.index);
+    const body = bodyOf(m.index + m[0].length);
     if (!body) continue;
     let i = body.at + body.text.length + 1;
     while (i < code.length && /\s/.test(code[i])) i++;
@@ -978,7 +1004,7 @@ function survey(text) {
 
   const wrapped = [...bound.values()].flat().filter((b) => b.opens === "table(").length;
   const dicts = [...code.matchAll(/\bdict\(\)/g)].filter(inCode).length;
-  return { notes, wrapped, dicts, code };
+  return { notes, wrapped, dicts, code, mask };
 }
 
 // The matcher against text written for it, before it is turned on the file. Each line is
@@ -1065,6 +1091,7 @@ const FIXTURE = [
   'var XI = dict(); (XI).tbl = { now: 1 }; XI.tbl[k];', //              …around the root of a path
   'var XJ = dict(); (XJ.tbl) = { now: 1 }; XJ.tbl[k];', //              …and around the whole of one
   'var XN = dict(); XN[i].tbl = { now: 1 }; var XO = table({ tbl: dict() }); XO.tbl[k];', // safe — a computed receiver resolves to nothing
+  'var tbl = dict(); tbl[k];', //                                       safe — and a real variable of that name, which none of those is
   'function xt(x, k, flag) { switch (x) { case flag ? 1 : { now: 1 }[k]: break; } }', // a literal behind a case expression’s ternary
   'var café = { now: 1 }; café[k];', //                               a name JavaScript allows and ASCII does not
   'var ÖVER = { now: 1 }; ÖVER[k];', //                               …and one that starts with such a letter
@@ -1075,6 +1102,12 @@ const FIXTURE = [
   'var YC = { now: 1 }; YC[-1];', //                                   safe — and a negative one
   'var YD = { now: 1 }; YD[1_000];', //                                safe — and one with separators
   'var YE = { now: 1 }; YE[1 - n];', //                                a computed key that merely starts with a digit
+  'var ZA = table({ a: { z: 1 }, b: { z: 1 } }); ZA.b[k];', //          a key after a nested literal, which depth lost
+  'var ZB = table({ a: { z: { q: 1 } } }); ZB.z[k];', //                safe — a nested key is not the parent’s
+  'var $ZC = { now: 1 }; $ZC[k];', //                                   a name spliced into a pattern, where `$` anchors
+  'var ZD$ = { now: 1 }; ZD$[k];', //                                   …and at the end of one, where it also does
+  'var ZE = table(parsedZE); var ZF = { q: { deep: 1 } }; ZE.q[k];', // safe — a wrapped name opens no literal here
+  'var ZG = { r: 1 }; var ZH = table({ ZG: dict() }); ZH.ZG[k];', //     safe — a property is not the variable it is spelled like
   'var S1 = { now: 1 }; S1["" + k];', //                                 a computed key that starts as a string
   'var S2 = { now: 1 }; S2["now"];', //                                  safe — a sole string is a constant key
   'var S3 = { now: 1 }; S3[0];', //                                      safe — so is a sole number
@@ -1098,7 +1131,7 @@ const FIXTURE = [
   'var c2 = { d2: 1 }; // c2[k] here is a comment, not code', //         safe — a comment
   'var e2 = { f2: 1 }; var g2 = "e2[k] here is a string";', //           safe — a string
 ].join("\n");
-const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "(anonymous)"];
+const REPORTED = ["A", "bee", "cee", "e", "f.g", "h.i.j", "u.bad", "v.w", "y.z", "F1", "F2", "F3", "G1", "G4.b", "G7", "T1", "T3", "B1.s", "B3", "P1", "C1.a-b", 'C3.a"b', "D1", "E1", "E2.s", "H1", "H2.s", "J1", "K1", "L1", "L2", "M1", "O1", "Q1.s", "R1", "R2", "S1", "U0.tbl", "U3.tbl", "V1.tbl", "V6.tbl", "W0", "W2", "W4", "W6", "WK", "WQ", "WT", "WU", "XA", "XH", "XI.tbl", "XJ.tbl", "caf\u00e9", "\u00d6VER", "\u00d6H", "na\u00efve.tabelle", "YE", "ZA.b", "$ZC", "ZD$", "(anonymous)"];
 // The empty-literal rule gets its own two lines, because what they assert is a `bare` note
 // rather than a `bare-table` one, and the list above is about subjects. `case { a: {} }.a:`
 // is the shape that made a case label swallow a property colon — the nested literal was then
@@ -1144,7 +1177,7 @@ for (const n of fixture.notes.filter((n) => n.check !== "bare-table")) {
   fail("fixture", `the matcher reports ${n.check} on line ${n.line} of a fixture that has none: ${n.what}`);
 }
 
-const { notes, wrapped, dicts, code } = survey(src);
+const { notes, wrapped, dicts, code, mask } = survey(src);
 for (const n of notes) fail(n.check, `app.js:${n.line} — ${n.what}`);
 
 // The judge on the reading above: removing the comments from a file that parses leaves a
@@ -1161,8 +1194,16 @@ for (const n of notes) fail(n.check, `app.js:${n.line} — ${n.what}`);
 // names, which is the trade round 19 made explicit. This is what pays for it: if app.js ever
 // binds one, the reading of every `/` after it is wrong, and the gate says so instead of
 // masking whatever follows.
-for (const m of [...code.matchAll(new RegExp(`\\b(?:var|let|const|function)\\s+(${CONTEXTUAL.join("|")})\\b|\\b(${CONTEXTUAL.join("|")})\\s*=(?![=>])`, "g"))]) {
-  fail("lex", `app.js binds \`${m[1] || m[2]}\` as a name, and the lexer reads it as a keyword — see RESERVED`);
+// Every position a name can stand in, which is simply: anywhere but after a `.`. Listing
+// the binding forms instead — `var`, `let`, `const`, `function`, `x =` — left the parameter
+// position out, where `function f(await) { return await / 2; }` is exactly the hazard this
+// is here to catch. And the scan read the whole file rather than its *code*, so the words
+// inside a string counted: `var s = "var await = 1"` failed the gate. Both from
+// `/code-review`. app.js contains neither word anywhere today, so the strong form costs
+// nothing and has no list to keep.
+for (const m of [...code.matchAll(new RegExp(`(?<![.\\p{ID_Continue}$])(${CONTEXTUAL.join("|")})(?![\\p{ID_Continue}$])`, "gu"))]) {
+  if (mask[m.index]) continue;
+  fail("lex", `app.js uses \`${m[1]}\` as a name, and the lexer reads it as a keyword — see RESERVED`);
 }
 
 for (const [what, text] of [["app.js", code], ["the fixture", fixture.code]]) {
