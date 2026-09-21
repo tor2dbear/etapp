@@ -4,6 +4,7 @@ status: later
 tags: [ci, tooling]
 updated: 2026-09-21
 created: 2026-09-21
+order: 20
 ---
 
 ## Goal
