@@ -29,11 +29,26 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
  * @param {string} name   marker name, e.g. "md" for `// md:begin` … `// md:end`
  * @returns {{ src: string, lines: string[], region: string }}
  */
+// Each file read once, however many regions are lifted from it. app.js is 660 KB and
+// eight regions are now lifted from it across the gates — the dependency probe alone
+// takes four — so this was eight reads and eight splits of the same bytes, 4.3ms each.
+// Measured. A gate that re-reads the file it just read is also two statements of which
+// file is being judged, which is the shape check-query's own header records having
+// removed once already.
+const read = new Map();
+function sourceOf(file) {
+  const at = path.join(ROOT, file);
+  if (!read.has(at)) {
+    const src = fs.readFileSync(at, "utf8");
+    read.set(at, { src, lines: src.split("\n") });
+  }
+  return read.get(at);
+}
+
 export function liftRegion(file, name) {
   const begin = `// ${name}:begin`;
   const end = `// ${name}:end`;
-  const src = fs.readFileSync(path.join(ROOT, file), "utf8");
-  const lines = src.split("\n");
+  const { src, lines } = sourceOf(file);
   // Every match, not the first. `findIndex` answers with the earliest one, so a second
   // `// q:begin` anywhere in 11k lines would have silently moved the fence and left the
   // check reading a region nobody meant. A duplicate marker is a mistake either way, so

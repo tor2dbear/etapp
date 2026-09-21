@@ -563,8 +563,19 @@ async function listPucks() {
     });
   }
   const filter = opts.status ? String(opts.status) : null;
-  const order = Object.fromEntries(STATUSES.map((s, i) => [s, i]));
-  pucks.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || b.updated.localeCompare(a.updated));
+  // `Object.fromEntries` hands back an ordinary object, so `order["constructor"]` was a
+  // function rather than undefined, `??` did not fire, and the subtraction was NaN — an
+  // intransitive comparator, which is the failure the note twenty lines below records
+  // having paid for once already. A status is free text in a puck's frontmatter and this
+  // command does not check it against the vocabulary, so the key is reachable. It is
+  // latent rather than live: the listing groups by STATUSES afterwards, so the sort only
+  // orders within a group, and I could not make it misorder at any size I tried. A NaN
+  // comparator is not a thing to leave in on those grounds.
+  // A `Map`, which is what `frontmatter.mjs` says the harvester's indexes are for exactly
+  // this reason — rather than building the hazard with `fromEntries` and copying out of it.
+  const order = new Map(STATUSES.map((s, i) => [s, i]));
+  const rank = (p) => order.get(p.status) ?? 9;
+  pucks.sort((a, b) => rank(a) - rank(b) || b.updated.localeCompare(a.updated));
   let shown = 0;
   for (const s of STATUSES) {
     if (filter && s !== filter) continue;

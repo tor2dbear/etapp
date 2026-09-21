@@ -25,21 +25,27 @@
 // Node builtins only, like the rest of scripts/.
 import { lcg } from "./lib/fuzz.mjs";
 import { liftRegion } from "./lib/region.mjs";
+import { reporter } from "./lib/report.mjs";
 
 // The whole app.js source, read once — section 6 below scans it for unguarded URL
 // decodes and used to read the 656 KB file a second time to do so.
 const { src: APP_SRC, region: GRAMMAR } = liftRegion("app.js", "q");
+// The grammar's tables go through `table()`, which the board defines once for every
+// lookup table it has — outside this fence, in its own. Lifted rather than supplied:
+// a hand-written `table` here would be a second answer to "what does a lookup table
+// inherit", which is the question that file exists to settle.
+const { region: DICT } = liftRegion("app.js", "dict");
 
 function loadGrammar() {
-  // No prelude. There was one, supplying `TERMINAL` and `isFlagged` by hand because
-  // they sat outside the fence — and the hand-written `isFlagged` was `!!i.flagged`,
-  // a field app.js never sets, so `is:flagged` was checked against a predicate that
-  // could not fire. Both definitions moved inside the fence instead. If the region
-  // ever reaches for a name it does not define, this throws rather than being handed
-  // a stub that agrees with nothing.
+  // No prelude written by hand. There was one, supplying `TERMINAL` and `isFlagged`
+  // because they sat outside the fence — and the hand-written `isFlagged` was
+  // `!!i.flagged`, a field app.js never sets, so `is:flagged` was checked against a
+  // predicate that could not fire. Both definitions moved inside the fence instead. If
+  // the region reaches for a name it does not define, this throws rather than being
+  // handed a stub that agrees with nothing.
   // eslint-disable-next-line no-new-func
   return new Function(
-    `"use strict";${GRAMMAR};` +
+    `"use strict";${DICT};${GRAMMAR};` +
       "return { parseQuery, serializeTerms, tokenize, runQuery, FIELDS, IS_STATES, FIELD_ALIAS, IS_ALIAS };"
   )();
 }
@@ -51,8 +57,7 @@ const rt = (s) => G.serializeTerms(G.parseQuery(s));
 // nothing saying why they differed — a fuzz that breaks tends to break in floods, and
 // the first handful name the defect as well as a hundred do.
 const BAIL = 8;
-const failures = [];
-const fail = (check, detail) => failures.push([check, detail]);
+const { failures, fail, report } = reporter("query grammar");
 
 // ── the corpus ───────────────────────────────────────────────────────────────
 // Every documented form in AGENTS.md, every alias, and the shapes that broke.
@@ -63,6 +68,20 @@ const CORPUS = [
   "target:<=2026-11-30", "updated:>=2026-01-01", "created:>2020-01-01",
   "target:<2026-06-01", "updated:=2026-01-01", "parent:auth", "etapp:auth", "epic:auth",
   '"grep context"', "has:priority", "-has:priority", "-has:agent", "-has:target",
+  // The names every JavaScript object inherits, as their own equivalence class: the
+  // grammar's tables are indexed by what a term names, so `is:constructor` used to reach
+  // `IS_ALIAS["constructor"]` and get the Object constructor back. It was inert even
+  // then, because the *next* lookup missed on the stringified function — two pollutions
+  // cancelling, which is exactly the kind of accident a corpus should not rely on.
+  //
+  // In the corpus and deliberately not in the fuzz alphabet: `ATOMS` feeds a seeded
+  // sequence, so adding to it reshuffles all 200,000 inputs. It did, and the run came
+  // back green on a mutation that had been red — the date-quoting one — because the
+  // input that caught it was no longer generated. Coverage bought by moving other
+  // coverage is not coverage.
+  "is:constructor", "is:__proto__", "has:toString", "has:valueOf", "status:constructor",
+  "agent:constructor", "owner:valueOf", "tag:__proto__", "parent:hasOwnProperty",
+  "-agent:toString", "constructor:now", "toString", "__proto__",
   "is:ready", "is:blocked", "is:flagged", "is:stale", "is:adapted", "is:done",
   "is:blocking", "is:parent", "is:member", "is:standalone", "is:orphan", "is:etapp",
   "is:parent,member", "-is:blocked",
@@ -179,6 +198,36 @@ const ITEM = {
   repoName: "R", status: "now", issue: null, parentRef: null, children: [], blockedBy: [],
   signals: [], native: true, priority: null, agent: null, owner: null,
 };
+// A puck whose free-text fields are named after things every object inherits. `agent:`,
+// `owner:` and `tags:` are written by hand in someone else's repository, and `tags` is
+// the one the harvester does not slugify, so `__proto__` arrives at the board as typed.
+// Built from `ITEM` rather than beside it: a field added to the board's shape and not to
+// this copy would leave the check asking its question of a puck the board never produces.
+const POLLUTED = {
+  ...ITEM,
+  id: "p", title: "polluted", tags: ["__proto__", "toString"], agent: "constructor", owner: "valueOf",
+};
+// Each of these asks a table a question under a key it inherits. The answer has to be
+// the honest one — the puck matches on the value it really carries and nothing else —
+// rather than whatever `Object.prototype` had at that name.
+for (const [q, want] of [
+  ["agent:constructor", true], ["agent:toString", false],
+  ["owner:valueOf", true], ["owner:constructor", false],
+  ["tag:__proto__", true], ["tag:constructor", false],
+  ["is:constructor", false], ["has:valueOf", false],
+  ["status:toString", false], ["-agent:constructor", false],
+]) {
+  let hit;
+  try {
+    hit = G.runQuery(POLLUTED, G.parseQuery(q));
+  } catch (e) {
+    fail("inherited", `${JSON.stringify(q)} threw: ${e.message}`);
+    continue;
+  }
+  if (hit !== want) {
+    fail("inherited", `${JSON.stringify(q)} ${hit ? "matches" : "does not match"} the polluted puck, expected the opposite`);
+  }
+}
 for (const [q, want] of [["don't", true], ["don't ship", true], ["ship", true], ["dont", false]]) {
   const hit = G.runQuery(ITEM, G.parseQuery(q));
   if (hit !== want) fail("search", `${JSON.stringify(q)} ${hit ? "matches" : "does not match"} ${JSON.stringify(ITEM.title)}, expected the opposite`);
@@ -261,15 +310,10 @@ for (const name of ["flagged", "blocked", "blocking", "parent", "member", "adapt
   });
 }
 
-if (failures.length) {
-  console.error(`✗ query grammar: ${failures.length} failure(s)\n`);
-  for (const [check, detail] of failures) console.error(`  [${check}] ${detail}`);
-  console.error(`\n(fuzz seed ${SEED} — the same inputs every run)`);
-  process.exit(1);
-}
+report(`(fuzz seed ${SEED} — the same inputs every run)`);
 console.log(
   `✓ query: ${checked} inputs parse without throwing and round-trip to a fixed point, ` +
     `no token vanishes, ${MEANS.length} documented forms parse as AGENTS.md describes, ` +
     `${IS_NAMES.length} \`is:\` states answer as predicates rather than as stubs, ` +
-    `an apostrophe finds the puck that carries one, and nothing decodes the URL bare`
+    `an apostrophe finds the puck that carries one, a puck whose agent, owner and tags are named after things every object inherits is matched on what it carries, and nothing decodes the URL bare`
 );

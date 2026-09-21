@@ -28,7 +28,9 @@ import { liftRegion } from "./lib/region.mjs";
 // that defines what it is testing has already been written in this repo once, and it
 // certified a predicate that could not fire.
 function board() {
-  const parts = ["term", "ref", "dep"].map((n) => liftRegion("app.js", n).region).join("\n");
+  // `dict` too: the board's `TERMINAL` is a lookup table now, and `table()` lives in its
+  // own fence. Lifted, not restated.
+  const parts = ["dict", "term", "ref", "dep"].map((n) => liftRegion("app.js", n).region).join("\n");
   // `"use strict"` because app.js declares it on its first line. Without it the lifted
   // bytes run in sloppy mode here and strict mode there, so an undeclared assignment or
   // a duplicate parameter would pass this gate and throw in the browser — the gate would

@@ -83,7 +83,12 @@ export function parseFrontmatter(text) {
   const afterFence = normalized.indexOf("\n", end + 1);
   const body = afterFence === -1 ? "" : normalized.slice(afterFence + 1);
 
-  const data = {};
+  // No prototype: the keys here are field names written in someone else's puck, so an
+  // ordinary object answers for `constructor` and swallows `__proto__` entirely — the
+  // field would be silently dropped rather than carried or refused. Nothing downstream
+  // reads a field by one of those names today, which makes the immunity an accident; the
+  // harvester's own indexes are all `Map`s for the same reason.
+  const data = Object.create(null);
   // The key a block sequence would continue: set when a key line carries no inline
   // value, cleared by any key that does. Only such a key can collect `- item` lines,
   // so the two spellings of a list never mix into one another.
