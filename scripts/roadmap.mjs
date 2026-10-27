@@ -19,24 +19,13 @@
 //   roadmap list [--status now]                           quick overview
 //   roadmap install-hook                                  auto-bump `updated` on commit
 //
-// Options: --dir <roadmap dir> (default "roadmap")
-//          --repo owner/repo    which repo this is, if `roadmap/README.md` does not say
-//                               (or $ROADMAP_REPO). Knowing it is what lets `depends`
-//                               and `parent` treat `you/repo#x` as local when this is
-//                               `you/repo`: without it those guards see a cross-repo
-//                               reference and leave it to the harvester.
-// Dependency-free.
+// Options: --dir <roadmap dir> (default "roadmap"). Dependency-free.
 
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { STATUSES, PRIORITIES, slugify, normalizeDate, normalizeNumber } from "./lib/adapters.mjs";
-import {
-  stripComment, stripQuotes, parseList, fieldSpan,
-  formatValue, formatLine, setField as setFieldIn, removeField as removeFieldIn,
-  splitText, frontmatterRange, refKey,
-} from "./lib/frontmatter.mjs";
+import { STATUSES, PRIORITIES, slugify, normalizeDate } from "./lib/adapters.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const argv = process.argv.slice(2);
@@ -69,71 +58,58 @@ const cmd = pos.shift();
 // ── frontmatter-aware, format-preserving field edits ──
 // We edit the raw text line-by-line inside the first `---` block so the body and
 // any other fields stay byte-identical.
-
-// The CLI reads the files the harvester reads, so it has to tolerate what the parser
-// tolerates. The parser drops a leading BOM before its fence check and this did not,
-// so every mutating command failed with "no YAML frontmatter found" on a puck the
-// board was happily showing — the editors that emit one made a puck readable but not
-// editable. The BOM is carried back out so an edit does not silently rewrite it.
-// The edit itself lives in format.js now, with the quoting rules it depends on — it
-// was here, and the board kept a copy that had drifted (the story is in format.js,
-// above `formatValue`). These two wrappers keep the CLI's own words for a file that
-// is not a puck.
-function setField(text, key, value) {
-  const out = setFieldIn(text, key, value);
-  if (out == null) fail("no YAML frontmatter found — is this a puck?");
-  return out;
+function frontmatterRange(lines) {
+  if (lines[0] !== "---") return null;
+  for (let i = 1; i < lines.length; i++) if (lines[i] === "---") return [1, i];
+  return null;
 }
 
-// A scalar field's value, through the parser's own comment rule so the CLI and the
-// harvester read a field the same way. They did not: `order: 20 # after a` reached
-// normalizeNumber as the whole string, went to null, and the puck the board shows as
-// ranked 20 was one `renumber` skipped and `move` sorted among the unranked — then
-// wrote that back. It is not only `order`; every field read here had the comment on
-// it. For a list field, use getList.
-// A scalar field, decoded — the value it denotes, not the spelling it happens to carry.
-// This handed back the raw span, which is the same trap `getList` below describes for
-// lists: `repo: "acme/widgets"` came back with its quotes, so the reference rule never
-// recognised the repo as this one and every guard built on it was off. One caller had
-// already worked around it by calling `stripQuotes` on the title itself; the one reading
-// `parent` had not, so a quoted parent walked past the cycle check.
+function formatValue(key, value) {
+  // Inline arrays (tags, depends) — one shape for every list field.
+  if (Array.isArray(value)) return `[${value.join(", ")}]`;
+  if (key === "tags") return "[]";
+  const s = String(value);
+  if (key === "title" && /[:#]/.test(s)) return JSON.stringify(s);
+  return s;
+}
+
+function setField(text, key, value) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const range = frontmatterRange(lines);
+  if (!range) fail("no YAML frontmatter found — is this a puck?");
+  const [start, end] = range;
+  const line = `${key}: ${formatValue(key, value)}`;
+  let replaced = false;
+  for (let i = start; i < end; i++) {
+    if (new RegExp(`^${key}:`).test(lines[i])) { lines[i] = line; replaced = true; break; }
+  }
+  if (!replaced) lines.splice(end, 0, line); // insert before closing fence
+  return lines.join(nl);
+}
+
 function getField(text, key) {
-  const { lines } = splitText(text);
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
   const range = frontmatterRange(lines);
   if (!range) return null;
-  const at = fieldSpan(lines, range[0], range[1], key);
-  return at ? stripQuotes(at.value) : null;
-}
-
-// A list field's items, decoded. Both spellings land here: an inline `[a, b]` through
-// parseList, a block sequence through its own lines.
-//
-// This used to go the long way round — flatten the sequence back into `[a, b]` text,
-// hand that to the caller, and have the caller parseList it apart again. The shape in
-// the middle had no reader: all three callers undid it on the next line. It cost two
-// rounds of review to make that round trip lossless (quote-aware splitting so the
-// join survived, re-encoding so the split did), and `- ui, api` — one tag, because a
-// sequence item owns its whole line — was two tags until the second of them. A shape
-// invented to be dismantled is worth neither.
-function getList(text, key) {
-  const { lines } = splitText(text);
-  const range = frontmatterRange(lines);
-  if (!range) return [];
-  const at = fieldSpan(lines, range[0], range[1], key);
-  if (!at) return [];
-  if (at.count === 1) return parseList(at.value);
-  return lines
-    .slice(at.index + 1, at.index + at.count)
-    .map((l) => stripQuotes(stripComment(l.replace(/^\s*-\s+/, ""))))
-    .filter(Boolean);
+  for (let i = range[0]; i < range[1]; i++) {
+    const m = new RegExp(`^${key}:\\s*(.*)$`).exec(lines[i]);
+    if (m) return m[1].trim();
+  }
+  return null;
 }
 
 // Delete a frontmatter field line (no-op if absent). Keeps everything else
 // byte-identical, same as setField.
 function removeField(text, key) {
-  const out = removeFieldIn(text, key);
-  if (out == null) fail("no YAML frontmatter found — is this a puck?");
-  return out;
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const range = frontmatterRange(lines);
+  if (!range) fail("no YAML frontmatter found — is this a puck?");
+  for (let i = range[0]; i < range[1]; i++) {
+    if (new RegExp(`^${key}:`).test(lines[i])) { lines.splice(i, 1); break; }
+  }
+  return lines.join(nl);
 }
 
 // ── locate a puck file by slug: roadmap/<slug>.md | roadmap/<slug>/README.md ──
@@ -163,16 +139,13 @@ async function cmdNew() {
   await mkdir(DIR, { recursive: true });
   if (puckPath(slug)) fail(`a puck "${slug}" already exists`);
 
-  // Through the owner, every line. `status`, `updated` and `created` were going in raw
-  // here — safe only because STATUSES is closed and TODAY is ISO, which is the kind of
-  // "safe today" this review keeps finding on the other side of.
   const fm = [
     "---",
-    formatLine("title", title),
-    formatLine("status", status),
-    ...(tags.length ? [formatLine("tags", tags)] : []),
-    formatLine("updated", TODAY),
-    formatLine("created", TODAY),
+    `title: ${/[:#]/.test(title) ? JSON.stringify(title) : title}`,
+    `status: ${status}`,
+    ...(tags.length ? [`tags: [${tags.join(", ")}]`] : []),
+    `updated: ${TODAY}`,
+    `created: ${TODAY}`,
     "---",
     "",
     "## Goal",
@@ -205,7 +178,10 @@ async function cmdTag() {
   const slug = pos.shift();
   if (!slug || pos.length === 0) fail("usage: roadmap tag <slug> +add -remove …");
   const { path: p, text } = await readPuckOrFail(slug);
-  const set = new Set(getList(text, "tags"));
+  const cur = getField(text, "tags");
+  const set = new Set(
+    (cur ? cur.replace(/^\[|\]$/g, "").split(",") : []).map((s) => s.trim()).filter(Boolean),
+  );
   for (const op of pos) {
     if (op.startsWith("-")) set.delete(slugify(op.slice(1)));
     else set.add(slugify(op.replace(/^\+/, "")));
@@ -213,73 +189,7 @@ async function cmdTag() {
   let out = setField(text, "tags", [...set]);
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
-  console.log(`✓ ${slug} tags: ${formatValue("tags", [...set])}  (updated ${TODAY})`);
-}
-
-// Which repo this checkout is, as the board names it — `owner/repo`. **Declared, never
-// discovered.** It matters because `auth` and `owner/repo#auth` are the same reference
-// when `owner/repo` is this repo, and without the answer three guards let the qualified
-// spelling past: the self-check, the existence check, and the loop walk.
-//
-// The first version asked `git remote get-url origin`, and that was wrong twice over.
-// It is confidently wrong rather than silent — a local-path clone answers
-// `checkouts/widgets`, a nested GitLab group answers `sub/widgets`, a fork answers the
-// fork's name while `sources.json` says the upstream's — and it is reconfigurable from
-// outside the repo: one `url.<base>.insteadOf` line rewrites the answer and the
-// self-dependency guard is off again. Measured, both. The immediately preceding change
-// to this repository spent its whole review learning that git configuration is an
-// accident surface, and then this reached for it.
-//
-// Everything else in this system declares the answer: `sources.json` carries
-// `source.repo` for the harvester, `board.config.json` carries `repoUrl` for the board.
-// So: `--repo`, `ROADMAP_REPO`, or a `repo:` line in the roadmap directory's own
-// README. No answer means no answer — the guards fall back to what they did before,
-// which is to leave a cross-repo reference to the harvester.
-let SELF_REPO;
-function selfRepo() {
-  if (SELF_REPO !== undefined) return SELF_REPO;
-  const flag = typeof opts.repo === "string" ? opts.repo.trim() : "";
-  const env = (process.env.ROADMAP_REPO || "").trim();
-  let declared = flag || env;
-  if (!declared) {
-    try {
-      declared = (getField(readFileSync(path.join(DIR, "README.md"), "utf8"), "repo") || "").trim();
-    } catch {
-      declared = "";
-    }
-  }
-  // The template ships `repo: owner/repo` for you to replace. Left as it is, it is not a
-  // declaration — believing it would have the CLI quietly convinced it is a repo called
-  // `owner/repo`, which is worse than knowing nothing.
-  if (declared === "owner/repo") declared = "";
-  // Otherwise `owner/repo` or nothing. A value that is not that shape is a typo, and
-  // guessing what it meant is how the remote version went wrong.
-  SELF_REPO = /^[^/\s#]+\/[^/\s#]+$/.test(declared) ? declared : null;
-  if (declared && !SELF_REPO) fail(`repo "${declared}" is not owner/repo`);
-  return SELF_REPO;
-}
-
-// A reference as this repo would write it: the bare slug when it names a puck here,
-// unchanged otherwise. Built on the shared `refKey`, so "the same reference" means here
-// exactly what it means to the board and the harvester.
-// Said once per run, not per reference: a qualified reference with nothing declared is
-// the case where the guards quietly do less, and a contributor who copied the template
-// without filling it in would never find that out. Cheap to say, and it names the fix.
-let WARNED = false;
-function localRef(ref) {
-  const repo = selfRepo();
-  if (!repo && String(ref).includes("#") && !WARNED) {
-    WARNED = true;
-    console.error(
-      `  (no repo declared, so "${String(ref).trim()}" is treated as another repo's —` +
-        ` set repo: in ${path.relative(process.cwd(), path.join(DIR, "README.md"))}, or pass --repo)`
-    );
-  }
-  const key = refKey(ref, repo || "\u0000none");
-  const at = key.indexOf("\u0000");
-  const owner = key.slice(0, at);
-  const slug = key.slice(at + 1);
-  return repo && owner === repo ? slug : String(ref).trim();
+  console.log(`✓ ${slug} tags: [${[...set].join(", ")}]  (updated ${TODAY})`);
 }
 
 // Dependencies. Same `+add -remove` shape as `tag`, because it's the same kind of
@@ -289,20 +199,20 @@ async function cmdDepends() {
   const slug = pos.shift();
   if (!slug) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
   const { path: p, text } = await readPuckOrFail(slug);
-  // Stored as written, but matched by what the reference *is*: a puck listing
-  // `owner/repo#auth` is blocked by `auth`, so `-auth` has to reach it.
-  const stored = getList(text, "depends");
-  const set = new Map(stored.map((r) => [localRef(r), r]));
+  const cur = getField(text, "depends");
+  const list = (cur ? cur.replace(/^\[|\]$/g, "").split(",") : [])
+    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+  const set = new Set(list);
 
   if (opts.clear) {
     set.clear();
   } else {
     if (pos.length === 0) fail("usage: roadmap depends <slug> +<ref> -<ref> …   (--clear to remove all)");
     for (const op of pos) {
-      if (op.startsWith("-")) { set.delete(localRef(op.slice(1))); continue; }
-      const written = op.replace(/^\+/, "").trim();
-      if (!written) continue;
-      const ref = localRef(written);
+      if (op.startsWith("-")) { set.delete(op.slice(1)); continue; }
+      const ref = op.replace(/^\+/, "").trim();
+      if (!ref) continue;
       if (ref === slug) fail("a puck can't depend on itself");
       // A same-repo reference is checked here; a cross-repo one can only be verified
       // at harvest, where the whole board is in hand (it flags one that misses).
@@ -313,17 +223,16 @@ async function cmdDepends() {
         const loop = await dependencyPath(ref, slug);
         if (loop) fail(`that would make a dependency loop (${[slug, ...loop].join(" → ")})`);
       }
-      set.set(ref, ref);
+      set.add(ref);
     }
   }
-  const refs = [...set.values()];
 
-  let out = refs.length ? setField(text, "depends", refs) : removeField(text, "depends");
+  let out = set.size ? setField(text, "depends", [...set]) : removeField(text, "depends");
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
   console.log(
-    refs.length
-      ? `✓ ${slug} depends: ${formatValue("depends", refs)}  (updated ${TODAY})`
+    set.size
+      ? `✓ ${slug} depends: [${[...set].join(", ")}]  (updated ${TODAY})`
       : `✓ ${slug} depends cleared  (updated ${TODAY})`,
   );
 }
@@ -338,12 +247,10 @@ async function dependencyPath(from, target, seen) {
   if (from === target) return [from];
   const p = puckPath(from);
   if (!p) return null;
-  // Every reference that lands in this repo, however it was spelled. A `#` used to stop
-  // the walk unconditionally, so a loop that went out through the qualified name of this
-  // very repo came back unseen.
-  const deps = getList(await readFile(p, "utf8"), "depends")
-    .map(localRef)
-    .filter((x) => !x.includes("#"));
+  const raw = getField(await readFile(p, "utf8"), "depends") || "";
+  const deps = raw.replace(/^\[|\]$/g, "").split(",")
+    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
+    .filter((x) => x && !x.includes("#"));
   for (const d of deps) {
     const rest = await dependencyPath(d, target, seen);
     if (rest) return [from, ...rest];
@@ -355,16 +262,11 @@ async function cmdIssue() {
   const slug = pos.shift();
   const num = pos.shift();
   if (!slug || !num) fail("usage: roadmap issue <slug> <number>");
-  // Validated here rather than left to Number(), which turns a typo into NaN — and
-  // `issue: NaN` is written, reported as a success, and then read back as null by
-  // the harvester. The link and both drift signals disappear with nothing said.
-  const n = normalizeNumber(num);
-  if (n == null) fail(`issue must be a number — got "${num}"`);
   const { path: p, text } = await readPuckOrFail(slug);
-  let out = setField(text, "issue", n);
+  let out = setField(text, "issue", Number(num));
   out = setField(out, "updated", TODAY);
   await writeFile(p, out);
-  console.log(`✓ ${slug} issue #${n}  (updated ${TODAY})`);
+  console.log(`✓ ${slug} issue #${num}  (updated ${TODAY})`);
 }
 
 // The horizon. A calendar date so it sorts and compares without a period parser;
@@ -418,13 +320,7 @@ async function cmdParent() {
   if (clearing) {
     out = removeField(text, "parent");
   } else {
-    // `parent` uses the same reference grammar as `depends`, so it goes through the same
-    // `localRef`. It did not until now, and the three guards below had the identical
-    // hole: `roadmap parent x owner/repo#x` from inside `owner/repo` wrote a puck that
-    // is its own etapp — which the harvester then flags and silently cuts. The fix for
-    // `depends` sat 130 lines up, and this is what it means to fix a call site rather
-    // than give the rule an owner.
-    const v = localRef(String(ref || "").trim());
+    const v = String(ref || "").trim();
     if (!v) fail("usage: roadmap parent <slug> <parent-slug|owner/repo#slug>   (--clear to remove)");
     if (v === slug) fail("a puck can't be its own etapp");
     // Same-repo references are checked here; a cross-repo one can only be verified
@@ -440,7 +336,7 @@ async function cmdParent() {
         seen.add(cur);
         const path2 = puckPath(cur);
         if (!path2) break;
-        cur = localRef(getField(await readFile(path2, "utf8"), "parent") || "");
+        cur = getField(await readFile(path2, "utf8"), "parent");
       }
     }
     out = setField(text, "parent", v);
@@ -557,25 +453,14 @@ async function listPucks() {
     const text = await readFile(file, "utf8");
     pucks.push({
       slug,
-      title: getField(text, "title") || slug,
+      title: (getField(text, "title") || slug).replace(/^["']|["']$/g, ""),
       status: getField(text, "status") || "inbox",
       updated: getField(text, "updated") || "",
     });
   }
   const filter = opts.status ? String(opts.status) : null;
-  // `Object.fromEntries` hands back an ordinary object, so `order["constructor"]` was a
-  // function rather than undefined, `??` did not fire, and the subtraction was NaN — an
-  // intransitive comparator, which is the failure the note twenty lines below records
-  // having paid for once already. A status is free text in a puck's frontmatter and this
-  // command does not check it against the vocabulary, so the key is reachable. It is
-  // latent rather than live: the listing groups by STATUSES afterwards, so the sort only
-  // orders within a group, and I could not make it misorder at any size I tried. A NaN
-  // comparator is not a thing to leave in on those grounds.
-  // A `Map`, which is what `frontmatter.mjs` says the harvester's indexes are for exactly
-  // this reason — rather than building the hazard with `fromEntries` and copying out of it.
-  const order = new Map(STATUSES.map((s, i) => [s, i]));
-  const rank = (p) => order.get(p.status) ?? 9;
-  pucks.sort((a, b) => rank(a) - rank(b) || b.updated.localeCompare(a.updated));
+  const order = Object.fromEntries(STATUSES.map((s, i) => [s, i]));
+  pucks.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || b.updated.localeCompare(a.updated));
   let shown = 0;
   for (const s of STATUSES) {
     if (filter && s !== filter) continue;
@@ -620,20 +505,15 @@ async function allPucks() {
       text,
       status: getField(text, "status") || "inbox",
       updated: getField(text, "updated") || "",
-      // Finite-or-null, the same rule the harvester reads this field by. A bare
-      // `Number()` yields NaN for a hand-typed `order: high`, and NaN is falsy, so
-      // `rankSort`'s `ao - bo || …` quietly fell through to the tiebreak — making the
-      // bad puck compare equal to *every* other one. That is an intransitive
-      // comparator, and `renumber` writes its result back into the files.
-      order: normalizeNumber(raw),
+      order: raw == null || raw === "" ? null : Number(raw),
     });
   }
   return out;
 }
 // The board's own ordering: `order` first, then freshest, then slug.
 function rankSort(a, b) {
-  const ao = Number.isFinite(a.order) ? a.order : Infinity;
-  const bo = Number.isFinite(b.order) ? b.order : Infinity;
+  const ao = a.order == null ? Infinity : a.order;
+  const bo = b.order == null ? Infinity : b.order;
   return ao - bo || b.updated.localeCompare(a.updated) || a.slug.localeCompare(b.slug);
 }
 
@@ -649,7 +529,7 @@ async function rankColumn(pucks, status, all) {
   for (let i = 0; i < column.length; i++) {
     const want = (i + 1) * 10;
     if (column[i].order === want) continue;
-    let out = setField(column[i].text, "order", want);
+    let out = setField(column[i].text, "order", String(want));
     out = setField(out, "updated", TODAY);
     await writeFile(column[i].path, out);
     changed.push(`${column[i].slug} ${column[i].order == null ? "—" : column[i].order} → ${want}`);
@@ -702,7 +582,7 @@ async function cmdMove() {
   }
   // Keep it an integer when the gap allows; decimals are legal but ugly in git.
   if (Number.isInteger(a) && Number.isInteger(b) && Math.abs(b - a) >= 2) value = Math.round(value);
-  let out = setField(me.text, "order", value);
+  let out = setField(me.text, "order", String(value));
   out = setField(out, "updated", TODAY);
   await writeFile(me.path, out);
   console.log(`✓ ${slug} order ${value} (${opts.before ? "before" : "after"} ${anchor})  (updated ${TODAY})`);
@@ -821,9 +701,6 @@ function printHelp() {
   roadmap install-hook                                auto-bump updated on commit
 
   --dir <path>   roadmap directory (default: roadmap)
-  --repo owner/repo   which repo this is, if roadmap/README.md does not say
-                      (or $ROADMAP_REPO). Without it, you/repo#x is treated as
-                      another repo's even when this is you/repo.
   statuses: ${STATUSES.join(", ")}
   priorities: ${PRIORITIES.join(", ")}`);
 }

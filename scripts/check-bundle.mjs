@@ -28,12 +28,6 @@ import { fileURLToPath } from "node:url";
 export const SERVED = {
   "index.html": /^index\.html$/,
   "app.js": /^app\.js$/,
-  // Served because the board imports it. `.js`, not `.mjs`: every other served file
-  // is `.js` and `.mjs` is the convention for the scripts/ that are not served — and
-  // one fewer extension is one fewer thing a host has to map to text/javascript. The spelling rules have to be reachable from
-  // the browser as well as from Node, and `scripts/` is excluded — which is precisely
-  // how app.js came to carry its own divergent copy of them.
-  "format.js": /^format\.js$/,
   "styles.css": /^styles\.css$/,
   _headers: /^_headers$/,
   "ROADMAP.md": /^ROADMAP\.md$/,
@@ -132,15 +126,9 @@ export async function auditBundle(root) {
     // stderr ignored, not inherited: an unzipped copy of the product is not a git
     // checkout, and `fatal: not a git repository` printed in the middle of a deploy
     // reads like the deploy broke. The on-disk reading answers there anyway.
-    // `-z`: `git ls-files` C-quotes a path containing a quote, a backslash or a
-    // non-ASCII byte, so `odd "name".txt` arrived as `"odd \\"name\\".txt"` and matched
-    // neither its `SERVED` pattern nor its `.assetsignore` entry — reported as loose,
-    // under a spelling the on-disk reading spells differently. It errs toward
-    // reporting rather than toward publishing, so it blocked a deploy rather than
-    // leaking a file, but it is the same defect `check-syntax.mjs` documents.
-    tracked = execFileSync("git", ["ls-files", "-z"],
+    tracked = execFileSync("git", ["ls-files"],
       { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-      .split("\0").filter(Boolean);
+      .split("\n").filter(Boolean);
   } catch { /* not a git checkout — the on-disk reading still answers */ }
 
   const gitignore = await read(root + ".gitignore");

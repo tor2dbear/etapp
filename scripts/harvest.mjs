@@ -13,7 +13,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openRepo } from "./lib/repo.mjs";
 import { harvestSource, STATUSES, slugify } from "./lib/adapters.mjs";
-import { itemKey, refKey } from "./lib/frontmatter.mjs";
 
 // Where the instance's own config and output live. Normally the repo this script
 // sits in; ROADMAP_ROOT points it at a different tree, which is how the demo board
@@ -54,9 +53,7 @@ const STATUS_LABEL = {
 };
 
 // Terminal statuses — a puck here is settled, so it's exempt from drift/staleness.
-// term:begin
 const TERMINAL = new Set(["done", "cancelled"]);
-// term:end
 
 // Auto-status thresholds (days). A now/next puck untouched past these is "quiet".
 const STALE_DAYS = { now: 21, next: 60 };
@@ -113,20 +110,22 @@ function computeSignals(item, nowMs, cycles, depCycles) {
   return out;
 }
 
-// One reference form for every puck-to-puck link, and it is `format.js` that says what
-// it is — the same file that owns every other question about how a puck's values are
-// spelled, reached from Node through `lib/frontmatter.mjs` and from the browser as a
-// classic script. It used to be written out here, again in app.js, and twice more in the
-// CLI, with an argument order that did not even match between the first two.
+// One reference form for every puck-to-puck link. A bare slug means "in my own
+// repo"; `owner/repo#slug` names one anywhere on the board. Both `parent` and
+// `depends` resolve through here, so there is one thing to learn and one thing to
+// get right.
 //
-// dep:begin
-// First wins, because the board's `resolveRef()` returns the first match and two pucks
-// with one (repo, slug) would otherwise resolve to different pucks on the two sides —
-// reachable with `roadmap/foo.md` beside `roadmap/foo/README.md`. Neither answer is
-// right; agreeing is, and the pair shows up as a duplicate slug either way.
+// The separator is written escaped on purpose: a literal NUL in the source makes
+// git and ripgrep treat the whole file as binary and hide its diff.
+const SEP = "\u0000";
+function refKey(ref, fromRepo) {
+  const s = String(ref || "").trim();
+  const at = s.indexOf("#");
+  return at === -1 ? fromRepo + SEP + s : s.slice(0, at) + SEP + s.slice(at + 1);
+}
 function indexByRef(items) {
   const byKey = new Map();
-  for (const it of items) if (!byKey.has(itemKey(it.repo, it.slug))) byKey.set(itemKey(it.repo, it.slug), it);
+  for (const it of items) byKey.set(it.repo + SEP + it.slug, it);
   return byKey;
 }
 
@@ -153,20 +152,9 @@ function resolveBlockedBy(items) {
   for (const it of items) {
     it.blocks = [];
     it.missingDepends = [];
-    // Two spellings of one reference are one edge. `auth` and `me/repo#auth` name the
-    // same puck from inside `me/repo`, and counting both put its id in `blockedBy`
-    // twice and this puck's id in its `blocks` twice — the blocker drawn twice, and
-    // every count of them off by one. The board's editor already refuses to write the
-    // second spelling; pucks are plain markdown that anything may write, so the reader
-    // has to hold the rule too. Deduped by key, which is what "the same reference"
-    // means here, so an unresolvable pair collapses the same way.
     const deps = [];
-    const seen = new Set();
     for (const dep of it.depends || []) {
-      const key = refKey(dep, it.repo);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const d = byKey.get(key);
+      const d = byKey.get(refKey(dep, it.repo));
       if (!d) it.missingDepends.push(dep);
       else deps.push(d);
     }
@@ -181,65 +169,29 @@ function resolveBlockedBy(items) {
   }
   for (const it of items) it.blocks.sort();
 
-  // Every puck that can reach itself. This was a back-edge walk, which flags only the
-  // pucks on the path that happened to close the loop: with `r → a → u → r` and a second
-  // way round, `r → v → u`, the puck `v` waits for itself just as much and was never
-  // flagged. Measured, and the judge missed it too until it stopped being a
-  // transliteration of this.
-  //
-  // A strongly connected component is that question asked properly: a component of more
-  // than one puck is exactly a set of pucks that all wait for each other, whichever way
-  // round you enter it. A lone puck is in a loop only if it names itself.
-  //
-  // Tarjan, iterative — a chain of pucks would otherwise be a chain of stack frames, and
-  // a deep roadmap should not be able to end the harvest with an overflow.
-  const index = new Map();
-  const low = new Map();
-  const onStack = new Set();
-  const pending = [];
+  // Depth-first walk over the dependency edges; every puck on a back edge is in a
+  // cycle. Colour: 1 = on the current path, 2 = finished.
+  const colour = new Map();
   const cycles = new Set();
-  let counter = 0;
-  for (const root of items) {
-    if (index.has(root)) continue;
-    const work = [[root, 0]];
-    while (work.length) {
-      const frame = work[work.length - 1];
-      const node = frame[0];
-      if (frame[1] === 0) {
-        index.set(node, counter);
-        low.set(node, counter);
-        counter++;
-        pending.push(node);
-        onStack.add(node);
-      }
-      const deps = edges.get(node);
-      if (frame[1] < deps.length) {
-        const d = deps[frame[1]++];
-        if (!index.has(d)) work.push([d, 0]);
-        else if (onStack.has(d)) low.set(node, Math.min(low.get(node), index.get(d)));
-        continue;
-      }
-      work.pop();
-      if (work.length) {
-        const parent = work[work.length - 1][0];
-        low.set(parent, Math.min(low.get(parent), low.get(node)));
-      }
-      if (low.get(node) === index.get(node)) {
-        const component = [];
-        let popped;
-        do {
-          popped = pending.pop();
-          onStack.delete(popped);
-          component.push(popped);
-        } while (popped !== node);
-        if (component.length > 1) for (const c of component) cycles.add(c);
-        else if (deps.includes(node)) cycles.add(node);
+  const walk = (it, path) => {
+    colour.set(it, 1);
+    path.push(it);
+    for (const d of edges.get(it)) {
+      if (colour.get(d) === 1) {
+        for (let i = path.length - 1; i >= 0; i--) {
+          cycles.add(path[i]);
+          if (path[i] === d) break;
+        }
+      } else if (!colour.has(d)) {
+        walk(d, path);
       }
     }
-  }
+    path.pop();
+    colour.set(it, 2);
+  };
+  for (const it of items) if (!colour.has(it)) walk(it, []);
   return cycles;
 }
-// dep:end
 
 // Resolve `parent` into the derived half of the hierarchy: who my children are,
 // and how far the etapp has come. Derived, never stored — a `children:` field
@@ -250,7 +202,7 @@ function resolveBlockedBy(items) {
 // and could hang a renderer, so it's cut here and flagged for a human.
 function resolveHierarchy(items) {
   const byKey = indexByRef(items);
-  const keyOf = (it) => itemKey(it.repo, it.slug);
+  const keyOf = (it) => it.repo + SEP + it.slug;
   const cycles = new Set(); // pucks whose link was cut, so the flag can say why
 
   for (const it of items) {
@@ -313,13 +265,8 @@ function resolveHierarchy(items) {
 
 function sortItems(a, b) {
   // Manual `order` first (lower = higher), then freshest `updated`, then title.
-  // `??` alone was not enough: it catches null and undefined but passes NaN straight
-  // through, and a comparator that returns NaN is read as 0 — so one puck with a
-  // junk `order` silently reordered *other* pucks, differently depending on the order
-  // they arrived in. The adapters now normalize `order` to a finite number or null;
-  // this keeps the comparator total whatever reaches it.
-  const ao = Number.isFinite(a.order) ? a.order : Number.POSITIVE_INFINITY;
-  const bo = Number.isFinite(b.order) ? b.order : Number.POSITIVE_INFINITY;
+  const ao = a.order ?? Number.POSITIVE_INFINITY;
+  const bo = b.order ?? Number.POSITIVE_INFINITY;
   if (ao !== bo) return ao - bo;
   if (a.updated !== b.updated) return (b.updated || "").localeCompare(a.updated || "");
   return a.title.localeCompare(b.title);
@@ -388,41 +335,6 @@ async function main() {
     );
   }
 
-  // The same safety one level down. The guard above only fires when *every* source
-  // failed, which is the rare shape; one source going quiet is the common one, and it
-  // republished the board without that repo's pucks. Everything pointing into it —
-  // every cross-repo `parent` and `depends` — then resolved to nothing and committed
-  // a false `parent-missing` / `depends-missing`, while the digest read an untroubled
-  // "0 items".
-  //
-  // The test is the count, not whether anything threw. Keying on `error` looked
-  // stricter and caught almost nothing: `repo.list()` answers a 404 with `[]` and a
-  // missing local directory with `[]`, so a repo gone private, a renamed default
-  // branch and a moved `roadmap/` — the ways this actually happens — all arrive as a
-  // clean zero. A source that had pucks last run and has none now is the thing worth
-  // refusing, however quietly it got there.
-  //
-  // A repo that has legitimately emptied its roadmap trips this too, which is the
-  // right way round: that is a person's decision to confirm, not a silent one to
-  // discover later, and the message says how.
-  const prev = await readJsonIfExists(path.join(ROOT, "data", "roadmap.json"));
-  const regressed = sources.filter((s) => {
-    if (s.count > 0) return false;
-    const before = prev && (prev.sources || []).find((p) => p.repo === s.repo);
-    return Boolean(before && before.count > 0);
-  });
-  if (regressed.length) {
-    throw new Error(
-      "Refusing to overwrite existing data: " +
-        regressed
-          .map((s) => `${s.repo} (${s.error || "no error — the source returned no pucks"})`)
-          .join("; ") +
-        " — harvested 0 items but had items in the previous run.\n" +
-        "If a source has genuinely emptied its roadmap, drop it from sources.json or " +
-        "let the next run through once its data/roadmap.json entry is gone.",
-    );
-  }
-
   // Reconcile pucks that link an issue against its real GitHub state.
   // ROADMAP_ISSUE_STATES names a JSON file of {"owner/repo#123": "open"|"closed"} and
   // answers from it instead of the network. A seam for fixtures, not an authoring path:
@@ -472,6 +384,7 @@ async function main() {
   // disk (everything except the timestamp), keep the previous generatedAt so the
   // output is byte-for-byte unchanged. Otherwise the hourly sync would commit a
   // new timestamp every run and spam history with no-op changes.
+  const prev = await readJsonIfExists(path.join(ROOT, "data", "roadmap.json"));
   if (prev && sameContent(prev, payload)) {
     payload.generatedAt = prev.generatedAt;
   }
@@ -526,11 +439,6 @@ function renderDigest(payload) {
   for (const s of payload.sources) {
     const kind = s.native ? "native pucks" : `adapted (${s.adapter})`;
     lines.push(`- **[${s.name}](${s.url})** — ${s.count} items, ${kind}. ${s.blurb}`);
-    // A failed source says so here. `error` was carried in the payload all along but
-    // rendered nowhere, so the committed digest read "0 items, adapted (pucks)" for a
-    // repo whose harvest had actually fallen over — the one reader most likely to
-    // notice was the only one not told.
-    if (s.error) lines.push(`  - ⚠ harvest failed: ${s.error}`);
   }
   lines.push("");
 

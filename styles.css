@@ -2820,15 +2820,32 @@ body.preload * { transition: none !important; }
        bleed out with a negative margin — cannot work, because the scroll container
        clips at its padding box: the row laid out at 8 and painted at 22.
        The bottom is deliberately larger than the sides: the last control used to end
-       10px above the screen edge, where the home indicator is and a thumb isn't. */
-    padding: 6px var(--sheet-gap) calc(24px + env(safe-area-inset-bottom));
+       10px above the screen edge, where the home indicator is and a thumb isn't.
+       No padding at the *top*: those pixels belong to the grip, which needs them to be
+       part of a box the finger can land on. See `.sheet-grip`. */
+    padding: 0 var(--sheet-gap) calc(24px + env(safe-area-inset-bottom));
   }
   /* The grip is the handle: drag down to dismiss, up to go full height. The whole
      sheet listens, but only the chrome starts a drag unconditionally — from the
-     list, a downward drag only takes over once the list is already at the top. */
+     list, a downward drag only takes over once the list is already at the top.
+     **The handle is the band, and the pill is only its mark.** Written the obvious way —
+     a 40×5 box with `margin: 4px auto 14px` — the thing carrying `touch-action: none`
+     was 5px tall, and margins belong to no element: measured at 390px, the top 30px of
+     the sheet resolved as `.sheet` (`pan-y`) for 0–9 and 16–29, and as the grip for
+     **six pixels**. So a finger aimed at the handle landed on the browser's side of the
+     line four times out of five, and a downward drag there went to the page — reported
+     from a phone as the whole page coming down with iOS's own refresh spinner at the
+     top, and *"works when I drag further down"*, which is `.sheet-head` at 30px and
+     `none`. The band owns its pixels now: the old 6px of sheet padding and both margins
+     are padding here, so the geometry is unchanged (pill 10px down, 14px under it) and
+     the target is 29px tall and the full width. The pill is a `::before`, because a
+     background on the band would paint the whole strip. */
   .sheet-grip {
-    width: 40px; height: 5px; border-radius: var(--r-pill); background: var(--line);
-    margin: 4px auto 14px; flex: none; cursor: grab;
+    padding: 10px 0 14px; flex: none; cursor: grab;
+    display: flex; justify-content: center;
+  }
+  .sheet-grip::before {
+    content: ""; width: 40px; height: 5px; border-radius: var(--r-pill); background: var(--line);
   }
   .sheet {
     transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),

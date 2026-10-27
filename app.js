@@ -1,5 +1,4 @@
 /* Roadmap aggregator UI. Reads window.__ROADMAP__ (from data/roadmap.js). */
-
 (function () {
   "use strict";
 
@@ -45,50 +44,14 @@
     requestAnimationFrame(function () { document.body.classList.remove("preload"); });
   });
 
-  // ── objects used as lookup tables ────────────────────────────────────────────
-  // A JavaScript object inherits `constructor`, `toString`, `valueOf` and the rest from
-  // `Object.prototype`, so `TABLE[k]` answers for keys nobody put there. Almost every
-  // table and map in this file is indexed by a string from outside — a URL parameter, a
-  // term someone typed, a field written in someone else's puck, where `agent:`, `owner:`
-  // and `tags:` are free text — so that answer is reachable, and it was: three ways, all
-  // measured, all recorded in `scripts/check-lookups.mjs`, which is the gate that keeps
-  // this true.
-  //
-  // So nothing in this file has a prototype to inherit from: `table()` for a lookup
-  // written out in the source, `dict()` for a map that data is poured into, and no bare
-  // `{}` in value position at all — the gate refuses one, which is what makes this a
-  // rule rather than a list of the places somebody remembered. Every read site is then
-  // safe without being touched.
-  //
-  // Not slower, measured, because a reader will wonder: a null-prototype object is in
-  // dictionary mode, but every one of these is read with a *variable* key, which takes
-  // the generic path either way and skips a prototype walk on a miss. Across a render's
-  // whole map workload — grouping, the facet counters, the comparators — it came out at
-  // 0.88–0.91× of `{}` at 138, 500 and 2000 pucks. The one loss is a constant-key read
-  // (`PROP_BY_KEY.tags`), worth 1.6µs per render against milliseconds of DOM.
-  //
-  // `table()` copies with `for…in`, so it keeps insertion order — `Object.keys(GROUPS)`
-  // is what the Display menu and ⌘K walk — and it is shallow: an object *inside* one of
-  // these tables still has `Object.prototype`, which is why the note at `valueOf` far
-  // below still stands.
-  // dict:begin
-  function table(o) {
-    var t = Object.create(null);
-    for (var k in o) t[k] = o[k];
-    return t;
-  }
-  function dict() { return table(); }
-  // dict:end
-
-  var STATUS_LABEL = table({ now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" });
+  var STATUS_LABEL = { now: "Now", next: "Next", later: "Later", inbox: "Inbox", done: "Done", cancelled: "Cancelled" };
   // Terminal statuses: settled, hidden from the active board unless "show done" is on.
-  // `TERMINAL` lives inside the `q:` fence with the query grammar that reads it —
-  // see the note there. Hoisted `var`, and every read is inside a function.
+  var TERMINAL = { done: 1, cancelled: 1 };
   // Priority is an optional, ordered field (highest → lowest). Absence = none.
   var PRIORITIES = ["urgent", "high", "medium", "low"];
-  var PRIORITY_LABEL = table({ urgent: "Urgent", high: "High", medium: "Medium", low: "Low" });
+  var PRIORITY_LABEL = { urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
   // A small priority badge: filled signal bars, Linear-style. Level → filled bars.
-  var PRIORITY_BARS = table({ urgent: 3, high: 3, medium: 2, low: 1 });
+  var PRIORITY_BARS = { urgent: 3, high: 3, medium: 2, low: 1 };
   // `null` is a value here, not a missing one — `priority` is urgent/high/medium/low **or
   // null = none** — so the badge draws its own emptiness rather than leaving that to a
   // caller. It needed no new artwork and cannot drift from the filled form, because the
@@ -120,7 +83,7 @@
   function agentLabel(a) { return a ? a.charAt(0).toUpperCase() + a.slice(1) : a; }
   // Picker options: the default disciplines ∪ any agent already in use in the data.
   function agentOptions() {
-    var set = dict();
+    var set = {};
     AGENT_DISCIPLINES.forEach(function (a) { set[a] = true; });
     (DATA.items || []).forEach(function (it) { if (it.agent) set[it.agent] = true; });
     return Object.keys(set).sort();
@@ -149,7 +112,7 @@
     b.appendChild(el("span", "agent-name", name));
     return b;
   }
-  var state = table({
+  var state = {
     // One store. Repo and agent used to live in Sets of their own, because the sidebar
     // calls them *places* — where you are, rather than something you narrowed to. That
     // distinction is real and the rows stay, but it was never a reason for a second
@@ -201,8 +164,8 @@
     // empty choice, since an empty string is indistinguishable from an absent key once
     // it has been through a saved view).
     fields: null,
-  });
-  var PRIORITY_RANK = table({ urgent: 0, high: 1, medium: 2, low: 3 });
+  };
+  var PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
   // Display preferences persist (they're settings, not a transient filter) — but they
   // persist *to the view they were set in*, not to the board as a whole. There is no
   // read here any more, and that is the point: which memory to restore is a question
@@ -219,7 +182,7 @@
     if (isNaN(t)) return null;
     return Math.floor((Date.now() - t) / 86400000);
   }
-  // `isFlagged` lives inside the `q:` fence too — see the note there.
+  function isFlagged(item) { return (item.signals || []).length > 0; }
   function itemById(id) {
     for (var i = 0; i < DATA.items.length; i++) if (DATA.items[i].id === id) return DATA.items[i];
     return null;
@@ -229,66 +192,30 @@
   // what I hold up. Only `depends:` is authored — `blocks` is the reverse edge.
   function blockerItems(item) { return (item.blockedBy || []).map(itemById).filter(Boolean); }
   function blockedItems(item) { return (item.blocks || []).map(itemById).filter(Boolean); }
-  // ref:begin
-  // Every puck-to-puck link is spelled the same way: a bare slug means "in my own
-  // repo", `owner/repo#slug` names one anywhere on the board. The rule lives in
-  // `format.js` — the one file the board, the harvester and the CLI all reach — because
-  // it had drifted into four implementations that disagreed about argument order and
-  // about whether the qualified spelling of the local repo counts as local. `refKey`
-  // answers what a reference *is*, so two spellings of one reference are one reference.
-  //
-  // Fenced because `recomputeDeps` below is a second derivation of the same graph the
-  // harvester derives, and those two cannot be merged: one runs after an optimistic
-  // edit, the other at harvest. `scripts/dep-probe.mjs` lifts these bytes and the
-  // harvester's own and runs them side by side, so "they agree" is checked.
-  function refKey(from, ref) {
-    return fmt().refKey(ref, from.repo);
-  }
+  // One reference form for every puck-to-puck link, mirroring refKey() in the
+  // harvester: a bare slug means "in my own repo", `owner/repo#slug` names one
+  // anywhere on the board.
   function resolveRef(from, ref) {
-    // Split once, then compare fields — the same answer as comparing built keys, without
-    // a string allocated per candidate. Measured: at a thousand pucks the concatenating
-    // form cost 163ms to open the blocker picker against 33ms for this one.
-    var key = refKey(from, ref);
-    var at = key.indexOf("\u0000");
-    var repo = key.slice(0, at);
-    var slug = key.slice(at + 1);
+    var s = String(ref || "").trim();
+    var at = s.indexOf("#");
+    var repo = at === -1 ? from.repo : s.slice(0, at);
+    var slug = at === -1 ? s : s.slice(at + 1);
     for (var i = 0; i < DATA.items.length; i++) {
-      if (DATA.items[i].slug === slug && DATA.items[i].repo === repo) return DATA.items[i];
+      if (DATA.items[i].repo === repo && DATA.items[i].slug === slug) return DATA.items[i];
     }
     return null;
   }
-  // How this repo would name that puck — the inverse of `refKey`, and the one place both
+  // How this repo would name that puck: a bare slug at home, `owner/repo#slug`
+  // across repos. Matches refKey() in the harvester, and is the one place both
   // `parent` and `depends` decide how a link is written.
   function refFor(from, target) {
-    return fmt().refFor(from.repo, target.repo, target.slug);
+    return target.repo === from.repo ? target.slug : target.repo + "#" + target.slug;
   }
-  // The authored list with each reference once. Everything that walks `depends:` goes
-  // through here: the derivation below, the chips in the modal, and the picker's tokens.
-  // The picker was the one that did not, so a puck listing `auth` and `me/repo#auth`
-  // showed one chip and two identical tokens, each ✕ removing both.
-  function dependRefs(item) {
-    var seen = dict();
-    var out = [];
-    (item.depends || []).forEach(function (ref) {
-      var key = refKey(item, ref);
-      if (seen[key]) return;
-      seen[key] = 1;
-      out.push(ref);
-    });
-    return out;
-  }
-  // The list a removal leaves behind: every spelling of that reference gone, not just
-  // the one the ✕ was rendered from.
-  function withoutDepend(item, ref) {
-    var key = refKey(item, ref);
-    return (item.depends || []).filter(function (r) { return refKey(item, r) !== key; });
-  }
-  // ref:end
   // The authored list, resolved — every declared blocker, landed ones included.
   // `blockedBy` is the *unfinished* subset, so editing has to work from this one:
   // you can't remove a dependency the board never showed you.
   function dependsItems(item) {
-    return dependRefs(item).map(function (r) { return resolveRef(item, r); }).filter(Boolean);
+    return (item.depends || []).map(function (r) { return resolveRef(item, r); }).filter(Boolean);
   }
   // The hierarchy, resolved. `parentRef`/`children` are ids the harvester derived
   // from the `parent:` fields — never a stored second copy, so a lookup is all the
@@ -357,14 +284,6 @@
   //
   // The cost is paid here, once: block detection below runs on lines that have
   // already been escaped, so a blockquote starts with `&gt;`, not `>`.
-  //
-  // `scripts/md-probe.mjs` lifts everything between the two markers below and runs
-  // it in Node, so CONVENTION's rendering contract is checked against the bytes the
-  // browser runs rather than against a copy of them. Code moved out of the fence
-  // leaves the check; the probe exits non-zero if either marker is missing or the
-  // region stops evaluating, so it can fail but not go quiet. The markers are
-  // matched as whole lines, which is why they carry no prose.
-  // md:begin
   function esc(s) {
     return String(s)
       .replace(/\u0000/g, "") // the inline pass parks finished HTML on NUL — keep it ours
@@ -415,20 +334,11 @@
       .replace(/(^|[\s(>])(https?:\/\/[^\s<>()]*[^\s<>().,;:!?])/g, function (_, pre, u) { return pre + hold(mdLink(u, u)); });
     out = mdEmphasis(out);
     // A held link's label can itself hold a code span, so one pass is not enough.
-    // Indices only ever point backwards, so each pass strictly shrinks the work.
-    //
-    // The loop used to run `while` a NUL was left, which terminates only as long as
-    // every NUL in the string is one of ours. That is `esc()`'s job one function
-    // away, and if it ever stopped stripping them a body carrying a bare NUL would
-    // spin here forever — a hung tab, and a CI step that hangs instead of failing.
-    // Verified: with the strip removed, the old loop never returns. Stopping when a
-    // pass changes nothing costs one comparison and cannot spin whatever arrives.
-    var prev;
-    do {
-      prev = out;
+    // Indices only ever point backwards, so this terminates.
+    while (out.indexOf("\u0000") >= 0) {
       out = out.replace(/\u0000(\d+)\u0000/g, function (_, i) { return held[+i]; });
-    } while (out !== prev);
-    return out.replace(/\u0000/g, "");
+    }
+    return out;
   }
 
   // A table is recognised only as a *pair*: a `|…|` row followed by a `|---|` rule
@@ -443,15 +353,7 @@
   // not interpreted, and "not interpreted" has to mean *shown on its own line* rather
   // than folded into the neighbouring sentence. Without them the guarantee held for
   // tables and stopped exactly where the documentation kept going.
-  // `#+\s` and `[^` arrived late, and they are the reason this list is worth
-  // re-reading against CONVENTION rather than against itself. The documented subset
-  // is `##`–`####`, so a `#` or `#####` heading is outside it — but the heading rule
-  // above has already taken every line the subset covers, which leaves exactly the
-  // unsupported ones here. Footnotes are named in CONVENTION's own list of what is
-  // not interpreted. Both were being folded into the neighbouring sentence, which is
-  // the one thing the promise forbids; they only looked right in the fixture because
-  // a blank line happened to sit under them.
-  var BLOCKISH = /^\s*(?:\||&gt;|&lt;|!\[|\[\^|#+\s|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$)/;
+  var BLOCKISH = /^\s*(?:\||&gt;|&lt;|!\[|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$)/;
   function mdCells(line) {
     return TABLE_ROW.exec(line)[1].split("|").map(function (c) { return c.trim(); });
   }
@@ -463,16 +365,7 @@
   function mdIndent(ws) { return ws.replace(/\t/g, "    ").length; }
   function renderMd(src) {
     var out = [];
-    // Split on any line ending, not on `\n`. JS counts `\r` as a line terminator, so
-    // `.` will not match one and `$` (no `m` flag) only matches at the very end of the
-    // string — meaning `(.*)$` cannot get past a trailing `\r`, and every block rule
-    // below missed a CRLF line by one character: `## H\r` was not a heading,
-    // `- a\r` was not a list item, `&gt; q\r` was not a quote. They fell through to the
-    // paragraph buffer and were *folded into the sentence around them*, which is the
-    // one thing CONVENTION promises never happens to a line the board does not know.
-    // Both other line-by-line markdown readers here already normalize first
-    // (`frontmatter.mjs`, `adapters.mjs`); this one was the odd reader out.
-    var lines = esc(src).split(/\r\n?|\n/);
+    var lines = esc(src).split("\n");
     // Open lists, innermost last: { type, indent, liOpen }. A stack rather than a
     // flag, because indentation is what tells a sub-point from a wrapped line, and
     // one flag can only ever answer "in a list, yes or no".
@@ -594,7 +487,6 @@
     if (inCode) flushCode();
     return out.join("\n");
   }
-  // md:end
 
   // ── query model ──────────────────────────────────────────────────────────────
   // What's on screen is one list of predicates. The search box, the sidebar places,
@@ -603,29 +495,12 @@
   // it. A term is { field, op, values, neg }: AND between terms, OR within a term's
   // values (`status:now,next` = now or next). Grammar is GitHub-shaped so nobody has
   // to learn it, and it is the same string an agent or a saved view writes.
-  // `scripts/check-query.mjs` lifts everything between the two markers below and runs
-  // it in Node, so the grammar's invariants are checked against the bytes the browser
-  // runs. Nothing is supplied from outside: anything moved out of the fence fails the
-  // probe loudly rather than quietly leaving the check. Whole-line markers, so they
-  // carry no prose.
-  //
-  // `TERMINAL` and `isFlagged` are in here rather than beside `STATUS_LABEL` and the
-  // signal code, which is where they read more naturally, because the probe used to
-  // hand-write them instead — and its `isFlagged` was `!!i.flagged`, a field nothing
-  // in this file ever sets. So `is:flagged` was evaluated against a predicate that
-  // could never be true, and the check would have stayed green if the real one broke.
-  // A stub is a second implementation; this file has spent six rounds on that lesson.
-  // q:begin
-  // term:begin
-  var TERMINAL = table({ done: 1, cancelled: 1 });
-  // term:end
-  function isFlagged(item) { return (item.signals || []).length > 0; }
   function lower(s) { return String(s).toLowerCase(); }
   function shortRepo(r) { return String(r).split("/").pop(); }
 
   // Fields are what a puck actually carries. `dateOf` marks the ones that compare
   // with >=/<=/>/< instead of matching a value.
-  var FIELDS = table({
+  var FIELDS = {
     status: { vals: function (i) { return [i.status]; } },
     priority: { vals: function (i) { return i.priority ? [i.priority] : []; } },
     agent: { vals: function (i) { return i.agent ? [i.agent] : []; } },
@@ -647,13 +522,13 @@
     updated: { dateOf: function (i) { return i.updated; } },
     created: { dateOf: function (i) { return i.created; } },
     target: { dateOf: function (i) { return i.target; } },
-  });
-  var FIELD_ALIAS = table({ label: "tag", labels: "tag", tags: "tag", repos: "repo", prio: "priority", discipline: "agent", etapp: "parent", epic: "parent" });
+  };
+  var FIELD_ALIAS = { label: "tag", labels: "tag", tags: "tag", repos: "repo", prio: "priority", discipline: "agent", etapp: "parent", epic: "parent" };
 
   // `is:` is the namespace for states that aren't fields — they're derived from the
   // data (by the harvester or here), so giving each its own field would invent a
   // second truth. Negate with `-is:blocked`.
-  var IS_STATES = table({
+  var IS_STATES = {
     // Ready is "pick one up, or hand it to an agent" — and a parent is neither. It
     // has no work of its own; what you take is one of its parts. Dog-fooding made
     // that concrete: `gui-hantverk` was unblocked (it declares no `depends:`) and
@@ -675,37 +550,26 @@
     parent: function (i) { return !!(i.children || []).length; },
     member: function (i) { return !!i.parentRef; },
     standalone: isStandalone,
-  });
+  };
   // Spellings that mean an existing state. Canonicalised at parse rather than
   // registered as a second predicate — which is how `orphan` used to be carried, and
   // it left the facet panel unable to tick the row a live `is:orphan` term had
   // selected, because the panel looks its values up by name. `parent` joins it here
   // rather than in `IS_STATES`, so every link and saved view written before the
   // rename keeps working *and* keeps showing.
-  var IS_ALIAS = table({ etapp: "parent", epic: "parent", orphan: "standalone" });
+  var IS_ALIAS = { etapp: "parent", epic: "parent", orphan: "standalone" };
   // The three states cover every puck between them, and the only ones counted twice
   // are the sub-parents — which genuinely are both. That's the check that the split
   // is the right one: `is:parent` + `is:member` + `is:standalone` leaves nothing out.
   function isStandalone(i) { return !i.parentRef && !(i.children || []).length; }
 
   // Split on whitespace, but keep "quoted phrases" whole so free text can contain spaces.
-  //
-  // Only `"` opens one. `'` used to as well, which meant an apostrophe opened a phrase
-  // that never closed: `don't ship` became the single token `dont ship` — the quote
-  // deleted, the space swallowed — and the board searched for a substring no body can
-  // contain. Measured against a puck titled "don't ship on friday": zero results, with
-  // nothing on screen to say why. English is full of apostrophes and `"` already does
-  // the job; AGENTS.md documents only `"grep context"`, so `'` was buying nothing.
-  // It also cost the round trip. Every chip toggle and URL write goes parse → serialize,
-  // and a quote is stripped on the way in but never written back, so a query holding one
-  // lost a character per pass. No token can carry a `"` now, which is what lets `quoted()`
-  // re-add one without escaping and makes serialize∘parse a fixed point.
   function tokenize(str) {
     var out = [], cur = "", quote = null;
     for (var i = 0; i < str.length; i++) {
       var c = str.charAt(i);
       if (quote) { if (c === quote) quote = null; else cur += c; continue; }
-      if (c === '"') { quote = c; continue; }
+      if (c === '"' || c === "'") { quote = c; continue; }
       if (/\s/.test(c)) { if (cur) { out.push(cur); cur = ""; } continue; }
       cur += c;
     }
@@ -753,13 +617,7 @@
         }
         if (FIELDS[name] && rest) {
           if (FIELDS[name].dateOf) {
-            // `[\s\S]+`, not `.+`: `.` does not match a line terminator, so a date value
-            // that is one made `exec` return null and the next line threw reading `m[1]`
-            // — inside `parseQuery`, which every render calls. `\s` splits those characters
-            // into separate tokens, but a quote shields them: `target:'\n` is the minimal
-            // case, reachable from a hand-written link or a saved view committed by hand.
-            // `rest` is non-empty here by the guard above, so this can no longer be null.
-            var m = /^(>=|<=|>|<|=)?([\s\S]+)$/.exec(rest);
+            var m = /^(>=|<=|>|<|=)?(.+)$/.exec(rest);
             terms.push({ field: name, op: m[1] || "=", values: [m[2]], neg: neg });
           } else {
             terms.push({ field: name, op: "in", values: rest.split(",").map(lower).filter(Boolean), neg: neg });
@@ -779,13 +637,7 @@
       if (t.field === "text") return p + quoted(t.values[0]);
       if (t.field === "is") return p + "is:" + t.values.join(",");
       if (t.field === "has") return p + "has:" + t.values[0];
-      // `quoted` here too, and not only on the branches below. A date value is the one
-      // the writer handed back raw, so a value carrying whitespace came apart on the way
-      // in: `target:>=` + a newline serialized to a literal newline, which `tokenize`
-      // then split on, and the term was gone by the next pass. Found by the fixed-point
-      // check rather than by reading — an ordinary date has no whitespace, so `quoted`
-      // returns it untouched and nothing about a real query changes.
-      if (t.op !== "in" && t.op !== "=") return p + t.field + ":" + t.op + quoted(t.values[0]);
+      if (t.op !== "in" && t.op !== "=") return p + t.field + ":" + t.op + t.values[0];
       return p + t.field + ":" + t.values.map(quoted).join(",");
     }).join(" ");
   }
@@ -825,7 +677,6 @@
     for (var i = 0; i < terms.length; i++) if (!termMatches(item, terms[i])) return false;
     return true;
   }
-  // q:end
 
   // The sidebar views are queries, not special cases in the filter — the same
   // strings a saved view or an agent would write. ("all" = the committed board;
@@ -836,15 +687,15 @@
   // and hiding it there would make the sidebar's count disagree with the board.
   // Standalone does carry it — an inbox puck is standalone by definition, and
   // without the exclusion the row would just re-count the inbox.
-  var VIEWS = table({
+  var VIEWS = {
     all: "-status:inbox", ready: "is:ready", inbox: "status:inbox",
     parents: "is:parent", standalone: "-status:inbox is:standalone", attention: "is:flagged",
-  });
+  };
   // Which views can reach the archive at all, and therefore have to obey the toggle.
   // `ready` and `inbox` can't (their statuses are never terminal), and `attention`
   // *wants* to — a flagged done puck is exactly what that view is for. The rest are
   // the ones that would otherwise show landed work unasked.
-  var ARCHIVABLE = table({ all: 1, parents: 1, standalone: 1 });
+  var ARCHIVABLE = { all: 1, parents: 1, standalone: 1 };
   var NOT_DONE = { field: "is", op: "is", values: ["done"], neg: true };
 
   // The two fields the sidebar navigates by. They are ordinary query fields; what makes
@@ -1054,7 +905,7 @@
     return o;
   }
   function viewParamObject() {
-    var o = dict();
+    var o = {};
     if (state.focus !== "all") o.view = state.focus;
     var q = serializeTerms(filterTerms());
     if (q) o.q = q;
@@ -1124,7 +975,7 @@
   // `q` and `collapsed` carry values the URL can't take raw: a search string, and the
   // NUL that keys the "none" bucket (see NO_VALUE) — unencoded, the parser drops it
   // and a shared link loses the fold it was supposed to carry.
-  var ENCODED_KEYS = table({ q: 1, collapsed: 1 });
+  var ENCODED_KEYS = { q: 1, collapsed: 1 };
   function viewParams() {
     var p = [];
     var o = viewParamObject();
@@ -1187,7 +1038,7 @@
   // deliberately narrowing the chain to just `priority` in the new menu would be rewritten
   // back on the next load: the round-trip bug again, one storey up.
   var STORED_SORT_V = 2;
-  var STORED_SORT_WAS = table({ priority: "priority,updated", status: "status,order" });
+  var STORED_SORT_WAS = { priority: "priority,updated", status: "status,order" };
   function upgradeStoredSort(store) {
     if (!store || store.__v >= STORED_SORT_V) return false;
     Object.keys(store).forEach(function (view) {
@@ -1205,28 +1056,8 @@
     try { raw = localStorage.getItem(DISPLAY_STORE); } catch (e) {}
     if (raw) {
       try {
-        // `table()`, because this is the one object the board *parses* rather than writes,
-        // and it is read with a name: `displayMemory` asks `displayStore()[focus]`, and
-        // `rememberDisplay` writes and deletes `store[state.focus]`.
-        //
-        // Not reachable today, and measured rather than assumed: `?view=constructor` was
-        // driven against both versions of this file in headless Chromium and neither
-        // reaches here, because `focus` has already been through `VIEWS[…]` — a `table()`
-        // since earlier in this change — and an unknown name falls back to `all`. So this
-        // is the rule holding rather than a bug closing: the object is indexed by a name,
-        // so it has no prototype, and the next reader of `focus` does not have to know
-        // that a lookup three functions away is what makes their line safe.
-        // Checked *before* wrapping, not after. `table()` answers with an object whatever it
-        // is given, so a store that parses to `null` — or to a number, or to a string, where
-        // `for…in` hands back its indices and `"x"` becomes `{ 0: "x" }` — came out truthy
-        // and shaped like a store, and this returned it instead of falling through to
-        // `migrateDisplay()`. The legacy `roadmap-*` keys were then silently skipped. That
-        // was a regression this pull request introduced when it added the `table()`, and
-        // Codex found it (#9, round 25). An array still passes, as it did before this
-        // change; that one is not mine and is left alone.
-        var parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") {
-          var o = table(parsed);
+        var o = JSON.parse(raw);
+        if (o && typeof o === "object") {
           displayMem = o;
           // Written back, or the stamp never lands and the upgrade runs again next load.
           if (upgradeStoredSort(o)) writeDisplayStore(o);
@@ -1253,7 +1084,7 @@
   // therefore what every later write looks like. A stored `done: "0"` would be a memory
   // of having changed nothing.
   function migrateDisplay() {
-    var old = dict();
+    var old = {};
     ["view", "sort", "group", "done", "empty", "props"].forEach(function (k) {
       try {
         var v = localStorage.getItem("roadmap-" + k);
@@ -1261,7 +1092,7 @@
         localStorage.removeItem("roadmap-" + k);
       } catch (e) {}
     });
-    var mem = dict();
+    var mem = {};
     if (old.view === "list") mem.layout = "list";
     // The flat key was written by the same released UI, so it carries the same two words.
     if (old.sort && old.sort !== DISPLAY_DEFAULTS.sort) mem.sort = STORED_SORT_WAS[old.sort] || old.sort;
@@ -1269,10 +1100,7 @@
     if (old.done === "1") mem.done = "1";
     if (old.empty === "0") mem.empty = "0";
     if (old.props) mem.props = old.props;
-    // Built rather than spelled: the store is read with a view name, so it is the same
-    // object as the one `displayStore` parses and it may not carry a prototype either.
-    var store = dict();
-    if (Object.keys(mem).length) store.all = mem;
+    var store = Object.keys(mem).length ? { all: mem } : {};
     store.__v = STORED_SORT_V; // already in the new spelling, so it must not be upgraded again
     writeDisplayStore(store);
     return store;
@@ -1281,7 +1109,7 @@
   // and `effectiveParams` mutate the object they are given — which here would be the
   // store itself.
   function displayMemory(focus) {
-    var mem = displayStore()[focus], o = dict();
+    var mem = displayStore()[focus], o = {};
     if (mem) DISPLAY_KEYS.forEach(function (k) { if (mem[k] != null) o[k] = String(mem[k]); });
     return o;
   }
@@ -1309,7 +1137,7 @@
   // view whose scope is Ready is not a statement about Ready.
   function rememberDisplay() {
     if (state.fromView) return;
-    var o = viewParamObject(), mem = dict();
+    var o = viewParamObject(), mem = {};
     DISPLAY_KEYS.forEach(function (k) { if (o[k] != null) mem[k] = o[k]; });
     var store = displayStore();
     if (Object.keys(mem).length) store[state.focus] = mem;
@@ -1354,27 +1182,11 @@
     });
     return hit;
   }
-  // `decodeURIComponent` throws on a malformed escape, and every caller below reads a
-  // string a person can hand-edit. Unguarded, `?q=50%` took the whole board down: the
-  // throw escaped `readUrl`, which runs before the first paint, so the IIFE never
-  // finished and the page kept only the static shell — measured at 16k of DOM against
-  // 24k, one board column instead of nine. `#50%` was quieter and no better: it threw
-  // past the render, so the board looked right while Back/Forward went unwired and the
-  // scrollport was never resolved.
-  //
-  // Every other fragile read in this file is already wrapped — localStorage, JSON.parse,
-  // history, the clipboard. These three were the exception, and they read the least
-  // trustworthy input of the lot. Falling back to the raw text is also the right answer
-  // rather than merely a safe one: `%` is an ordinary character in a search, and a hash
-  // that names no puck already has a path.
-  function safeDecode(v) {
-    try { return decodeURIComponent(v); } catch (e) { return v; }
-  }
   function readUrl() {
-    var s = location.search.replace(/^\?/, ""), got = dict();
+    var s = location.search.replace(/^\?/, ""), got = {};
     if (s) s.split("&").forEach(function (kv) {
       var i = kv.indexOf("=");
-      got[i < 0 ? kv : kv.slice(0, i)] = i < 0 ? "" : safeDecode(kv.slice(i + 1).replace(/\+/g, " "));
+      got[i < 0 ? kv : kv.slice(0, i)] = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
     });
     // Where the three levels are ordered: the view's memory over the board's defaults,
     // and the link over both. The view has to be read first — *which* memory to restore
@@ -1533,7 +1345,7 @@
   // Owner: a GitHub avatar (loaded from github.com/<handle>.png, hidden if it
   // fails). opts.name adds "@handle"; opts.link wraps it in a profile link.
   function ownerEl(handle, opts) {
-    opts = opts || dict();
+    opts = opts || {};
     var wrap = el(opts.link ? "a" : "span", "owner");
     if (opts.link) { wrap.href = "https://github.com/" + handle; wrap.target = "_blank"; wrap.rel = "noopener"; }
     wrap.title = "@" + handle;
@@ -1552,7 +1364,7 @@
   // inherits currentColor so they track light/dark + the repo accent. To add
   // one: drop its path 'd' string(s) into ICONS and reference by name. ──
   var SVGNS = "http://www.w3.org/2000/svg";
-  var ICONS = table({
+  var ICONS = {
     slash: ["M1.25 7.5a6.25 6.25 0 1 0 12.5 0 6.25 6.25 0 1 0 -12.5 0", "m3.08125 3.08125 8.8375 8.8375"],
     // alert-triangle (Feather), scaled to the 15 grid the set draws on. The set had no
     // warning mark, so the drift flag was the literal "⚠" — a text character sitting
@@ -1670,7 +1482,7 @@
             "M4.5 11.25c0.4142 0 0.75 -0.3358 0.75 -0.75s-0.3358 -0.75 -0.75 -0.75",
             "M10.5 11.25c-0.4142 0 -0.75 -0.3358 -0.75 -0.75s0.3358 -0.75 0.75 -0.75",
             "M10.5 11.25c0.4142 0 0.75 -0.3358 0.75 -0.75s-0.3358 -0.75 -0.75 -0.75"],
-  });
+  };
   function icon(name, cls) {
     var svg = document.createElementNS(SVGNS, "svg");
     svg.setAttribute("viewBox", "-0.5 -0.5 16 16");
@@ -1999,7 +1811,7 @@
         return f;
       } },
   ];
-  var PROP_BY_KEY = dict();
+  var PROP_BY_KEY = {};
   PROPS.forEach(function (f) { PROP_BY_KEY[f.key] = f; });
   var DATE_PROPS = PROPS.filter(function (f) { return f.where === "date"; }).map(function (f) { return f.key; });
   // The default set is the board as it shipped: everything on, with the dates left to the
@@ -2021,7 +1833,7 @@
   // *shows* target — show the date the ordering is about — while this rule's instinct
   // would be to suppress it. It is not the same sentence twice: the grouping buckets by
   // month ("Sep 2026") and the row says "in 5 days". The column is coarser than the row.
-  var GROUP_SAYS = table({ status: 1, repo: 1, agent: 1, priority: 1, parent: 1 });
+  var GROUP_SAYS = { status: 1, repo: 1, agent: 1, priority: 1, parent: 1 };
   function groupSays(key) { return !!GROUP_SAYS[key] && effectiveGroup() === key; }
   function propOn(key) {
     if (!state.props) return !groupSays(key);
@@ -2070,7 +1882,7 @@
   // shows more than one: two bare date strings side by side say nothing about which is
   // which, and `dateEl` used to hardcode *"Last updated"* into both its tooltip and its
   // accessible name — so the second date was not merely unlabelled but read out wrong.
-  var DATE_LABEL = table({ created: "Created", updated: "Updated", target: "Target" });
+  var DATE_LABEL = { created: "Created", updated: "Updated", target: "Target" };
   function oneDate(item, field, cls, label, mark) {
     if (field === "target") {
       if (item.target) return targetEl(item.target, cls); // already says "◷" and names itself
@@ -2210,7 +2022,7 @@
     // the cell's own pill count, so the **widest badge this cell could need** is known
     // before anything is hidden. Measuring it rather than deriving it from a digit width
     // also keeps the reservation true across a font swap, which is the paragraph below.
-    var need = dict();
+    var need = {};
     for (i = 0; i < cells.length; i++) {
       var stale = cells[i].querySelector(".list-more");
       if (stale) cells[i].removeChild(stale);
@@ -2228,7 +2040,7 @@
     });
     board.appendChild(rack);
 
-    var moreW = dict();
+    var moreW = {};
     Array.prototype.forEach.call(rack.children, function (s) {
       moreW[s.getAttribute("data-probe")] = s.getBoundingClientRect().width;
     });
@@ -2361,7 +2173,7 @@
       var r = kids[i].getBoundingClientRect();
       if (y < r.top + r.height / 2) { idx = i; break; }
     }
-    var byId = dict();
+    var byId = {};
     items.forEach(function (it) { byId[it.id] = it; });
     var seq = kids.map(function (c) { return byId[c.getAttribute("data-id")]; }).filter(Boolean);
     return { before: kids[idx] || null, prev: seq[idx - 1] || null, next: seq[idx] || null };
@@ -2395,7 +2207,7 @@
   function setHash(id) {
     var base = location.pathname + location.search;
     var url = id ? base + "#" + id : base;
-    var curId = safeDecode(location.hash.replace(/^#/, ""));
+    var curId = decodeURIComponent(location.hash.replace(/^#/, ""));
     // Mark entries we push so boot can tell a reload of an app-opened puck (state
     // set) from a genuine direct deep link (no state) and not duplicate the board.
     var st = id ? { puck: id } : null;
@@ -2405,7 +2217,7 @@
     } catch (e) {}
   }
   function itemFromHash() {
-    var h = safeDecode(location.hash.replace(/^#/, ""));
+    var h = decodeURIComponent(location.hash.replace(/^#/, ""));
     if (!h) return null;
     for (var i = 0; i < DATA.items.length; i++) if (DATA.items[i].id === h) return DATA.items[i];
     return null;
@@ -4269,7 +4081,7 @@
           host.appendChild(list);
 
           function known() {
-            var n = dict();
+            var n = {};
             DATA.items.forEach(function (it) { (it.tags || []).forEach(function (t) { n[t] = (n[t] || 0) + 1; }); });
             return Object.keys(n).sort(function (a, b) { return n[b] - n[a] || a.localeCompare(b); });
           }
@@ -4466,8 +4278,8 @@
       var defs = [{ key: "overview", label: "Overview", panel: overview }].concat(
         extraTabs.map(function (t) { t.panel = el("div", "tab-panel"); t.panel.hidden = true; return t; }));
       tabList.setAttribute("role", "tablist");
-      var tabBtns = dict();
-      var loadedSet = dict();
+      var tabBtns = {};
+      var loadedSet = {};
       var pick = function (name) {
         defs.forEach(function (d) {
           d.panel.hidden = d.key !== name;
@@ -4904,7 +4716,7 @@
       // **178** — its whole horizontal range, a list opened fully shifted sideways. Codex
       // found it (#54). Same shape and same cure as `lockedEl` in `lockScroll`, which this
       // file already chose for the identical problem: remember the box, not the question.
-      boardAt = { el: from, x: from.scrollLeft, y: from.scrollTop, group: boardEl && boardEl.dataset.group, cols: dict() };
+      boardAt = { el: from, x: from.scrollLeft, y: from.scrollTop, group: boardEl && boardEl.dataset.group, cols: {} };
       // The columns' places too, and *here* rather than at the next render: a hidden
       // scroller reports `scrollTop` as 0 (Chromium remembers it and gives it back when the
       // box is shown, but only for a box that survives). A redraw behind an open puck —
@@ -4982,7 +4794,7 @@
     // four-row view measured above would open partway down again, one box further in.
     // Caught by this rule's own check rather than by a report, which is the whole reason
     // the check for it was written the same hour.
-    colPlaces = dict();
+    colPlaces = {};
     Array.prototype.forEach.call(document.querySelectorAll(".cards[data-col]"), function (k) {
       k.scrollTop = 0;
     });
@@ -5088,7 +4900,7 @@
   // would reserve space for a control it never gets. The gutter is reserved once, by
   // `.is-tree`, and both rows land in the same place.
   function listRow(item, opts) {
-    opts = opts || dict();
+    opts = opts || {};
     var sig = signalMessages(item);
     var r = el("div", "list-row" + (sig.length ? " flagged" : "") + (item.id === selectedId ? " sel" : ""));
     r.setAttribute("data-id", item.id);
@@ -5179,7 +4991,7 @@
   // all plain text out of a harvest, so a NUL-prefixed string cannot collide with one.
   var TRAY_KEY = "\u0000tray";
   function presentKeys(items, keyOf, rank) {
-    var seen = dict(), out = [];
+    var seen = {}, out = [];
     items.forEach(function (it) { var k = keyOf(it); if (!seen[k]) { seen[k] = 1; out.push(k); } });
     return out.sort(function (a, b) {
       if (a === NO_VALUE) return 1; // "none" always sits last
@@ -5187,7 +4999,7 @@
       return rank ? rank(a) - rank(b) : a.localeCompare(b);
     });
   }
-  var GROUPS = table({
+  var GROUPS = {
     // No grouping at all: one bucket, no heading. **First in the table, which is what the
     // menus read** — both the Display list and ⌘K walk `Object.keys(GROUPS)`. "None" is the
     // one entry that is not a field to bucket by but the absence of one, so it belongs at
@@ -5238,7 +5050,7 @@
       field: "repo",
       keyOf: function (i) { return i.repo; },
       keys: function (items) {
-        var order = dict();
+        var order = {};
         DATA.sources.forEach(function (s, i) { order[s.repo] = i; });
         return presentKeys(items, this.keyOf, function (k) { return order[k] == null ? 999 : order[k]; });
       },
@@ -5268,7 +5080,7 @@
       field: "parent",
       keyOf: function (i) { return i.parentRef || NO_VALUE; },
       keys: function (items) {
-        var order = dict();
+        var order = {};
         DATA.items.forEach(function (it, i) { order[it.id] = i; }); // parents in board order
         return presentKeys(items, this.keyOf, function (k) { return order[k] == null ? 1e9 : order[k]; });
       },
@@ -5314,12 +5126,12 @@
       labelOf: function (k) { return k === NO_VALUE ? "No priority" : (PRIORITY_LABEL[k] || k); },
       write: function (item, k) { changePriority(item, k === NO_VALUE ? null : k); },
     },
-  });
+  };
   // The groupings that need the list. `parent` is a hierarchy and cannot be columns;
   // `none` is the absence of columns, which is the same thing said the other way. One
   // table rather than two `=== "parent"` tests, because the second one is exactly how the
   // first came to be forgotten in `effectiveParams`.
-  var LIST_ONLY = table({ parent: 1, none: 1 });
+  var LIST_ONLY = { parent: 1, none: 1 };
   // Grouping by a field the view has already fixed makes one group named after the
   // view — "INBOX 11" under a header that says "Inbox 11". Derived from the columns
   // the view can show rather than from the view's name, so a future single-status
@@ -5387,7 +5199,7 @@
   function groupsOf(visible) {
     var g = activeGroup();
     var keys = g.keys(visible);
-    var byKey = dict();
+    var byKey = {};
     keys.forEach(function (k) { byKey[k] = []; });
     visible.forEach(function (it) {
       var k = g.keyOf(it);
@@ -5524,7 +5336,7 @@
   function renderHiddenTray(g, groups) {
     var hidden = hiddenColumns(g, groups);
     if (!hidden.length) return;
-    trayColumns = { g: g, keys: dict() };
+    trayColumns = { g: g, keys: {} };
     hidden.forEach(function (h) { trayColumns.keys[h.key] = 1; });
     var tray = el("div", "column hidden-cols");
     var head = el("div", "col-head");
@@ -5543,13 +5355,34 @@
     hidden.forEach(function (h) {
       var b = el("button", "row hidden-col");
       b.type = "button";
-      b.title = "Show " + h.label + " again";
+      // Two causes, two sentences — and until this was written the archive borrowed the
+      // query's. `Show Done again` is a promise about *one column*, which is exactly what
+      // the eye delivers when a term hid it: `unhideColumn` mends that term and nothing
+      // else. The archive has no such per-column lever — `liftArchive` writes
+      // `state.showDone`, one switch for all of `TERMINAL` — so the same sentence over the
+      // same eye promised one column and gave every archived card on the board.
+      // Reported from the board, and the report's second half is the proof rather than a
+      // second fault: `⋯ → Hide column` on Cancelled writes `-status:cancelled` and hides
+      // *only* that, so the column menu keeps its word while the eye beside it does not.
+      // Measured on the live data: the tray offered `Done 142` and `Cancelled 2`, and the
+      // eye on Done put both on the board. Not a status-only fault either — two repos
+      // entirely in the archive give `Beta 3` and `Landed 1`, and the eye on Beta brings
+      // both *and* grows the column already standing (5 → 7), because that is what the
+      // switch does.
+      //
+      // So the row says which category is holding it, in the same words `archivedMark`
+      // uses one wall over — the board already had the vocabulary and the tray was the
+      // one place not speaking it. The two are deliberately one door (*"the same repair
+      // in a different place"*); this is what makes them carry the same sign.
+      b.title = h.archive ? "Show archived pucks" : "Show " + h.label + " again";
       if (g.cls) b.classList.add(g.cls(h.key));
       b.appendChild(el("span", "swatch"));
       b.appendChild(el("span", "hidden-label", h.label));
       // The count is the point: it is what the chip row cannot say, and what you
-      // actually want to know before deciding to bring a column back.
-      b.appendChild(el("span", "count", String(h.n)));
+      // actually want to know before deciding to bring a column back. The word rides
+      // *in* it rather than beside it, for `.col-archived`'s own reason one file over:
+      // a bare number next to a column's name reads as a count of that column.
+      b.appendChild(el("span", "count", h.archive ? h.n + " archived" : String(h.n)));
       b.appendChild(icon("eye"));
       b.addEventListener("click", function () { unhideColumn(g, h.key, h.archive); });
       list.appendChild(b);
@@ -5588,7 +5421,7 @@
         })
       );
       var would = DATA.items.filter(function (it) { return runQuery(it, free); });
-      var count = dict();
+      var count = {};
       would.forEach(function (it) { var k = g.keyOf(it); count[k] = (count[k] || 0) + 1; });
       return { keys: g.keys(would), count: count };
     });
@@ -5613,7 +5446,7 @@
     // one people actually press stays invisible.
     var archiveOff = !state.showDone && ARCHIVABLE[state.focus];
     if (!groupConstrained(g) && !archiveOff) return [];
-    var here = dict();
+    var here = {};
     shown.forEach(function (grp) { here[grp.key] = 1; });
     // Two passes, because the two causes need different answers. `byQuery` is the board
     // with the query's own terms lifted and the toggle left as it stands: a column
@@ -5623,7 +5456,7 @@
     // one repo while the archive is off would advertise its landed pucks as waiting.
     var byQuery = wouldShow(g, false);
     var full = archiveOff ? wouldShow(g, true) : byQuery;
-    var reachable = dict();
+    var reachable = {};
     byQuery.keys.forEach(function (k) { reachable[k] = 1; });
     // A column the *archive* hid needs no name to come back — its eye presses the
     // toggle, and a toggle takes no argument. Demanding a nameable term anyway lost
@@ -5862,7 +5695,7 @@
   // list has to slot a fully-archived group into its own place rather than at the end.
   function archivedPerColumn(shownRoots) {
     if (state.showDone || !ARCHIVABLE[state.focus]) return null;
-    var count = dict(), order = [];
+    var count = {}, order = [];
     withShowDone(true, function () {
       var q = activeTerms();
       var all = DATA.items.filter(function (it) { return runQuery(it, q); });
@@ -5906,7 +5739,7 @@
   // appended — two functions and one fact, which is a shape this file otherwise avoids.
   // It earns the exception by being write-once-read-once within a single render: anything
   // longer-lived would be a second source of truth for where the reader is.
-  var colPlaces = dict();
+  var colPlaces = {};
   // The column the keyboard was in when the board was replaced, by the same key as the
   // places above. Null unless focus was actually inside the board — a redraw while the
   // reader is in a sheet, the sidebar or a field must not pull focus onto a column.
@@ -6179,8 +6012,8 @@
   function liftRoots(groups, only) {
     var none = null;
     groups.forEach(function (grp) { if (grp.key === NO_VALUE) none = grp; });
-    if (!none) return dict();
-    var roots = dict();
+    if (!none) return {};
+    var roots = {};
     none.items.forEach(function (it) {
       if ((it.children || []).length && (!only || only[it.id])) roots[it.id] = it;
     });
@@ -6188,7 +6021,7 @@
     return roots;
   }
   function listTree(groups, roots) {
-    var byKey = dict(), visible = dict();
+    var byKey = {}, visible = {};
     groups.forEach(function (grp) {
       byKey[grp.key] = grp;
       grp.items.forEach(function (it) { visible[it.id] = it; });
@@ -6205,7 +6038,7 @@
     });
     // Board order, `No parent` last — the order `presentKeys` would have given. The
     // synthesised headings have to land *in* it, not after everything that was found.
-    var rank = dict();
+    var rank = {};
     DATA.items.forEach(function (it, i) { rank[it.id] = i; });
     var at = function (k) { return k === NO_VALUE ? 2e9 : rank[k] == null ? 1e9 : rank[k]; };
     sections.sort(function (a, b) { return at(a.key) - at(b.key); });
@@ -6233,19 +6066,19 @@
     // heading it already had.
     var headed = null;
     if (roots) {
-      headed = dict();
+      headed = {};
       Object.keys(roots).forEach(function (id) { headed[id] = 1; });
       groups.forEach(function (grp) { if (grp.key !== NO_VALUE && grp.items.length) headed[grp.key] = 1; });
     }
     var archived = archivedPerColumn(headed);
-    var shownKeys = dict();
+    var shownKeys = {};
     groups.forEach(function (grp) { if (grp.items.length) shownKeys[grp.key] = 1; });
     // A group the archive emptied *entirely* never reaches `groups`, so it has to be put
     // back as a heading with nothing under it — the list's answer to what the tray does
     // on the board. Walked in the archive's own order so it lands in its own place
     // rather than after everything else.
     if (archived) {
-      var stubs = dict();
+      var stubs = {};
       archived.order.forEach(function (k) { if (!shownKeys[k] && archived.count[k]) stubs[k] = 1; });
       // Except where the group's own puck is archived, which under the parent grouping is
       // a thing a group can be: the heading *is* a puck there, not a label. "Archived" is
@@ -6272,7 +6105,7 @@
         if (puck && TERMINAL[puck.status]) delete stubs[k];
       });
       if (Object.keys(stubs).length) {
-        var byKey = dict();
+        var byKey = {};
         groups.forEach(function (grp) { byKey[grp.key] = grp; });
         // Walked in the archive's order so a stub lands in its own place — but only the
         // keys `stubs` named. Mapping the whole order synthesised a group for every key
@@ -6537,7 +6370,7 @@
   // are already what the old key names said, and moving them from the name to a control is
   // the whole change. `asc`/`desc` stay the spelling in the URL, where they mean the
   // literal order of the underlying value.
-  var SORT_FIELDS = table({
+  var SORT_FIELDS = {
     // `order` is the one field with no direction, and the reason is not symmetry: reversing
     // it would silently switch **dragging** off, since `manualRank()` asks for the exact key
     // `order` at the head of the chain. A control whose only visible effect is to disable a
@@ -6565,7 +6398,7 @@
       date: "created" },
     title: { label: "Title", def: "asc", asc: "A → Z", desc: "Z → A",
       text: function (i) { return i.title; } },
-  });
+  };
   var SORT_ORDER = Object.keys(SORT_FIELDS); // the catalogue's order, which the picker keeps
   // A key is a field, optionally suffixed with its direction. The suffix is written only
   // when the direction is *not* the field's default, so the shortest spelling is the
@@ -6635,7 +6468,7 @@
   // then the grammar here is clean, whereas an expansion in this map is forever and takes the
   // one-key chain's spelling with it. Before concluding that nothing reads a value, ask what
   // the *running app* writes — searching the repo answered no twice, and was wrong twice.
-  var LEGACY_SORT = table({ default: DEFAULT_SORT });
+  var LEGACY_SORT = { default: DEFAULT_SORT };
   // The keys a value actually names — **possibly none**, which is the whole reason this is
   // split out from `parseSort`. A reader that always hands back a chain cannot tell "this
   // said nothing I understand" from "this said the default", and the two are different
@@ -6643,7 +6476,7 @@
   function parseSortKeys(v) {
     var raw = String(v == null ? "" : v).trim();
     if (LEGACY_SORT[raw]) raw = LEGACY_SORT[raw];
-    var out = [], seen = dict();
+    var out = [], seen = {};
     raw.split(",").forEach(function (k) {
       k = k.trim();
       var f = sortField(k);
@@ -6781,7 +6614,7 @@
     // grouping change "simply matches nothing", and that was true of every key except the
     // one they share.
     colPlacesGroup = board.dataset.group || null;
-    colPlaces = dict();
+    colPlaces = {};
     Array.prototype.forEach.call(board.querySelectorAll(".cards[data-col]"), function (k) {
       if (k.scrollTop) colPlaces[k.dataset.col] = k.scrollTop;
     });
@@ -6887,10 +6720,10 @@
   }
 
   // The consistent view-header reflects the current focus + how many are shown.
-  var VIEW_TITLES = table({
+  var VIEW_TITLES = {
     all: "All pucks", ready: "Ready to take", inbox: "Inbox",
     parents: "Parents", standalone: "Standalone", attention: "Needs attention",
-  });
+  };
   function repoNameOf(repo) {
     for (var i = 0; i < DATA.sources.length; i++) if (DATA.sources[i].repo === repo) return DATA.sources[i].name;
     return repo.split("/").pop();
@@ -6970,7 +6803,7 @@
       }));
     }
     var repoQ = withOthers("repo"), agentQ = withOthers("agent");
-    var repo = dict(), agent = dict();
+    var repo = {}, agent = {};
     DATA.items.forEach(function (it) {
       if (runQuery(it, repoQ)) repo[it.repo] = (repo[it.repo] || 0) + 1;
       if (it.agent && runQuery(it, agentQ)) agent[it.agent] = (agent[it.agent] || 0) + 1;
@@ -7146,7 +6979,7 @@
   // actionable queue) · Inbox (triage of raw ideas, its own space) · ⚠ Needs
   // attention (drift). Each is a nav row with a live count and a clear active state.
   function viewCounts() {
-    var c = dict(), qs = dict();
+    var c = {}, qs = {};
     // Counted with the views' own queries, so a row's number can never drift from
     // what clicking it shows — the archive toggle included.
     //
@@ -7173,7 +7006,7 @@
   // The views, named once and read by both the sidebar and the ⌘K palette — a new
   // view can't now appear in one and be missing from the other, which is exactly
   // what happened to Parents (a sidebar row with no command).
-  var VIEW_DEFS = table({
+  var VIEW_DEFS = {
     // Only Inbox carries a glyph, and that is the point rather than an oversight:
     // it is the one row that is a *room* and not a slice of the board (see
     // VIEW_GROUPS), so it stands in its own section and wears the mark of one.
@@ -7184,7 +7017,7 @@
     standalone: { label: "Standalone", title: "Pucks in no tree — the loose ones" },
     ready: { label: "Ready", title: "Unblocked now/next — pick one up or hand it to an agent" },
     attention: { label: "Needs attention", title: "Pucks whose declared status disagrees with reality" },
-  });
+  };
   // Two kinds of row, answering two different questions — *Views* is the slice you
   // chose to look at, *Signals* is the board's own opinion about it. Inbox is
   // neither: it's a room you go to in order to empty it, so it stands above both
@@ -7454,7 +7287,7 @@
   // answers *which* pucks — the two never overlap. Filter shows what it's doing
   // with chips/a count; Display shows a dot when anything differs from default,
   // because "showing more" must never read as "you have narrowed something".
-  var DISPLAY_DEFAULTS = table({ view: "board", sort: null, group: "status", showDone: false, showEmpty: true });
+  var DISPLAY_DEFAULTS = { view: "board", sort: null, group: "status", showDone: false, showEmpty: true };
   var displayBtn = document.getElementById("displayBtn");
   var displayDot = document.getElementById("displayDot");
   function displayDirty() {
@@ -8093,7 +7926,7 @@
     if (!q) return cmds; // empty ⌘K → the command palette home
     var matchedCmds = cmds.filter(function (c) { return c.label.toLowerCase().indexOf(q) !== -1; });
     // Discipline shortcuts: matching labels not already active, as filter actions.
-    var tagCounts = dict();
+    var tagCounts = {};
     DATA.items.forEach(function (it) { it.tags.forEach(function (t) { tagCounts[t] = (tagCounts[t] || 0) + 1; }); });
     var tags = Object.keys(tagCounts)
       .filter(function (t) { return t.indexOf(q) !== -1 && filterValues("tag", false).indexOf(t) === -1; })
@@ -8342,11 +8175,11 @@
       var jumped = true;
       // Samma tillgänglighetsvillkor som sidomenyn, titelväxlaren och paletten:
       // en vy som inte finns i någon av dem ska inte nås av en genväg heller.
-      var open = dict();
+      var open = {};
       viewsShown(viewCounts()).forEach(function (g) { g.keys.forEach(function (x) { open[x] = 1; }); });
       // `e` is kept beside `p`: it is what the row was called, and muscle memory is not
     // worth breaking to save a letter nobody else uses.
-    var want = table({ a: "all", r: "ready", i: "inbox", p: "parents", e: "parents", s: "standalone", t: "attention" })[k];
+    var want = { a: "all", r: "ready", i: "inbox", p: "parents", e: "parents", s: "standalone", t: "attention" }[k];
       if (want && open[want]) setFocus(want);
       else jumped = false;
       clearG();
@@ -8445,7 +8278,7 @@
 
   searchInput.addEventListener("input", function (e) {
     var typed = parseQuery(e.target.value.trim());
-    var typedFields = dict();
+    var typedFields = {};
     typed.forEach(function (t) { if (t.field !== "text") typedFields[t.field + (t.neg ? "!" : "")] = 1; });
     // Predicates you didn't touch survive; a field you typed replaces that field.
     var kept = paletteBase.filter(function (t) { return !typedFields[t.field + (t.neg ? "!" : "")]; });
@@ -8548,7 +8381,7 @@
     {
       key: "tag", label: "Labels", search: "Filter labels…",
       values: function () {
-        var n = dict();
+        var n = {};
         DATA.items.forEach(function (it) { (it.tags || []).forEach(function (t) { n[t] = (n[t] || 0) + 1; }); });
         return Object.keys(n)
           .sort(function (a, b) { return n[b] - n[a] || a.localeCompare(b); })
@@ -8568,7 +8401,7 @@
     {
       key: "owner", label: "Owner",
       values: function () {
-        var seen = dict();
+        var seen = {};
         DATA.items.forEach(function (it) { if (it.owner) seen[it.owner] = 1; });
         return Object.keys(seen).sort().map(function (o) { return { value: o, label: "@" + o }; });
       },
@@ -8829,7 +8662,7 @@
     return vs.filter(function (v) { return v && v.name; });
   }
   function paramsOf(v) {
-    var o = dict();
+    var o = {};
     VIEW_KEYS.forEach(function (k) {
       if (v[k] != null && v[k] !== "") o[k] = String(v[k]);
     });
@@ -8986,7 +8819,7 @@
     var wroteFrom = state.fromView;
     commitViews(repo, views, message)
       .then(function () {
-        DATA.config = DATA.config || dict();
+        DATA.config = DATA.config || {};
         DATA.config.views = views; // optimistic: the harvest will confirm it
         // Before the repaint, not after: every one of these callbacks adjusts the
         // provenance the repaint is about to read. Renaming the view you were editing
@@ -9013,7 +8846,7 @@
     return fetch(api, { headers: headers })
       .then(function (r) { assertOk(r, errItem); return r.json(); })
       .then(function (info) {
-        var cfg = dict();
+        var cfg = {};
         try { cfg = JSON.parse(b64decode(info.content)); } catch (e) {}
         if (views.length) cfg.views = views; else delete cfg.views;
         var out = JSON.stringify(cfg, null, 2) + "\n";
@@ -9206,7 +9039,7 @@
     // the row above it.
     if (!Object.keys(ownParams()).length) {
       toast(params.view
-        ? "✗ Nothing to save — “" + ((VIEW_DEFS[params.view] || dict()).label || params.view) + "” is already a view"
+        ? "✗ Nothing to save — “" + ((VIEW_DEFS[params.view] || {}).label || params.view) + "” is already a view"
         : "✗ Nothing to save — this is the default board", true);
       return;
     }
@@ -9234,9 +9067,7 @@
   // that name where it stands, or append when the name is new. Save and update both go
   // through it, so neither can invent its own ordering rule.
   function withView(views, name, params) {
-    // `table()`, like the `dict()` `duplicateSavedView` builds its copy with: an entry is
-    // a record that then takes its keys from data, and the two are the same record.
-    var out = views.slice(), entry = table({ name: name }), at = -1;
+    var out = views.slice(), entry = { name: name }, at = -1;
     for (var k in params) entry[k] = params[k];
     for (var i = 0; i < out.length; i++) if (out[i].name === name) { at = i; break; }
     if (at < 0) out.push(entry); else out[at] = entry;
@@ -9273,7 +9104,7 @@
         var views = savedViews().filter(function (x) { return x === v || x.name !== name; });
         var at = views.indexOf(v);
         if (at < 0) return;
-        var entry = dict();
+        var entry = {};
         for (var k in v) entry[k] = v[k];
         entry.name = name;
         views[at] = entry;
@@ -9295,11 +9126,11 @@
   // the end, because a copy belongs next to what it came from; Rename is one row away
   // in the same menu.
   function duplicateSavedView(v) {
-    var taken = dict();
+    var taken = {};
     savedViews().forEach(function (x) { taken[x.name] = 1; });
     var base = v.name + " copy", name = base, n = 2;
     while (taken[name]) name = base + " " + n++;
-    var views = savedViews().slice(), entry = dict();
+    var views = savedViews().slice(), entry = {};
     for (var k in v) entry[k] = v[k];
     entry.name = name;
     views.splice(views.indexOf(v) + 1, 0, entry);
@@ -9383,7 +9214,7 @@
       // Read as the column it hides, not as the predicate it is: `has:priority` is
       // how "hide the No priority column" is spelled, so that is what it should say.
       else if (t.field === "has") {
-        var hl = (fieldByKey(t.values[0]) || dict()).label || t.values[0];
+        var hl = (fieldByKey(t.values[0]) || {}).label || t.values[0];
         label = t.neg ? "No " + lower(hl) : "Has " + lower(hl);
       }
       else if (f) label = f.label + ": " + t.values.map(function (v) { return valueLabel(f, v); }).join(", ");
@@ -9413,10 +9244,10 @@
   // to FILTER_FIELDS keeps that decision intact: this is how a term is *written*, not a
   // dimension you can filter by. Reachable in one click ever since a repo column could
   // be hidden; before that it needed a hand-typed query, which is why it sat unseen.
-  var PLACE_FIELDS = table({
+  var PLACE_FIELDS = {
     repo: { label: "Repo", value: function (v) { return repoNameOf(resolveRepo(v) || v) || v; } },
     agent: { label: "Agent", value: function (v) { return agentLabel(v); } },
-  });
+  };
 
   function valueLabel(f, v) {
     var all = f.values();
@@ -9533,7 +9364,7 @@
   // Deploy-your-own config: title/description/source link come from
   // board.config.json (embedded in the payload), so nothing here is hardcoded
   // to one owner. Falls back to the static HTML defaults when absent.
-  var CFG = DATA.config || dict();
+  var CFG = DATA.config || {};
   // Optional ribbon banner (config-driven, e.g. the live-demo strip) — rendered
   // here so the demo's chrome isn't baked into index.html, which lets the mirror
   // ship index.html verbatim and keep the demo's structure in sync with the tool.
@@ -9630,7 +9461,7 @@
   // the second change on the original text and the demo would quietly lie about what
   // the product does.
   function installDemoGitHub() {
-    var files = dict(); // "owner/repo:path" → text
+    var files = {}; // "owner/repo:path" → text
     var sha = 0;
     // Sync's run counter. It starts at 1 so the first read (the one `runSync` takes
     // *before* dispatching) has a run to answer with, and the dispatch bumps it — which
@@ -9652,20 +9483,20 @@
         if (DATA.items[i].repo === repo && DATA.items[i].sourcePath === path) { it = DATA.items[i]; break; }
       }
       if (!it) return "---\ntitle: Untitled\nstatus: inbox\nupdated: " + today() + "\n---\n\n";
-      // Every line through the owner, the same as a real write — the demo has to
-      // produce the file the product would, or it demonstrates something else.
-      var v = function (k, x) { return fmt().formatLine(k, x); };
-      var fm = ["---", v("title", it.title), v("status", it.status)];
-      if (it.tags && it.tags.length) fm.push(v("tags", it.tags));
-      if (it.priority) fm.push(v("priority", it.priority));
-      if (it.agent) fm.push(v("agent", it.agent));
-      if (it.owner) fm.push(v("owner", it.owner));
-      if (it.target) fm.push(v("target", it.target));
-      if (it.parent) fm.push(v("parent", it.parent));
-      if (it.depends && it.depends.length) fm.push(v("depends", it.depends));
-      if (it.issue) fm.push(v("issue", it.issue));
-      fm.push(v("updated", it.updated || today()));
-      if (it.created) fm.push(v("created", it.created));
+      // Quoted the same way `puckTemplate` quotes it — `formatValue` lives in the CLI,
+      // not here, and reaching for it threw the first time this ran.
+      var t = /[:#]/.test(it.title) ? JSON.stringify(it.title) : it.title;
+      var fm = ["---", "title: " + t, "status: " + it.status];
+      if (it.tags && it.tags.length) fm.push("tags: [" + it.tags.join(", ") + "]");
+      if (it.priority) fm.push("priority: " + it.priority);
+      if (it.agent) fm.push("agent: " + it.agent);
+      if (it.owner) fm.push("owner: " + it.owner);
+      if (it.target) fm.push("target: " + it.target);
+      if (it.parent) fm.push("parent: " + it.parent);
+      if (it.depends && it.depends.length) fm.push("depends: [" + it.depends.join(", ") + "]");
+      if (it.issue) fm.push("issue: " + it.issue);
+      fm.push("updated: " + (it.updated || today()));
+      if (it.created) fm.push("created: " + it.created);
       fm.push("---", "");
       return fm.join("\n") + "\n" + (it.body || "");
     }
@@ -9694,7 +9525,7 @@
       var repo = m && m[1];
       var rest = (m && m[2]) || "";
       if (!repo) return json({ message: "Not Found" }, 404);
-      var query = dict();
+      var query = {};
       (u.split("?")[1] || "").split("&").forEach(function (kv) {
         var i = kv.indexOf("=");
         if (i > 0) query[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1));
@@ -9769,7 +9600,7 @@
       // Link issue → Create issue. Answering with a number is what lets the write path
       // finish and put `issue:` in the file, which is the half worth demonstrating.
       if (rest === "/issues" && method === "POST") {
-        var body = dict();
+        var body = {};
         try { body = JSON.parse((opts && opts.body) || "{}"); } catch (e) {}
         var n = 1000 + (++sha);
         return json({
@@ -9783,7 +9614,7 @@
       var path = decodeURIComponent(mp[1]);
       var key = repo + ":" + path;
       if (method === "PUT") {
-        var body = dict();
+        var body = {};
         try { body = JSON.parse((opts && opts.body) || "{}"); } catch (e) {}
         if (body.content) files[key] = b64decode(body.content);
         return json({ content: { sha: "demo-" + (++sha) } }, 201);
@@ -9862,48 +9693,20 @@
     throw e;
   }
 
-  // How a value is spelled in a puck — quoting, list separators, which lines a field
-  // occupies. The same rules the CLI and the harvester use, from the same file, which
-  // index.html loads as a classic script just before this one.
-  //
-  // A classic script, not a module, because the board has to keep rendering from
-  // `file://` and a module does not load there at all. A dynamic import would have
-  // kept this file classic but fails on that origin too — and writing from `file://`
-  // is not hypothetical: GitHub answers `Access-Control-Allow-Origin: *`, and a bearer
-  // token is not a CORS credential, so a board opened off the filesystem with a token
-  // can reach the Contents API. It would then have had the edit controls and no rules
-  // to write with.
-  // Read at call time, not snapshotted. A `var FORMAT = globalThis.__PUCK_FORMAT__`
-  // captured at IIFE-execution time made the *order* of the two script tags
-  // load-bearing, and the format probe had grown an assertion to guard that order.
-  // Nothing calls this before a render or a write, so there is nothing to capture too
-  // early — and one fewer property for a check to have to know about.
-  function fmt() {
-    var f = globalThis.__PUCK_FORMAT__;
-    if (!f) throw new Error("format.js did not load — the page is missing its script tag");
-    return f;
-  }
-
-
-  // Format-preserving frontmatter edit. Not a mirror of `scripts/roadmap.mjs setField`
-  // any more — the same function, from format.js, which is what a mirror should have
-  // been all along.
-  //
-  // It was a copy, and it had drifted exactly where a copy does: the CLI encoded a
-  // value by what the *field* is and tolerated a leading BOM, and this did neither —
-  // seven of eight fields came back wrong to PyYAML, two of them as a file PyYAML
-  // refuses, committed to somebody else's repo. The measurements and the reason the
-  // ownership stopped halfway are written down in format.js, above `formatValue`.
-  //
-  // The null is turned into a throw here rather than at each call site: eight of them
-  // wrote `if (out == null) throw new Error("no frontmatter")` and then, on the very
-  // next line, called this again for `updated` without checking. One place to say it,
-  // and the unchecked line is covered too. (`scripts/roadmap.mjs` reached the same
-  // shape with `fail()`.)
+  // Format-preserving frontmatter edit — mirrors scripts/roadmap.mjs setField.
   function editFrontmatter(text, key, value) {
-    var out = fmt().setField(text, key, value);
-    if (out == null) throw new Error("no frontmatter");
-    return out;
+    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
+    var lines = text.replace(/\r\n/g, "\n").split("\n");
+    if (lines[0] !== "---") return null;
+    var end = -1;
+    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
+    if (end < 0) return null;
+    var out = key + ": " + value, done = false;
+    for (var j = 1; j < end; j++) {
+      if (new RegExp("^" + key + ":").test(lines[j])) { lines[j] = out; done = true; break; }
+    }
+    if (!done) lines.splice(end, 0, out);
+    return lines.join(nl);
   }
 
   // Write several frontmatter fields in ONE commit (a null value removes the key).
@@ -9920,11 +9723,8 @@
       .then(function (info) {
         var out = b64decode(info.content);
         for (var k in fields) {
-          // The value itself, not `String(value)`: `formatValue` decides by type as
-          // well as by key, so a stringified rank arrived as text and lost the one
-          // distinction `order` has. `10.5` is a number; `"10.5"` is a string that
-          // PyYAML hands back as a string, beside integer neighbours.
-          out = fields[k] == null ? removeFrontmatter(out, k) : editFrontmatter(out, k, fields[k]);
+          out = fields[k] == null ? removeFrontmatter(out, k) : editFrontmatter(out, k, String(fields[k]));
+          if (out == null) throw new Error("no frontmatter");
         }
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -9948,6 +9748,7 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = editFrontmatter(text, "status", status);
+        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -9983,7 +9784,7 @@
   }
   function changeOrder(item, order, alsoKey, group) {
     if (!ghToken()) return;
-    var fields = table({ order: order });
+    var fields = { order: order };
     var label = "reordered";
     var prevOrder = item.order, prevU = item.updated, prevKey = null, keyField = null;
     if (alsoKey && group && group.field) {
@@ -10100,13 +9901,19 @@
       });
   }
 
-  // Remove a frontmatter field line (no-op if absent) — from format.js, the same
-  // function the CLI calls. It used to mirror `roadmap.mjs`; mirroring is what
-  // drifted. Used to clear priority (absence of the field = no priority).
+  // Remove a frontmatter field line (no-op if absent) — mirrors roadmap.mjs
+  // removeField. Used to clear priority (absence of the field = no priority).
   function removeFrontmatter(text, key) {
-    var out = fmt().removeField(text, key);
-    if (out == null) throw new Error("no frontmatter");
-    return out;
+    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
+    var lines = text.replace(/\r\n/g, "\n").split("\n");
+    if (lines[0] !== "---") return null;
+    var end = -1;
+    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
+    if (end < 0) return null;
+    for (var j = 1; j < end; j++) {
+      if (new RegExp("^" + key + ":").test(lines[j])) { lines.splice(j, 1); break; }
+    }
+    return lines.join(nl);
   }
 
   // Commit a priority change via the Contents API. A null level clears the field.
@@ -10121,6 +9928,7 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = priority ? editFrontmatter(text, "priority", priority) : removeFrontmatter(text, "priority");
+        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10205,6 +10013,7 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = agent ? editFrontmatter(text, "agent", agent) : removeFrontmatter(text, "agent");
+        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10245,7 +10054,8 @@
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
-        var out = number ? editFrontmatter(text, "issue", number) : removeFrontmatter(text, "issue");
+        var out = number ? editFrontmatter(text, "issue", String(number)) : removeFrontmatter(text, "issue");
+        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10265,9 +10075,8 @@
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
         var text = b64decode(info.content);
-        // The list itself, not a rendered one: `formatValue` encodes each item, and a
-        // pre-rendered `[a, b]` would reach `encodeScalar` and come back quoted whole.
-        var out = tags.length ? editFrontmatter(text, "tags", tags) : removeFrontmatter(text, "tags");
+        var out = tags.length ? editFrontmatter(text, "tags", "[" + tags.join(", ") + "]") : removeFrontmatter(text, "tags");
+        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10303,6 +10112,7 @@
       .then(function (info) {
         var text = b64decode(info.content);
         var out = date ? editFrontmatter(text, "target", date) : removeFrontmatter(text, "target");
+        if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
           method: "PUT",
@@ -10503,7 +10313,7 @@
   // puck itself means the parent would contain its own ancestor. The harvester cuts
   // such a link anyway — refusing here keeps a nonsense line out of git.
   function wouldLoop(item, parentId) {
-    var seen = dict(), cur = parentId;
+    var seen = {}, cur = parentId;
     while (cur) {
       if (cur === item.id || seen[cur]) return true;
       seen[cur] = 1;
@@ -10581,13 +10391,12 @@
   // Only `depends:` is authored, on the blocked puck. `blockedBy` (what still
   // holds me up) and `blocks` (what I hold up) are both derived — here as well as
   // at harvest, so an optimistic edit can't leave the two directions disagreeing.
-  // dep:begin
   function recomputeDeps() {
     DATA.items.forEach(function (it) { it.blocks = []; it.missingDepends = []; it.blockedBy = []; });
     DATA.items.forEach(function (it) {
       var unresolved = [];
       var live = [];
-      dependRefs(it).forEach(function (ref) {
+      (it.depends || []).forEach(function (ref) {
         var d = resolveRef(it, ref);
         if (!d) { it.missingDepends.push(ref); unresolved.push(ref); return; }
         if (!TERMINAL[d.status]) live.push(d);
@@ -10617,11 +10426,10 @@
       it.signals = needs ? rest.concat([{ type: "depends-missing" }]) : rest;
     });
   }
-  // dep:end
   // Would depending on `target` close a loop? Walk the *authored* graph, since a
   // landed blocker still counts as an edge.
   function wouldDependLoop(item, target) {
-    var seen = dict(), stack = [target];
+    var seen = {}, stack = [target];
     while (stack.length) {
       var cur = stack.pop();
       if (cur === item) return true;
@@ -10632,7 +10440,7 @@
     return false;
   }
   function commitDepends(item, refs, message) {
-    return commitFields(item, { depends: refs.length ? refs : null }, message); // the list, not a rendered one
+    return commitFields(item, { depends: refs.length ? "[" + refs.join(", ") + "]" : null }, message);
   }
   // `refs` is the whole new list — one field, one commit, like every other write.
   function changeDepends(item, refs, message) {
@@ -10653,18 +10461,14 @@
         toast("✗ " + err.message, true);
       });
   }
-  // Removing a blocker removes every way it was written. `auth` and `me/repo#auth` are
-  // one reference and the row above draws them as one chip, so a ✕ that took only the
-  // spelling it was rendered from would leave the puck blocked by a blocker it no longer
-  // shows.
   function removeDepend(item, ref) {
-    changeDepends(item, withoutDepend(item, ref),
+    changeDepends(item, (item.depends || []).filter(function (r) { return r !== ref; }),
       "roadmap: " + item.slug + " no longer blocked by " + ref);
   }
   // Which pucks could block this one: anything but itself, what it already lists,
   // and anything that already waits on it (a loop).
   function blockerCandidates(item) {
-    var listed = dict();
+    var listed = {};
     dependsItems(item).forEach(function (d) { listed[d.id] = 1; });
     return function (other) {
       return other === item || listed[other.id] || wouldDependLoop(item, other);
@@ -10675,7 +10479,7 @@
   // they can still be removed), each with a ✕ when writable, plus "Add".
   function dependsValue(item, editable) {
     var wrap = el("div", "prop-blockers");
-    dependRefs(item).forEach(function (ref) {
+    (item.depends || []).forEach(function (ref) {
       var d = resolveRef(item, ref);
       var chip = el("span", "dep-chip");
       if (d) {
@@ -10707,7 +10511,7 @@
         // Several tokens: everything this puck declared. Removing one from here is
         // the same write as the ✕ on the row behind.
         tokens: function () {
-          return dependRefs(item).map(function (ref) {
+          return (item.depends || []).map(function (ref) {
             var d = resolveRef(item, ref);
             return {
               label: d ? d.title : ref,
@@ -10973,6 +10777,19 @@
     }).catch(function (err) { toast("✗ " + (err && err.message || "issue failed"), true); });
   }
 
+  // Replace the body (everything after the frontmatter fence), keeping the
+  // frontmatter byte-identical.
+  function replaceBody(text, newBody) {
+    var nl = text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
+    var lines = text.replace(/\r\n/g, "\n").split("\n");
+    if (lines[0] !== "---") return null;
+    var end = -1;
+    for (var i = 1; i < lines.length; i++) { if (lines[i] === "---") { end = i; break; } }
+    if (end < 0) return null;
+    var fm = lines.slice(0, end + 1);
+    var b = newBody.replace(/\r\n/g, "\n").replace(/\s+$/, "").split("\n");
+    return fm.concat([""], b, [""]).join(nl);
+  }
 
   // Delete a puck: remove its markdown file from the source repo (read sha →
   // DELETE). Git-native — the file is gone from the board, git history keeps it.
@@ -11024,9 +10841,7 @@
     return fetch(api + "?ref=" + encodeURIComponent(branch), { headers: headers })
       .then(function (r) { assertOk(r, item); return r.json(); })
       .then(function (info) {
-        // The owner's function, called directly: the one-line wrapper that used to sit
-        // here shadowed the name it delegated to and had this single caller.
-        var out = fmt().replaceBody(b64decode(info.content), newBody);
+        var out = replaceBody(b64decode(info.content), newBody);
         if (out == null) throw new Error("no frontmatter");
         out = editFrontmatter(out, "updated", today());
         return fetch(api, {
@@ -11182,19 +10997,15 @@
     return body;
   }
   function puckTemplate(title, status, tags, agent, context, parentRef) {
-    // Every value through the owner, not only the title and the tags. A puck is born
-    // here, so a value that needs quoting needs it on the first write as much as on
-    // the tenth — and `agent` and `parent` are the two the create path can carry that
-    // nothing in a closed set constrains.
-    var v = function (k, x) { return fmt().formatLine(k, x); };
-    var lines = ["---", v("title", title), v("status", status)];
-    if (tags.length) lines.push(v("tags", tags));
-    if (agent) lines.push(v("agent", agent));
+    var t = /[:#]/.test(title) ? JSON.stringify(title) : title;
+    var lines = ["---", "title: " + t, "status: " + status];
+    if (tags.length) lines.push("tags: [" + tags.join(", ") + "]");
+    if (agent) lines.push("agent: " + agent);
     // Membership is authored on the child, so a puck created *from* its parent can
     // carry the relation in the file it is born with — one write instead of two,
     // and no window where the puck exists outside the parent it was made for.
-    if (parentRef) lines.push(v("parent", parentRef));
-    lines.push(v("updated", today()), v("created", today()), "---", "");
+    if (parentRef) lines.push("parent: " + parentRef);
+    lines.push("updated: " + today(), "created: " + today(), "---", "");
     var body = puckBody(context);
     return lines.join("\n") + (body ? "\n" + body : "");
   }
@@ -11238,23 +11049,23 @@
   // that fires and forgets cannot leak an unhandled rejection, and one that needs a
   // second write only has to ask whether the first happened.
   function createPuck(repo, title, status, tags, agent, context, opts) {
-    opts = opts || dict();
+    opts = opts || {};
     var slug = slugify(title);
     var short = repo.split("/").pop();
     var id = short + "/" + slug;
     if (DATA.items.some(function (x) { return x.id === id; })) { toast('✗ A puck "' + slug + '" already exists here', true); return null; }
-    var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0] || dict();
+    var src = DATA.sources.filter(function (s) { return s.repo === repo; })[0] || {};
     var meta = sourceMeta(repo);
     var path = meta.dir + "/" + slug + ".md";
     var body = puckBody(context);
-    var item = table({
+    var item = {
       id: id, repo: repo, repoName: src.name || short, repoColor: src.color || "#888888",
       issueState: null, slug: slug, title: title, status: status, tags: tags, updated: today(),
       created: today(), issue: null, order: 0, depends: [], owner: null, agent: agent || null, body: body,
       parent: null, parentRef: null, children: [], progress: null, blocks: [], missingDepends: [],
       sourcePath: path, sourceUrl: "https://github.com/" + repo + "/blob/" + meta.branch + "/" + path,
       adapter: "pucks", native: true, blockedBy: [], signals: [],
-    });
+    };
     var parentItm = opts.parent ? itemById(opts.parent) : null;
     var parentRef = parentItm ? refFor(item, parentItm) : null;
     // Pushed before linked: `relink` recounts the parent's rollup through `itemById`,
@@ -11517,7 +11328,7 @@
   // priority, agent, labels) is set on the puck page after creation.
   function openNewPuckPanel(preset) {
     if (!ghToken()) return;
-    preset = preset || dict();
+    preset = preset || {};
     closeSurfaces(); // a panel owns the screen: no picker left alive underneath it
     var back = el("div", "token-backdrop");
     var close = panelCloser(back);
@@ -11641,7 +11452,7 @@
     return fetch(api, { headers: headers })
       .then(function (r) { assertOk(r, errItem); return r.json(); })
       .then(function (info) {
-        var cfg = dict();
+        var cfg = {};
         try { cfg = JSON.parse(b64decode(info.content)); } catch (e) {}
         cfg.title = next.title; cfg.description = next.description; cfg.repoUrl = next.repoUrl;
         if (next.sections) cfg.sections = next.sections;
@@ -11703,8 +11514,8 @@
     save.disabled = !canGit;
     save.addEventListener("click", function () {
       if (!canGit) { close(); return; }
-      var next = table({ title: title.value.trim(), description: desc.value.trim(), repoUrl: url.value.trim(),
-        sections: sections.value.split(",").map(function (x) { return x.trim(); }).filter(Boolean) });
+      var next = { title: title.value.trim(), description: desc.value.trim(), repoUrl: url.value.trim(),
+        sections: sections.value.split(",").map(function (x) { return x.trim(); }).filter(Boolean) };
       save.disabled = true; toast("Saving…");
       commitConfig(repo, next)
         .then(function () {
