@@ -8896,8 +8896,19 @@
   // Config, not truth — an instance that harvests some other way sets `syncWorkflow`
   // to false and the button is simply absent, rather than offering a dispatch that
   // resolves to no workflow.
+  //
+  // The default is the *product's* workflow, not this instance's. It used to be
+  // `sync.yml`, which is the workshop's name, and the correction was written into
+  // `export-product.mjs`'s BOARD_CONFIG — where it could never land: the mirror
+  // excludes `board.config.json` on purpose, so a live instance's customisation
+  // survives, and the generated value is therefore dropped every run. The fix reached
+  // nobody until the default itself moved.
+  //
+  // So the default serves the many, and the one instance that differs declares itself
+  // in its own `board.config.json` — which is a file the mirror never touches, which is
+  // exactly why it is the right place for the exception.
   function syncWorkflow() {
-    return CFG.syncWorkflow === undefined ? "sync.yml" : CFG.syncWorkflow;
+    return CFG.syncWorkflow === undefined ? "pages.yml" : CFG.syncWorkflow;
   }
   function syncRef() { return CFG.syncBranch || "main"; }
   // The workflow lives in the aggregator repo, never in a puck's source repo: an edit
